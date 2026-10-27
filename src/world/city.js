@@ -1,0 +1,840 @@
+import * as THREE from 'three';
+import { CITY, WORLD, DEBRIS } from '../config.js';
+import { mulberry32, clamp, lerp } from '../utils.js';
+import { BLOCK, HALF, blockTypes, isBridgeRoad, RIVER_Z, RIVER_HALF_W, TOWNS, groundHeight } from './layout.js';
+
+const PALETTE = [
+  0xc9bba3, 0xb5a58c, 0xd8d2c4, // бетон / песчаник
+  0x8f9aa6, 0x6f7f91,           // серые
+  0x7d93ad, 0x5a7896, 0x40566e, // стеклянные синие
+  0x9c5b45, 0x8a4f3c,           // кирпич
+  0xe8e4dc,                     // белый
+];
+const GLASS = new Set([0x7d93ad, 0x5a7896, 0x40566e]);
+const HOUSE_PALETTE = [0xe9dcc4, 0xd7c3a3, 0xc9d3d8, 0xe6d2b5, 0xb9c4a8, 0xd9b8a0, 0xf0ece4];
+const ROOF_PALETTE = [0x7a3b2e, 0x5d4a3f, 0x3e464f, 0x6b5a4a, 0x8a4a36];
+
+const CELL = 50;  // ячейка пространственной сетки
+const CHUNK = 400;
+const _m = new THREE.Matrix4();
+const _m2 = new THREE.Matrix4();
+const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
+const _c = new THREE.Color();
+const _v = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+const GLASS_COLOR = new THREE.Color(0xbcd6e8);
+const REBAR_COLOR = new THREE.Color(0x6b3a26);
+const SLAB_COLOR = new THREE.Color(0x8d8b86);
+
+// Город из «секций»: каждое здание — стопка секций по ~12 м.
+// Выбитая секция превращается в обломки, а всё, что было над ней, падает целым куском.
+export class City {
+  constructor(scene, fx) {
+    this.scene = scene;
+    this.fx = fx; // { debris, dust, sparks, effects, audio }
+    this.buildings = [];
+    this.segs = [];
+    this.runs = []; // целые части зданий, рисуются одним блоком, пока не повреждены
+    this.gasSpots = [];
+    this.falling = [];
+    this.destroyed = 0;
+    this.onDestroyed = null;
+    this.onImpact = null; // (point, radius, force) — для машин, людей, фонарей
+
+    this.material = createBuildingMaterial();
+    this.concrete = new THREE.MeshStandardMaterial({ color: 0x8e8c88, roughness: 0.85, metalness: 0.05 });
+    this.roofMat = new THREE.MeshStandardMaterial({ color: 0x6d6f73, roughness: 0.8, metalness: 0.2 });
+    this.gableMat = new THREE.MeshStandardMaterial({ roughness: 0.75 });
+
+    const rnd = mulberry32(CITY.seed);
+    this.generateMain(rnd);
+    for (const t of TOWNS) this.generateTown(t);
+    this.generateBridges();
+    this.buildMeshes();
+    this.buildGrid();
+  }
+
+  // ================================================================ генерация
+  generateMain(rnd) {
+    const g = CITY.grid;
+    for (let i = 0; i < g; i++) for (let j = 0; j < g; j++) {
+      const type = blockTypes[j * g + i];
+      const bx = -HALF + i * CITY.block, bz = -HALF + j * CITY.block;
+      if (type === BLOCK.URBAN) this.fillUrbanBlock(bx, bz, rnd, 1);
+      else if (type === BLOCK.SUBURB) this.fillSuburbBlock(bx, bz, rnd);
+    }
+  }
+
+  generateTown(t) {
+    const rnd = mulberry32(t.seed);
+    const half = t.grid * CITY.block / 2;
+    for (let i = 0; i < t.grid; i++) for (let j = 0; j < t.grid; j++) {
+      const bx = t.x - half + i * CITY.block, bz = t.z - half + j * CITY.block;
+      const d = Math.max(Math.abs(bx + 50 - t.x), Math.abs(bz + 50 - t.z)) / half;
+      if (rnd() < 0.08) continue;
+      if (d < 0.45) this.fillUrbanBlock(bx, bz, rnd, 0.3);
+      else this.fillSuburbBlock(bx, bz, rnd);
+    }
+  }
+
+  // heightScale < 1 — для небольших городков
+  fillUrbanBlock(bx, bz, rnd, heightScale) {
+    const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2;
+    const cx = bx + CITY.block / 2, cz = bz + CITY.block / 2;
+    const core = heightScale === 1 ? Math.exp(-((Math.hypot(cx, cz) / CITY.downtownRadius) ** 2)) : 0.35;
+    const hMax = lerp(22, CITY.maxHeight * heightScale, core);
+    const nx = core > 0.6 ? (rnd() < 0.5 ? 1 : 2) : 2 + Math.floor(rnd() * 2);
+    const nz = core > 0.6 ? (rnd() < 0.5 ? 1 : 2) : 2 + Math.floor(rnd() * 2);
+    const cw = lot / nx, cd = lot / nz;
+    const gasSlot = rnd() < 0.03 && nx * nz >= 4 ? Math.floor(rnd() * nx * nz) : -1;
+
+    for (let a = 0; a < nx; a++) for (let b = 0; b < nz; b++) {
+      const x = bx + margin + cw * (a + 0.5), z = bz + margin + cd * (b + 0.5);
+      if (a * nz + b === gasSlot) { this.gasSpots.push({ x, z, w: cw - 4, d: cd - 4 }); continue; }
+      if (rnd() < 0.06) continue;
+      const gap = 3 + rnd() * 5;
+      const w = cw - gap - rnd() * cw * 0.25, d = cd - gap - rnd() * cd * 0.25;
+      const h = Math.max(8, hMax * (0.3 + 0.7 * rnd() ** 1.5) * (0.85 + rnd() * 0.3));
+      const color = PALETTE[Math.floor(rnd() * PALETTE.length)];
+      // Ступенчатая верхушка у высоких зданий
+      const step = h > 70 && rnd() < 0.45 ? { at: h * (0.55 + rnd() * 0.25), k: 0.55 + rnd() * 0.25 } : null;
+      this.addBuilding({ x, z, w, d, h, color, glass: GLASS.has(color), step, roof: rnd() < 0.7 ? 'box' : null }, rnd);
+    }
+  }
+
+  fillSuburbBlock(bx, bz, rnd) {
+    const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2;
+    const n = 3;
+    const cell = lot / n;
+    const gas = rnd() < 0.012;
+    for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) {
+      if (a === 1 && b === 1) {
+        // Двор в центре квартала, иногда — заправка
+        if (gas) this.gasSpots.push({ x: bx + margin + cell * 1.5, z: bz + margin + cell * 1.5, w: cell * 1.6, d: cell * 1.6 });
+        continue;
+      }
+      if (rnd() < 0.12) continue;
+      const x = bx + margin + cell * (a + 0.5) + (rnd() - 0.5) * 3;
+      const z = bz + margin + cell * (b + 0.5) + (rnd() - 0.5) * 3;
+      const w = 9 + rnd() * 6, d = 9 + rnd() * 6, h = rnd() < 0.3 ? 7 + rnd() * 2 : 4 + rnd() * 1.5;
+      const color = HOUSE_PALETTE[Math.floor(rnd() * HOUSE_PALETTE.length)];
+      this.addBuilding({ x, z, w, d, h, color, glass: false, roof: 'gable', roofColor: ROOF_PALETTE[Math.floor(rnd() * ROOF_PALETTE.length)] }, rnd);
+    }
+  }
+
+  generateBridges() {
+    const zA = RIVER_Z - RIVER_HALF_W - 3, zB = RIVER_Z + RIVER_HALF_W + 3;
+    const parts = 4, len = (zB - zA) / parts;
+    for (let k = 0; k <= CITY.grid; k++) {
+      if (!isBridgeRoad(k)) continue;
+      const x = -HALF + k * CITY.block;
+      const b = this.newBuilding({ kind: 'bridge', x, z: RIVER_Z, color: 0x8e8c88, glass: false });
+      for (let p = 0; p < parts; p++) {
+        this.addSeg(b, { x, z: zA + len * (p + 0.5), w: CITY.road + 2, d: len, y0: -1.6, h: 1.6, type: 'concrete' });
+      }
+      // Опоры
+      for (let p = 1; p < parts; p++) {
+        this.addSeg(b, { x, z: zA + len * p, w: 4, d: 4, y0: WORLD.riverBed, h: -1.6 - WORLD.riverBed, type: 'concrete' });
+      }
+    }
+  }
+
+  newBuilding(props) {
+    const b = { index: this.buildings.length, segs: [], counted: false, roof: null, ...props, color: new THREE.Color(props.color) };
+    this.buildings.push(b);
+    return b;
+  }
+
+  addSeg(b, s) {
+    const seg = { index: this.segs.length, b: b.index, alive: true, type: s.type || 'building', ...s };
+    seg.maxHp = 30 + seg.w * seg.d * seg.h * 0.004;
+    seg.hp = seg.maxHp;
+    b.segs.push(seg.index);
+    this.segs.push(seg);
+    return seg;
+  }
+
+  addBuilding(p, rnd) {
+    const b = this.newBuilding({ kind: 'building', x: p.x, z: p.z, color: p.color, glass: p.glass });
+    b.color.offsetHSL(0, 0, (rnd() - 0.5) * 0.08);
+    // Нарезаем по высоте на секции
+    const n = Math.max(1, Math.round(p.h / CITY.segment));
+    const sh = p.h / n;
+    for (let k = 0; k < n; k++) {
+      const y0 = k * sh;
+      const upper = p.step && y0 >= p.step.at;
+      const w = upper ? p.w * p.step.k : p.w, d = upper ? p.d * p.step.k : p.d;
+      this.addSeg(b, { x: p.x, z: p.z, w, d, y0, h: sh });
+    }
+    // Подряд идущие секции одного размера — «цельный» блок для рендера
+    if (n > 1) {
+      let run = null;
+      for (const si of b.segs) {
+        const sg = this.segs[si];
+        if (!run || Math.abs(run.w - sg.w) > 0.01) {
+          run = { b: b.index, x: sg.x, z: sg.z, w: sg.w, d: sg.d, y0: sg.y0, h: 0, segs: [], whole: true };
+          this.runs.push(run);
+        }
+        run.segs.push(sg);
+        run.h += sg.h;
+        sg.run = run;
+      }
+    }
+    if (p.roof === 'box') {
+      b.roof = { kind: 'box', w: p.w * (0.2 + rnd() * 0.25), h: 2 + rnd() * 4, d: p.d * (0.2 + rnd() * 0.25), ox: (rnd() - 0.5) * p.w * 0.25, oz: (rnd() - 0.5) * p.d * 0.25 };
+    } else if (p.roof === 'gable') {
+      b.roof = { kind: 'gable', w: p.w + 0.8, h: 2.2 + rnd() * 1.6, d: p.d + 0.8, ox: 0, oz: 0, color: new THREE.Color(p.roofColor), rot: rnd() < 0.5 ? 0 : Math.PI / 2 };
+    }
+    return b;
+  }
+
+  // ================================================================ меши
+  buildMeshes() {
+    const box = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
+    const gable = makeGableGeometry();
+    const groups = new Map();
+    const getGroup = (x, z) => {
+      const key = Math.floor(x / CHUNK) * 100000 + Math.floor(z / CHUNK);
+      if (!groups.has(key)) groups.set(key, { building: [], concrete: [], roofBox: [], gable: [], whole: [] });
+      return groups.get(key);
+    };
+    for (const s of this.segs) getGroup(s.x, s.z)[s.type].push(s);
+    for (const b of this.buildings) if (b.roof) getGroup(b.x, b.z)[b.roof.kind === 'box' ? 'roofBox' : 'gable'].push(b);
+    for (const r of this.runs) getGroup(r.x, r.z).whole.push(r);
+
+    this.meshes = [];
+    const make = (geo, mat, n) => {
+      const m = new THREE.InstancedMesh(geo, mat, n);
+      m.castShadow = m.receiveShadow = true;
+      m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3).fill(1), 3);
+      this.scene.add(m);
+      this.meshes.push(m);
+      return m;
+    };
+    for (const g of groups.values()) {
+      for (const type of ['building', 'concrete']) {
+        if (!g[type].length) continue;
+        const mesh = make(box, type === 'building' ? this.material : this.concrete, g[type].length);
+        // Слоты получают только «одиночные» секции; секции цельных блоков —
+        // позже, когда блок разделится (так видеокарта не тратит время на скрытое)
+        let next = 0;
+        for (const s of g[type]) { s.mesh = mesh; s.slot = s.run ? -1 : next++; if (s.slot >= 0) this.writeSeg(s, true); }
+        mesh.count = mesh.userData.base = mesh.userData.next = next;
+        mesh.computeBoundingSphere();
+        this.segMeshes = this.segMeshes || [];
+        this.segMeshes.push(mesh);
+      }
+      if (g.whole.length) {
+        const mesh = make(box, this.material, g.whole.length);
+        g.whole.forEach((r, i) => { r.mesh = mesh; r.slot = i; this.writeRun(r); });
+        mesh.computeBoundingSphere();
+      }
+      if (g.roofBox.length) {
+        const mesh = make(box, this.roofMat, g.roofBox.length);
+        g.roofBox.forEach((b, i) => { b.roof.mesh = mesh; b.roof.slot = i; this.writeRoof(b); });
+        mesh.computeBoundingSphere();
+      }
+      if (g.gable.length) {
+        const mesh = make(gable, this.gableMat, g.gable.length);
+        g.gable.forEach((b, i) => { b.roof.mesh = mesh; b.roof.slot = i; this.writeRoof(b); });
+        mesh.computeBoundingSphere();
+      }
+    }
+  }
+
+  segMatrix(s, out) { return out.makeScale(s.w, s.h, s.d).setPosition(s.x, s.y0, s.z); }
+
+  writeRun(r) {
+    r.mesh.setMatrixAt(r.slot, r.whole ? _m.makeScale(r.w, r.h, r.d).setPosition(r.x, r.y0, r.z) : _zero);
+    r.mesh.setColorAt(r.slot, this.buildings[r.b].color);
+    r.mesh.instanceMatrix.needsUpdate = true;
+    r.mesh.instanceColor.needsUpdate = true;
+  }
+
+  // Первое изменение секции: цельный блок заменяется отдельными секциями
+  splitRun(r) {
+    if (!r.whole) return;
+    r.whole = false;
+    this.writeRun(r);
+    const mesh = r.segs[0].mesh;
+    for (const sg of r.segs) if (sg.slot < 0) sg.slot = mesh.userData.next++;
+    mesh.count = mesh.userData.next;
+    for (const sg of r.segs) this.writeSeg(sg);
+    mesh.computeBoundingSphere();
+  }
+
+  writeSeg(s, init = false) {
+    if (s.run && s.run.whole) {
+      if (!init) this.splitRun(s.run);
+      return;
+    }
+    if (s.slot < 0) return;
+    s.mesh.setMatrixAt(s.slot, s.alive ? this.segMatrix(s, _m) : _zero);
+    const b = this.buildings[s.b];
+    _c.copy(b.color).multiplyScalar(0.55 + 0.45 * (s.hp / s.maxHp));
+    s.mesh.setColorAt(s.slot, _c);
+    s.mesh.instanceMatrix.needsUpdate = true;
+    s.mesh.instanceColor.needsUpdate = true;
+  }
+
+  // Крыша стоит на верхней секции, пока та цела
+  writeRoof(b) {
+    const r = b.roof;
+    const top = this.segs[b.segs[b.segs.length - 1]];
+    if (top.alive) {
+      _q.setFromAxisAngle(_v.set(0, 1, 0), r.rot || 0);
+      _m.compose(_v.set(b.x + r.ox, top.y0 + top.h, b.z + r.oz), _q, new THREE.Vector3(r.w, r.h, r.d));
+      r.mesh.setMatrixAt(r.slot, _m);
+    } else r.mesh.setMatrixAt(r.slot, _zero);
+    if (r.color) { r.mesh.setColorAt(r.slot, r.color); r.mesh.instanceColor.needsUpdate = true; }
+    r.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // ================================================================ пространственная сетка
+  buildGrid() {
+    this.cells = new Map();
+    this.stamp = new Uint32Array(this.segs.length);
+    this.stampId = 0;
+    for (const s of this.segs) {
+      const x0 = Math.floor((s.x - s.w / 2) / CELL), x1 = Math.floor((s.x + s.w / 2) / CELL);
+      const z0 = Math.floor((s.z - s.d / 2) / CELL), z1 = Math.floor((s.z + s.d / 2) / CELL);
+      for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) {
+        const key = i * 100000 + j;
+        if (!this.cells.has(key)) this.cells.set(key, []);
+        this.cells.get(key).push(s.index);
+      }
+    }
+  }
+
+  // Живые секции, чей footprint пересекает прямоугольник
+  query(minX, minZ, maxX, maxZ, out = []) {
+    out.length = 0;
+    this.stampId++;
+    const x0 = Math.floor(minX / CELL), x1 = Math.floor(maxX / CELL);
+    const z0 = Math.floor(minZ / CELL), z1 = Math.floor(maxZ / CELL);
+    for (let i = x0; i <= x1; i++) for (let j = z0; j <= z1; j++) {
+      const list = this.cells.get(i * 100000 + j);
+      if (!list) continue;
+      for (const idx of list) {
+        if (this.stamp[idx] === this.stampId) continue;
+        this.stamp[idx] = this.stampId;
+        const s = this.segs[idx];
+        if (s.alive) out.push(s);
+      }
+    }
+    return out;
+  }
+
+  closestPoint(s, p, out) {
+    return out.set(
+      clamp(p.x, s.x - s.w / 2, s.x + s.w / 2),
+      clamp(p.y, s.y0, s.y0 + s.h),
+      clamp(p.z, s.z - s.d / 2, s.z + s.d / 2),
+    );
+  }
+
+  sphereQuery(center, r, out = []) {
+    const cand = this.query(center.x - r, center.z - r, center.x + r, center.z + r, this._sq || (this._sq = []));
+    out.length = 0;
+    for (const s of cand) {
+      if (this.closestPoint(s, center, _v).distanceToSquared(center) <= r * r) out.push(s);
+    }
+    return out;
+  }
+
+  // Высота «пола» под точкой: земля, крыша или мост
+  groundHeightAt(x, z, y) {
+    let g = groundHeight(x, z);
+    for (const s of this.query(x, z, x, z, this._q || (this._q = []))) {
+      if (Math.abs(x - s.x) <= s.w / 2 && Math.abs(z - s.z) <= s.d / 2) {
+        const top = s.y0 + s.h;
+        if (y >= top - 1.5 && top > g) g = top;
+      }
+    }
+    return g;
+  }
+
+  // Секция, внутри которой точка (или null)
+  segAt(p, pad = 0) {
+    for (const s of this.query(p.x - pad, p.z - pad, p.x + pad, p.z + pad, this._q2 || (this._q2 = []))) {
+      if (Math.abs(p.x - s.x) < s.w / 2 + pad && Math.abs(p.z - s.z) < s.d / 2 + pad && p.y > s.y0 - pad && p.y < s.y0 + s.h + pad) return s;
+    }
+    return null;
+  }
+
+  isInside(p) { return this.segAt(p) !== null; }
+
+  isGlass(s) { return this.buildings[s.b].glass; }
+
+  // ================================================================ урон
+  damage(s, amount, point, dir, force) {
+    if (!s.alive) return false;
+    s.hp -= amount;
+    if (s.hp <= 0) { this.destroySeg(s, point, dir, force); return true; }
+
+    // Частичное повреждение: куски из места удара + пыль
+    const b = this.buildings[s.b];
+    const chunks = clamp(Math.round(amount / 12), 3, 12);
+    for (let i = 0; i < chunks; i++) {
+      const sz = 0.4 + Math.random() * 1.5;
+      this.fx.debris.spawn(
+        point.x + (Math.random() - 0.5) * 2, point.y + (Math.random() - 0.5) * 2, point.z + (Math.random() - 0.5) * 2,
+        sz, sz * (0.5 + Math.random()), sz,
+        dir.x * force * (0.4 + Math.random() * 0.6) + (Math.random() - 0.5) * force * 0.5,
+        dir.y * force * 0.5 + Math.random() * force * 0.4,
+        dir.z * force * (0.4 + Math.random() * 0.6) + (Math.random() - 0.5) * force * 0.5,
+        b.color, 0,
+      );
+    }
+    this.spawnGlass(point, this.faceNormal(s, point), b.glass ? 16 : 6, force * 0.5);
+    this.fx.dust.burst(point, 8, { size: [3, 7], speed: 6, life: [3, 6] });
+    // Дыра и трещины на стене в месте удара
+    if (b.kind === 'building') this.fx.effects.wallDecal?.(point, this.faceNormal(s, point), clamp(1.5 + amount / 25, 2, 9), s.index);
+    this.writeSeg(s);
+    return false;
+  }
+
+  // Нормаль грани секции, ближайшей к точке
+  faceNormal(s, p) {
+    const dx = (p.x - s.x) / (s.w / 2), dz = (p.z - s.z) / (s.d / 2), dy = (p.y - (s.y0 + s.h / 2)) / (s.h / 2);
+    const ax = Math.abs(dx), az = Math.abs(dz), ay = Math.abs(dy);
+    if (ay > ax && ay > az) return new THREE.Vector3(0, Math.sign(dy), 0);
+    return ax > az ? new THREE.Vector3(Math.sign(dx), 0, 0) : new THREE.Vector3(0, 0, Math.sign(dz));
+  }
+
+  // Осколки стекла летят наружу от фасада
+  spawnGlass(p, n, count, speed, spread = 2) {
+    const gd = this.fx.glass;
+    if (!gd) return;
+    for (let i = 0; i < count; i++) {
+      const s = 0.15 + Math.random() * 0.55;
+      gd.spawn(
+        p.x + (Math.random() - 0.5) * spread * 2, p.y + (Math.random() - 0.5) * spread, p.z + (Math.random() - 0.5) * spread * 2,
+        s, 0.025, s * (0.6 + Math.random() * 0.8),
+        n.x * speed * (0.4 + Math.random()) + (Math.random() - 0.5) * 6,
+        n.y * speed * 0.5 + Math.random() * 5,
+        n.z * speed * (0.4 + Math.random()) + (Math.random() - 0.5) * 6,
+        GLASS_COLOR, 0,
+      );
+    }
+  }
+
+  // Звуковой удар: окна вылетают со стороны пролёта
+  shatterWindows(s, from, vel) {
+    if (s.glassBroken || s.type !== 'building') return;
+    s.glassBroken = true;
+    const cp = this.closestPoint(s, from, new THREE.Vector3());
+    const n = this.faceNormal(s, cp);
+    this.spawnGlass(cp, n.clone().addScaledVector(vel.clone().normalize(), 0.5).normalize(), 18, 12, Math.min(10, Math.max(s.w, s.h) * 0.4));
+    if (Math.random() < 0.3) this.fx.audio?.glass(0.5, cp);
+  }
+
+  countBuilding(b) {
+    if (b.counted) return;
+    b.counted = true;
+    this.destroyed++;
+    if (this.onDestroyed) this.onDestroyed(b);
+  }
+
+  destroySeg(s, point, dir, force) {
+    if (!s.alive) return;
+    s.alive = false;
+    s.hp = 0;
+    const b = this.buildings[s.b];
+    this.fx.effects.clearDecals?.(s.index);
+    this.countBuilding(b);
+    this.writeSeg(s);
+    this.shatter([s], null, point, dir, force, 0);
+    this.fx.audio?.crumble(Math.min(1, (s.w * s.d * s.h) / 15000), b.glass ? 'glass' : 'concrete', point);
+    this.onImpact?.(point, Math.max(s.w, s.d) * 0.8, force * 0.5);
+
+    if (b.kind !== 'building') return;
+    // Всё, что выше, теряет опору — падает целым куском
+    const idx = b.segs.indexOf(s.index);
+    const above = [];
+    for (let k = idx + 1; k < b.segs.length; k++) {
+      const u = this.segs[b.segs[k]];
+      if (!u.alive) break;
+      above.push(u);
+    }
+    if (above.length) this.startFall(b, above, dir, force);
+    if (b.roof) this.writeRoof(b);
+  }
+
+  // Разбивает секции на обломки. xf — матрица преобразования (для падающих кусков)
+  shatter(segs, xf, point, dir, force, baseVel) {
+    const b = this.buildings[segs[0].b];
+    const coarse = segs.length > 6;
+    for (const s of segs) {
+      const nx = clamp(Math.round(s.w / 5), coarse ? 1 : 2, coarse ? 3 : 5);
+      const nz = clamp(Math.round(s.d / 5), coarse ? 1 : 2, coarse ? 3 : 5);
+      const ny = clamp(Math.round(s.h / 5), 1, coarse ? 2 : 3);
+      const sx = s.w / nx, sy = s.h / ny, sz = s.d / nz;
+      for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) for (let k = 0; k < nz; k++) {
+        _v.set(s.x - s.w / 2 + sx * (i + 0.5), s.y0 + sy * (j + 0.5), s.z - s.d / 2 + sz * (k + 0.5));
+        if (xf) _v.applyMatrix4(xf);
+        const dx = _v.x - point.x, dy = _v.y - point.y, dz = _v.z - point.z;
+        const dist = Math.hypot(dx, dy, dz) + 0.001;
+        const push = force * Math.exp(-dist / 18);
+        const rad = push * 0.45 / dist;
+        const delay = xf ? Math.random() * 0.05 : Math.min(dist / 90, 0.8) + Math.random() * 0.1;
+        this.fx.debris.spawn(
+          _v.x, _v.y, _v.z,
+          sx * (0.75 + Math.random() * 0.2), sy * (0.75 + Math.random() * 0.2), sz * (0.75 + Math.random() * 0.2),
+          dir.x * push * 0.7 + dx * rad + (Math.random() - 0.5) * 4,
+          (baseVel || 0) * 0.3 + dir.y * push * 0.5 + dy * rad * 0.5 + Math.random() * 3,
+          dir.z * push * 0.7 + dz * rad + (Math.random() - 0.5) * 4,
+          b.color, delay,
+        );
+      }
+      // Плиты перекрытий и арматура
+      if (s.type === 'building' && s.w > 6) {
+        const slabs = coarse ? 1 : 2;
+        for (let i = 0; i < slabs; i++) {
+          _v.set(s.x + (Math.random() - 0.5) * s.w * 0.3, s.y0 + s.h * (i + 0.5) / slabs, s.z + (Math.random() - 0.5) * s.d * 0.3);
+          if (xf) _v.applyMatrix4(xf);
+          this.fx.debris.spawn(_v.x, _v.y, _v.z, s.w * 0.55, 0.35, s.d * 0.35,
+            dir.x * force * 0.3 + (Math.random() - 0.5) * 6, (baseVel || 0) * 0.3 + Math.random() * 3, dir.z * force * 0.3 + (Math.random() - 0.5) * 6,
+            SLAB_COLOR, Math.random() * 0.3);
+        }
+        const rods = coarse ? 2 : 5;
+        for (let i = 0; i < rods; i++) {
+          _v.set(s.x + (Math.random() - 0.5) * s.w, s.y0 + Math.random() * s.h, s.z + (Math.random() - 0.5) * s.d);
+          if (xf) _v.applyMatrix4(xf);
+          this.fx.debris.spawn(_v.x, _v.y, _v.z, 0.07, 2 + Math.random() * 3, 0.07,
+            dir.x * force * 0.5 + (Math.random() - 0.5) * 10, Math.random() * 6, dir.z * force * 0.5 + (Math.random() - 0.5) * 10,
+            REBAR_COLOR, Math.random() * 0.4);
+        }
+        // Стекло
+        _v.set(s.x, s.y0 + s.h * 0.5, s.z);
+        if (xf) _v.applyMatrix4(xf);
+        this.spawnGlass(_v, dir, coarse ? 6 : (b.glass ? 30 : 12), force * 0.4 + 6, Math.max(s.w, s.d) * 0.5);
+      }
+      // Пыль: густая и висит долго
+      const n = clamp(Math.round((s.w + s.d) / 10), 2, 8);
+      for (let i = 0; i < n; i++) {
+        _v.set(s.x + (Math.random() - 0.5) * s.w, s.y0 + s.h * 0.5, s.z + (Math.random() - 0.5) * s.d);
+        if (xf) _v.applyMatrix4(xf);
+        this.fx.dust.burst(_v, 1, { size: [12, 30], speed: 4, life: [12, 22], delay: 0.6, rise: 0.8, alpha: 0.8 });
+      }
+    }
+  }
+
+  // ================================================================ падающие верхушки
+  startFall(b, segs, dir, force) {
+    for (const s of segs) { s.alive = false; this.writeSeg(s); this.fx.effects.clearDecals?.(s.index); }
+    if (b.roof) this.writeRoof(b);
+
+    const mesh = new THREE.InstancedMesh(this.segs[0].mesh.geometry, this.material, segs.length);
+    segs.forEach((s, i) => {
+      mesh.setMatrixAt(i, this.segMatrix(s, _m));
+      _c.copy(b.color).multiplyScalar(0.55 + 0.45 * (s.hp / s.maxHp));
+      mesh.setColorAt(i, _c);
+    });
+    mesh.castShadow = mesh.receiveShadow = true;
+    mesh.frustumCulled = false;
+    mesh.matrixAutoUpdate = false;
+    this.scene.add(mesh);
+
+    const base = segs[0];
+    const topY = segs[segs.length - 1].y0 + segs[segs.length - 1].h;
+    // Наклон — в сторону удара (по горизонтали)
+    const tilt = new THREE.Vector3(dir.x, 0, dir.z);
+    if (tilt.lengthSq() < 1e-4) tilt.set(Math.random() - 0.5, 0, Math.random() - 0.5);
+    tilt.normalize();
+    const axis = new THREE.Vector3(tilt.z, 0, -tilt.x); // поворот вокруг этой оси наклоняет верх в сторону tilt
+    const pivot = new THREE.Vector3(b.x + tilt.x * base.w / 2, base.y0, b.z + tilt.z * base.d / 2);
+    const height = topY - base.y0;
+
+    this.falling.push({
+      b, segs, mesh, pivot, axis, tilt, height, base, crushed: 0,
+      angle: 0, angVel: 0.05 + Math.min(0.6, force / 300), drop: 0, vy: 0, t: 0,
+      supportY: this.supportBelow(b, base),
+      hitSet: new Set(),
+    });
+  }
+
+  // Верх уцелевшей части здания (или земля)
+  supportBelow(b, base) {
+    let y = groundHeight(b.x, b.z);
+    for (const si of b.segs) {
+      const s = this.segs[si];
+      if (s.alive && s.y0 + s.h <= base.y0 + 0.01) y = Math.max(y, s.y0 + s.h);
+    }
+    return y;
+  }
+
+  updateFalling(dt) {
+    const g = DEBRIS.gravity;
+    for (let i = this.falling.length - 1; i >= 0; i--) {
+      const f = this.falling[i];
+      f.t += dt;
+      f.vy -= g * dt;
+      f.drop += f.vy * dt;
+      // Опрокидывание ускоряется, как у падающего столба
+      f.angVel += Math.sin(Math.max(f.angle, 0.05)) * (6 / Math.max(10, f.height)) * dt * 9;
+      f.angle = Math.min(f.angle + f.angVel * dt, Math.PI / 2);
+
+      const xf = this.fallMatrix(f, _m2);
+      f.mesh.matrix.copy(xf);
+      f.mesh.matrixWorldNeedsUpdate = true;
+
+      // Нижняя точка куска и его верхушка в мире
+      const baseY = f.segs[0].y0 + f.drop;
+      const topLocal = new THREE.Vector3(f.b.x, f.base.y0 + f.height, f.b.z).applyMatrix4(xf);
+
+      // Верхушка задевает соседние здания
+      if (f.angle > 0.2) {
+        const hits = this.sphereQuery(topLocal, 6, []);
+        for (const s of hits) {
+          if (s.b === f.b.index || f.hitSet.has(s.index)) continue;
+          f.hitSet.add(s.index);
+          this.damage(s, 200 + f.height * 4, topLocal.clone(), f.tilt, 25);
+        }
+      }
+
+      const topDown = topLocal.y <= groundHeight(topLocal.x, topLocal.z) + 2 || f.t > 7;
+      // Прогрессирующее обрушение: нижняя секция куска ломается об уцелевшую часть,
+      // остальное продолжает падать и опрокидываться
+      if (!topDown && baseY <= f.supportY && f.segs.length > 2 && f.supportY > groundHeight(f.b.x, f.b.z) + 1) {
+        const s = f.segs.shift();
+        f.mesh.setMatrixAt(f.crushed++, _zero);
+        f.mesh.instanceMatrix.needsUpdate = true;
+        const p = new THREE.Vector3(f.b.x, f.supportY, f.b.z);
+        this.shatter([s], xf, p, f.tilt, 15, f.vy);
+        const stub = f.b.segs.map((si) => this.segs[si]).filter((u) => u.alive && u.y0 < f.supportY);
+        if (stub.length) this.damage(stub[stub.length - 1], 60 + f.segs.length * 30, p, new THREE.Vector3(0, -1, 0), 15);
+        f.supportY = this.supportBelow(f.b, f.base);
+        f.vy *= 0.35;
+        f.angVel += 0.08;
+        this.fx.audio?.crumble(0.4, 'concrete', p);
+        continue;
+      }
+      const landed = baseY <= f.supportY || topDown;
+      if (landed) {
+        const impactPoint = new THREE.Vector3(f.pivot.x, Math.max(f.supportY, f.pivot.y + f.drop), f.pivot.z);
+        this.shatter(f.segs, xf, impactPoint, f.tilt, 25 + Math.min(60, -f.vy), f.vy);
+        // Удар по уцелевшей части здания
+        const stub = f.b.segs.map((si) => this.segs[si]).filter((s) => s.alive);
+        if (stub.length) this.damage(stub[stub.length - 1], 80 + f.segs.length * 40, impactPoint, new THREE.Vector3(0, -1, 0), 20);
+        this.fx.dust.burst(impactPoint, 24, { size: [10, 22], speed: 25, life: [4, 8], flat: true });
+        this.fx.audio?.crumble(Math.min(1, f.segs.length / 8), 'concrete', impactPoint);
+        this.onImpact?.(impactPoint, 30 + f.height * 0.5, 40);
+        this.scene.remove(f.mesh);
+        f.mesh.dispose();
+        this.falling.splice(i, 1);
+      }
+    }
+  }
+
+  // T(pivot + drop) · R(axis, angle) · T(-pivot): окна остаются «приклеены» к куску
+  fallMatrix(f, out) {
+    _q.setFromAxisAngle(f.axis, f.angle);
+    out.makeTranslation(-f.pivot.x, -f.pivot.y, -f.pivot.z);
+    _m.makeRotationFromQuaternion(_q).premultiply(new THREE.Matrix4().makeTranslation(f.pivot.x, f.pivot.y + f.drop, f.pivot.z));
+    return out.premultiply(_m);
+  }
+
+  // Урон по площади (мощный удар, удар о землю, взрыв)
+  damageRadius(center, radius, damage, force, dirHint = null) {
+    const hits = this.sphereQuery(center, radius, []);
+    const cp = new THREE.Vector3(), dir = new THREE.Vector3();
+    let count = 0;
+    // Сначала нижние секции — чтобы верх падал целым куском, а не рассыпался
+    hits.sort((a, b) => a.y0 - b.y0);
+    for (const s of hits) {
+      if (!s.alive) continue;
+      this.closestPoint(s, center, cp);
+      const f = 1 - cp.distanceTo(center) / radius;
+      dir.subVectors(cp, center);
+      if (dir.lengthSq() < 1e-4) dir.set(0, 1, 0);
+      dir.normalize();
+      if (dirHint) dir.lerp(dirHint, 0.5).normalize();
+      if (this.damage(s, damage * (0.35 + 0.65 * f), cp, dir, force * (0.4 + 0.6 * f))) count++;
+    }
+    this.onImpact?.(center, radius * 1.4, force);
+    return count;
+  }
+
+  update(dt) { this.updateFalling(dt); }
+
+  reset() {
+    for (const f of this.falling) { this.scene.remove(f.mesh); f.mesh.dispose(); }
+    this.falling.length = 0;
+    for (const r of this.runs) { r.whole = true; this.writeRun(r); for (const sg of r.segs) sg.slot = -1; }
+    for (const m of this.segMeshes) { m.count = m.userData.next = m.userData.base; m.computeBoundingSphere(); }
+    for (const s of this.segs) { s.alive = true; s.hp = s.maxHp; s.glassBroken = false; this.writeSeg(s, true); }
+    for (const b of this.buildings) { b.counted = false; if (b.roof) this.writeRoof(b); }
+    this.destroyed = 0;
+  }
+}
+
+// Двускатная крыша: основание 1×1 на y=0, конёк вдоль X на y=1
+function makeGableGeometry() {
+  const g = new THREE.BufferGeometry();
+  const v = [
+    -0.5, 0, -0.5, 0.5, 0, -0.5, 0.5, 1, 0, -0.5, 1, 0, // скат -Z
+    0.5, 0, 0.5, -0.5, 0, 0.5, -0.5, 1, 0, 0.5, 1, 0,   // скат +Z
+    -0.5, 0, 0.5, -0.5, 0, -0.5, -0.5, 1, 0,            // фронтон -X
+    0.5, 0, -0.5, 0.5, 0, 0.5, 0.5, 1, 0,               // фронтон +X
+  ];
+  const idx = [0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 7, 6, 8, 10, 9, 11, 13, 12];
+  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+// Материал зданий: фасады рисуются шейдером в координатах «здания»
+// (instanceMatrix без modelMatrix), поэтому окна не растягиваются
+// и остаются на месте, когда верхушка падает и вращается.
+// Тип фасада определяется по цвету здания: стеклянный небоскрёб, кирпич,
+// офис с пилястрами, жилой дом с балконами. За окнами — комнаты с объёмом
+// (упрощённый interior mapping): видны пол, потолок, стены, ночью — свет.
+function createBuildingMaterial() {
+  // Чуть ниже альбедо: реальные фасады темнее, чем «чистые» цвета палитры
+  const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.82, 0.82, 0.82), roughness: 0.78, metalness: 0.04 });
+  mat.userData.uNight = { value: 0 };
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uNight = mat.userData.uNight;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBPos;\nvarying vec3 vBNrm;')
+      .replace('#include <project_vertex>', `#include <project_vertex>
+        {
+          vec4 bp = vec4(transformed, 1.0);
+          vec3 bn = objectNormal;
+          #ifdef USE_INSTANCING
+            bp = instanceMatrix * bp;
+            bn = mat3(instanceMatrix) * bn;
+          #endif
+          vBPos = bp.xyz;
+          vBNrm = normalize(bn);
+        }`);
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vBPos;
+        varying vec3 vBNrm;
+        uniform float uNight;
+        float bh21(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 15731.743); }`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float winMask = 0.0;
+        float winRnd = 0.0;
+        float isGlass = 0.0;
+        vec3 interior = vec3(0.0);
+        {
+          vec3 an = abs(vBNrm);
+          float wall = 1.0 - step(0.7, an.y);
+          bool xFace = an.x > an.z;
+          vec2 fuv = xFace ? vBPos.zy : vBPos.xy;
+
+          // Тип фасада по цвету здания (нормированный цвет не меняется от повреждений)
+          vec3 bc = vec3(0.6);
+          #if defined(USE_INSTANCING_COLOR) || defined(USE_COLOR)
+            bc = vColor.rgb;
+          #endif
+          vec3 nc = bc / (max(max(bc.r, bc.g), bc.b) + 1e-3);
+          float styleRnd = fract(sin(dot(nc, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+          isGlass = step(1.12, nc.b / max(nc.r, 0.01));
+          float isBrick = step(1.25, nc.r / max(nc.g, 0.01)) * (1.0 - isGlass);
+          float isRes = (1.0 - isGlass) * (1.0 - isBrick) * step(0.5, styleRnd);
+          float isOffice = (1.0 - isGlass) * (1.0 - isBrick) * (1.0 - isRes);
+
+          vec2 cellSize = mix(vec2(3.0, 3.6), vec2(1.6, 3.6), isGlass);
+          vec2 cell = fuv / cellSize;
+          vec2 f = fract(cell);
+          vec2 id = floor(cell);
+          winRnd = bh21(id + floor(vBPos.xz * 0.01));
+
+          // Проём окна для каждого типа (x0, x1, y0, y1)
+          vec4 rect = vec4(0.14, 0.86, 0.22, 0.82);
+          rect = mix(rect, vec4(0.03, 0.97, 0.05, 0.96), isGlass);
+          rect = mix(rect, vec4(0.26, 0.74, 0.28, 0.80), isBrick);
+          rect = mix(rect, vec4(0.18, 0.82, 0.32, 0.86), isRes);
+          // Первый этаж — витрины
+          float storefront = (1.0 - step(4.4, vBPos.y)) * (1.0 - isGlass);
+          rect = mix(rect, vec4(0.05, 0.95, 0.04, 0.80), storefront);
+          float w = step(rect.x, f.x) * step(f.x, rect.y) * step(rect.z, f.y) * step(f.y, rect.w);
+          winMask = w * wall;
+
+          // ---- Стена ----
+          vec3 wallCol = diffuseColor.rgb;
+          // Кирпичная кладка
+          vec2 bu = fuv / vec2(0.25, 0.075);
+          bu.x += step(1.0, mod(floor(bu.y), 2.0)) * 0.5;
+          vec2 bf = fract(bu);
+          float mortar = 1.0 - step(0.07, bf.x) * step(0.12, bf.y);
+          vec3 brick = wallCol * (0.82 + 0.3 * bh21(floor(bu)));
+          brick = mix(brick, vec3(0.55, 0.53, 0.5) * 0.8, mortar * 0.7);
+          wallCol = mix(wallCol, brick, isBrick);
+          // Пилястры у офисов
+          float pil = step(fract(cell.x * 0.5), 0.06);
+          wallCol *= 1.0 + pil * 0.12 * isOffice;
+          // Балконы у жилых домов: плита и тень под ней
+          float slab = step(0.2, f.y) * step(f.y, 0.3) * step(0.1, f.x) * step(f.x, 0.9);
+          wallCol = mix(wallCol, wallCol * 1.18, slab * isRes);
+          wallCol *= 1.0 - step(0.3, f.y) * step(f.y, 0.34) * 0.35 * isRes;
+          // Стеклянный небоскрёб: перемычки между этажами — тёмная сталь
+          wallCol = mix(wallCol, vec3(0.16, 0.18, 0.2), isGlass);
+          // Межэтажные пояса, потёки, затенение у земли
+          wallCol *= 1.0 - step(0.93, f.y) * 0.15 * (1.0 - isGlass);
+          wallCol *= 0.93 + 0.07 * bh21(vec2(floor(fuv.x * 1.5), 7.0));
+          wallCol *= mix(0.55, 1.0, smoothstep(0.0, 4.0, vBPos.y));
+
+          // ---- Комната за окном (interior mapping) ----
+          vec2 wuv = clamp((f - rect.xz) / (rect.yw - rect.xz), 0.0, 1.0);
+          vec3 V = normalize(vBPos - cameraPosition);
+          vec3 N = normalize(vBNrm);
+          vec3 T = xFace ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+          vec3 rd = vec3(dot(V, T), V.y, -dot(V, N));
+          // Ограничиваем компоненты ДО деления: драйвер может посчитать обе ветки
+          // условия, и деление на ноль даст бесконечность → NaN → чёрные блоки от bloom
+          rd.x = sign(rd.x + 1e-7) * max(abs(rd.x), 1e-3);
+          rd.y = sign(rd.y + 1e-7) * max(abs(rd.y), 1e-3);
+          rd.z = max(rd.z, 0.04);
+          float depth = 1.3;
+          vec3 ro = vec3(wuv, 0.0);
+          vec3 tt = vec3(
+            (step(0.0, rd.x) - ro.x) / rd.x,
+            (step(0.0, rd.y) - ro.y) / rd.y,
+            depth / rd.z);
+          float t = min(min(tt.x, tt.y), tt.z);
+          vec3 hit = ro + rd * t;
+          vec3 tint = mix(vec3(0.78, 0.72, 0.62), vec3(0.62, 0.68, 0.76), fract(winRnd * 13.7));
+          vec3 room;
+          if (t == tt.z) {
+            room = tint * 0.85;
+            room *= 1.0 - step(hit.y, 0.32) * 0.45 * step(0.4, fract(winRnd * 5.1)); // мебель у стены
+          } else if (t == tt.y) {
+            room = rd.y > 0.0 ? vec3(0.92) : vec3(0.42, 0.33, 0.26) * (0.8 + 0.4 * tint.r); // потолок / пол
+          } else {
+            room = tint * 0.62;
+          }
+          room *= exp(-hit.z * 0.55);
+          // Жалюзи в части окон
+          float blinds = step(0.82, fract(winRnd * 3.7)) * step(0.5, fract(wuv.y * 14.0));
+          room = mix(room, vec3(0.75, 0.73, 0.7), blinds * 0.85);
+          interior = room;
+
+          vec3 glassTint = mix(vec3(0.55, 0.68, 0.78), vec3(0.45, 0.55, 0.6), isGlass);
+          vec3 winCol = interior * glassTint * 0.32;
+          diffuseColor.rgb = mix(wallCol, winCol, winMask);
+          // Рамы окон
+          vec2 fr = abs(f - (rect.xz + rect.yw) * 0.5) - (rect.yw - rect.xz) * 0.5;
+          float frame = winMask * step(-0.025, max(fr.x / cellSize.y * cellSize.x, fr.y));
+          diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.12, 0.13, 0.14), frame * (1.0 - isGlass) * 0.8);
+        }`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        roughnessFactor = mix(roughnessFactor, 0.05, winMask);`)
+      .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
+        metalnessFactor = mix(metalnessFactor, mix(0.35, 0.6, isGlass), winMask);`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        {
+          // Свет в комнатах: днём редкие, ночью — большинство
+          float lit = step(mix(0.93, 0.6, uNight), winRnd);
+          vec3 warm = mix(vec3(1.0, 0.8, 0.52), vec3(0.78, 0.87, 1.0), step(0.8, fract(winRnd * 7.3)));
+          totalEmissiveRadiance += winMask * lit * warm * (interior * 1.4 + 0.08) * mix(0.25, 1.35, uNight);
+        }`);
+  };
+  return mat;
+}

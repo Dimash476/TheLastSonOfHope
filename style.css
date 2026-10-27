@@ -1,0 +1,85 @@
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  color: #fff;
+  user-select: none;
+}
+
+#app, #app canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+.hidden { display: none !important; }
+
+/* ---------- HUD ---------- */
+#hud { position: fixed; inset: 0; pointer-events: none; }
+
+.label { font-size: 11px; letter-spacing: 2px; opacity: 0.65; }
+
+#crosshair {
+  position: absolute; left: 50%; top: 50%;
+  width: 6px; height: 6px; margin: -3px 0 0 -3px;
+  border-radius: 50%; background: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+}
+
+#speedo {
+  position: absolute; right: 32px; bottom: 32px; text-align: right;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+}
+#speed-value { font-size: 56px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+#speedo .unit { font-size: 13px; opacity: 0.7; }
+#mach { margin-top: 6px; font-size: 18px; font-weight: 700; color: #3fe0b0; letter-spacing: 2px; }
+#mach.supersonic { color: #ff5a3c; text-shadow: 0 0 12px rgba(255, 90, 60, 0.8); }
+
+#stats {
+  position: absolute; left: 24px; top: 20px; font-size: 15px; line-height: 1.7;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.7); font-variant-numeric: tabular-nums;
+}
+
+#charge-wrap { position: absolute; left: 50%; bottom: 40px; transform: translateX(-50%); text-align: center; opacity: 0; transition: opacity 0.15s; }
+#charge-wrap.active { opacity: 1; }
+#charge-bar { width: 260px; height: 8px; margin-top: 6px; border-radius: 4px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
+#charge-fill { height: 100%; width: 0; background: linear-gradient(90deg, #3fe0b0, #ff5a3c); }
+
+#help {
+  position: absolute; left: 24px; bottom: 24px; padding: 12px 14px;
+  font-size: 13px; line-height: 1.75; border-radius: 8px;
+  background: rgba(10, 14, 24, 0.55); backdrop-filter: blur(4px);
+}
+#help .dim { opacity: 0.5; font-size: 11px; }
+kbd {
+  display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; line-height: 18px;
+  background: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.25); font-family: inherit;
+}
+
+#toast {
+  position: absolute; left: 50%; top: 18%; transform: translateX(-50%);
+  font-size: 30px; font-weight: 900; letter-spacing: 4px; color: #3fe0b0;
+  text-shadow: 0 0 18px rgba(40, 200, 150, 0.9); opacity: 0; transition: opacity 0.3s;
+}
+#toast.show { opacity: 1; }
+
+/* ---------- Overlay ---------- */
+#overlay {
+  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(20, 30, 60, 0.55), rgba(0, 0, 0, 0.85));
+}
+#overlay .panel { text-align: center; }
+#overlay h1 {
+  margin: 0; font-size: clamp(30px, 6.5vw, 72px); font-weight: 900; letter-spacing: 6px; line-height: 1.05;
+  color: #3fe0b0; text-shadow: 0 4px 0 #0d3b30, 0 0 40px rgba(60, 220, 170, 0.35);
+}
+#overlay .sub { margin-top: 4px; letter-spacing: 6px; opacity: 0.7; text-transform: uppercase; font-size: 13px; }
+#loading { margin-top: 32px; opacity: 0.7; }
+#play-btn {
+  margin-top: 32px; padding: 14px 54px; font-size: 18px; font-weight: 800; letter-spacing: 3px;
+  color: #08251e; background: #3fe0b0; border: 0; border-radius: 6px; cursor: pointer;
+  text-transform: uppercase; box-shadow: 0 6px 0 #14806a;
+}
+#play-btn:hover { background: #7af0cc; }
+#overlay .hint { margin-top: 22px; font-size: 13px; opacity: 0.55; }
+#overlay .credits { margin-top: 28px; font-size: 11px; opacity: 0.4; }

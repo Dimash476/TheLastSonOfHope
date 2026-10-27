@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>The Last son of Hope</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div id="crosshair"></div>
+
+    <div id="speedo">
+      <div class="label">СКОРОСТЬ</div>
+      <div id="speed-value">0</div>
+      <div class="unit" id="speed-unit">м/с</div>
+      <div id="mach">MACH 0.00</div>
+    </div>
+
+    <div id="stats">
+      <div><span class="label">ВЫСОТА</span> <span id="alt-value">0 м</span></div>
+      <div><span class="label">РАЗРУШЕНО</span> <span id="destroyed-value">0</span></div>
+      <div><span class="label">FPS</span> <span id="fps-value">0</span></div>
+    </div>
+
+    <div id="charge-wrap">
+      <div class="label">СИЛА УДАРА</div>
+      <div id="charge-bar"><div id="charge-fill"></div></div>
+    </div>
+
+    <div id="help">
+      <b>Управление</b> <span class="dim">(H — скрыть)</span><br />
+      <kbd>W A S D</kbd> движение · <kbd>Мышь</kbd> камера<br />
+      <kbd>Space</kbd> вверх · <kbd>C</kbd> вниз<br />
+      <kbd>Shift</kbd> сверхскорость · <kbd>+E</kbd> гипер · <kbd>+Q</kbd> уровень 3<br />
+      <kbd>B</kbd>/<kbd>ЛКМ</kbd> удар · <kbd>ПКМ</kbd> (держать) мощный удар<br />
+      <kbd>R</kbd> схватить / бросить · <kbd>Y</kbd> рывок<br />
+      <kbd>X</kbd> удар о землю (в воздухе)<br />
+      <kbd>T</kbd> время суток · <kbd>U</kbd> погода · <kbd>M</kbd> музыка<br />
+      <kbd>G</kbd> качество графики · <kbd>K</kbd> восстановить · <kbd>Esc</kbd> пауза
+    </div>
+
+    <div id="toast"></div>
+  </div>
+
+  <!-- Start / pause screen -->
+  <div id="overlay">
+    <div class="panel">
+      <h1>THE LAST SON<br />OF HOPE</h1>
+      <div class="sub">симулятор · version 3</div>
+      <div id="loading">Загрузка…</div>
+      <button id="play-btn" class="hidden">Играть</button>
+      <div class="hint">Клик — захват мыши. Esc — пауза.</div>
+      <div class="credits">Модель персонажа: «Free Rigged Male Basemesh» by Filip (Sketchfab), CC-BY-4.0</div>
+    </div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
