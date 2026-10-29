@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { CITY, WORLD, SPACE } from '../config.js';
 import { mulberry32, smoothstep, lerp } from '../utils.js';
-import { HALF, PLANE_HALF, RIVER_Z, RIVER_HALF_W, TOWNS, blockTypes, TERRAIN_RES, terrainHeights, coastX } from './layout.js';
+import { HALF, PLANE_HALF, RIVER_Z, RIVER_HALF_W, TOWNS, blockTypes, TERRAIN_RES, terrainHeights, coastX, forestMask, QUAY_X, SEA_BED, BIG_PARK, POND, STADIUM, BEACH } from './layout.js';
 
 // Небо, солнце, туман, земля с дорогами, рельеф, вода, облака.
 export class Environment {
@@ -21,11 +21,12 @@ export class Environment {
     u.mieDirectionalG.value = 0.82;
     // Прозрачность неба: на высоте и ночью сквозь него видны космос и звёзды
     u.uOpacity = { value: 1 };
+    u.uSkyGain = { value: 1 };
     sky.material.transparent = true;
     sky.material.depthWrite = false;
     sky.material.fragmentShader = sky.material.fragmentShader
-      .replace('void main() {', 'uniform float uOpacity;\nvoid main() {')
-      .replace(/gl_FragColor = vec4\(\s*retColor,\s*1\.0\s*\);/, 'gl_FragColor = vec4( retColor, uOpacity );');
+      .replace('void main() {', 'uniform float uOpacity; uniform float uSkyGain;\nvoid main() {')
+      .replace(/gl_FragColor = vec4\(\s*retColor,\s*1\.0\s*\);/, 'gl_FragColor = vec4( retColor * uSkyGain, uOpacity );');
     this.sunDir = new THREE.Vector3();
     this.lightDir = new THREE.Vector3();
     scene.add(sky);
@@ -47,7 +48,11 @@ export class Environment {
     sun.shadow.normalBias = 0.25;
     scene.add(sun, sun.target);
 
-    this.timeIndex = 1;
+    this.hour = 10.5;                    // время суток, ч
+    this.timeScale = 24 / (20 * 60);    // сутки за 20 минут
+    this.envDirty = true;
+    this.envElev = 999; this.envAz = 999;
+    this.golden = 0;
     this.weatherIndex = 0;
     this.night = 0;
     this.exposure = 0.5;
@@ -72,6 +77,8 @@ export class Environment {
     this.terrain = this.createTerrain();
     scene.add(this.terrain);
     scene.add(this.createRiverChannel());
+    scene.add(this.createQuay());
+    scene.add(this.createPond());
     this.water = this.createWater();
     scene.add(this.water);
 
@@ -83,15 +90,36 @@ export class Environment {
     scene.add(this.rain);
 
     this.applyAtmosphere();
+    this.updateEnvMap();
   }
 
   // ---------------------------------------------------------------- время суток и погода
-  static TIMES = [
-    { name: 'УТРО', elev: 9, az: 95, sun: 0xffcf9a, sunI: 2.8, hemi: 0.3, fog: 0xbcb4ac, exposure: 0.55, night: 0.15 },
-    { name: 'ДЕНЬ', elev: 48, az: 150, sun: 0xfff4e6, sunI: 3.8, hemi: 0.3, fog: 0x9fb3c8, exposure: 0.5, night: 0 },
-    { name: 'ЗАКАТ', elev: 3.5, az: 250, sun: 0xff9550, sunI: 2.4, hemi: 0.22, fog: 0xb98c74, exposure: 0.58, night: 0.35 },
-    { name: 'НОЧЬ', elev: -16, az: 250, sun: 0x8aa4ff, sunI: 0.35, hemi: 0.1, fog: 0x0c121c, exposure: 0.85, night: 1, moonLight: true },
+  // Сутки идут сами (~20 минут на круг). Опорные точки плавно смешиваются:
+  // ночь → синий час → рассвет → утро → день → золотой час → закат → сумерки → ночь.
+  static KEYS = [
+    { h: 0, elev: -30, sun: 0x8aa4ff, sunI: 0.35, hemi: 0.1, fog: 0x0c121c, exposure: 0.85, night: 1 },
+    { h: 4.6, elev: -16, sun: 0x8aa4ff, sunI: 0.35, hemi: 0.1, fog: 0x0e1420, exposure: 0.85, night: 1 },
+    { h: 5.4, elev: -8, sun: 0x7f8fd0, sunI: 0.4, hemi: 0.14, fog: 0x1e2840, exposure: 0.82, night: 0.85 },
+    { h: 5.9, elev: -3.5, sun: 0xb08cc0, sunI: 0.7, hemi: 0.17, fog: 0x4a4560, exposure: 0.76, night: 0.6 },
+    { h: 6.4, elev: 0.5, sun: 0xff8a5a, sunI: 1.5, hemi: 0.2, fog: 0xb08a84, exposure: 0.66, night: 0.35 },
+    { h: 7.0, elev: 5, sun: 0xffa870, sunI: 2.3, hemi: 0.25, fog: 0xc0a090, exposure: 0.6, night: 0.15 },
+    { h: 8.0, elev: 14, sun: 0xffd2a4, sunI: 3.0, hemi: 0.3, fog: 0xbcb4ac, exposure: 0.55, night: 0.05 },
+    { h: 10, elev: 38, sun: 0xfff0dc, sunI: 3.6, hemi: 0.3, fog: 0xa7b6c8, exposure: 0.5, night: 0 },
+    { h: 13, elev: 52, sun: 0xfff4e6, sunI: 3.8, hemi: 0.3, fog: 0x9fb3c8, exposure: 0.5, night: 0 },
+    { h: 16.4, elev: 28, sun: 0xffe8c4, sunI: 3.5, hemi: 0.29, fog: 0xb0b4bc, exposure: 0.52, night: 0 },
+    // Долгий закат: солнце медленно опускается в океан, небо — от золота к розовому и фиолетовому
+    { h: 17.4, elev: 16, sun: 0xffe0b0, sunI: 3.3, hemi: 0.28, fog: 0xc0b6a8, exposure: 0.53, night: 0 },
+    { h: 18.2, elev: 9, sun: 0xffb878, sunI: 3.0, hemi: 0.25, fog: 0xd0aa88, exposure: 0.56, night: 0.05 },
+    { h: 18.9, elev: 4.5, sun: 0xff9a58, sunI: 2.6, hemi: 0.23, fog: 0xd09478, exposure: 0.58, night: 0.15 },
+    { h: 19.5, elev: 1.5, sun: 0xff7a40, sunI: 2.2, hemi: 0.21, fog: 0xc07a68, exposure: 0.6, night: 0.3 },
+    { h: 20.0, elev: -1.5, sun: 0xe0605a, sunI: 1.4, hemi: 0.19, fog: 0x8a5a68, exposure: 0.66, night: 0.45 },
+    { h: 20.5, elev: -4.5, sun: 0x9070c0, sunI: 0.8, hemi: 0.16, fog: 0x463c5a, exposure: 0.74, night: 0.65 },
+    { h: 21.2, elev: -9, sun: 0x7f8fd0, sunI: 0.45, hemi: 0.12, fog: 0x1e2438, exposure: 0.82, night: 0.88 },
+    { h: 22, elev: -16, sun: 0x8aa4ff, sunI: 0.35, hemi: 0.1, fog: 0x0c121c, exposure: 0.85, night: 1 },
+    { h: 24, elev: -30, sun: 0x8aa4ff, sunI: 0.35, hemi: 0.1, fog: 0x0c121c, exposure: 0.85, night: 1 },
   ];
+  // Клавиша T перескакивает к следующему из этих моментов
+  static LABELS = [{ h: 7.2, name: 'УТРО' }, { h: 13, name: 'ДЕНЬ' }, { h: 18.4, name: 'ЗАКАТ' }, { h: 23, name: 'НОЧЬ' }];
 
   static WEATHERS = [
     { name: 'ЯСНО', fog: 0.65, clouds: 110, cloudLight: 1, sunMul: 1, turbidity: 2.2, wet: 0, rain: 0 },
@@ -100,33 +128,84 @@ export class Environment {
     { name: 'ГРОЗА', fog: 3.8, clouds: 260, cloudLight: 0.38, sunMul: 0.18, turbidity: 16, wet: 1, rain: 1, storm: true },
   ];
 
-  cycleTime() { this.timeIndex = (this.timeIndex + 1) % Environment.TIMES.length; this.applyAtmosphere(); return Environment.TIMES[this.timeIndex].name; }
-  cycleWeather() { this.weatherIndex = (this.weatherIndex + 1) % Environment.WEATHERS.length; this.applyAtmosphere(); return Environment.WEATHERS[this.weatherIndex].name; }
+  cycleTime() {
+    const L = Environment.LABELS;
+    const next = L.find((l) => l.h > this.hour + 0.05) || L[0];
+    this.hour = next.h;
+    this.envDirty = true;
+    this.applyAtmosphere();
+    return next.name;
+  }
+  cycleWeather() { this.weatherIndex = (this.weatherIndex + 1) % Environment.WEATHERS.length; this.envDirty = true; this.applyAtmosphere(); return Environment.WEATHERS[this.weatherIndex].name; }
+
+  // Параметры для текущего часа — смесь двух соседних опорных точек
+  sampleTime(h) {
+    const K = Environment.KEYS;
+    let i = 0;
+    while (i < K.length - 2 && K[i + 1].h <= h) i++;
+    // Равномерное смешивание (без ускорений и «ступенек» на стыках)
+    const a = K[i], b = K[i + 1], t = Math.min(1, Math.max(0, (h - a.h) / (b.h - a.h)));
+    const c = (x, y) => new THREE.Color(x).lerp(new THREE.Color(y), t);
+    return {
+      elev: lerp(a.elev, b.elev, t), sunI: lerp(a.sunI, b.sunI, t), hemi: lerp(a.hemi, b.hemi, t),
+      exposure: lerp(a.exposure, b.exposure, t), night: lerp(a.night, b.night, t), sun: c(a.sun, b.sun), fog: c(a.fog, b.fog),
+    };
+  }
 
   applyAtmosphere() {
-    const T = Environment.TIMES[this.timeIndex], W = Environment.WEATHERS[this.weatherIndex];
+    const W = Environment.WEATHERS[this.weatherIndex];
+    const T = this.sampleTime(this.hour);
+    const label = [...Environment.LABELS].reverse().find((l) => this.hour >= l.h - 1.5) || Environment.LABELS[3];
+    T.name = this.hour < 5.7 ? 'НОЧЬ' : label.name;
+    T.moonLight = T.elev < -3;
     this.T = T; this.W = W;
+    // Золотой час: низкое солнце над горизонтом
+    const golden = this.golden = smoothstep(22, 3, T.elev) * smoothstep(-6, 1, T.elev) * (1 - W.rain);
     const u = this.sky.material.uniforms;
-    u.turbidity.value = W.turbidity;
-    u.rayleigh.value = T.night > 0.9 ? 0.5 : 2.1 + W.turbidity * 0.03;
-    u.mieCoefficient.value = 0.0025 + W.rain * 0.003;
-    this.setSun(T.elev, T.az);
+    u.turbidity.value = W.turbidity + golden * 2;
+    u.rayleigh.value = lerp(lerp(2.0, 3.2, golden) + W.turbidity * 0.03, 0.5, T.night);
+    u.mieCoefficient.value = 0.0025 + W.rain * 0.003 + golden * 0.002;
+    // Днём небо чуть приглушаем — глубже и синее, без пересвета
+    u.uSkyGain.value = lerp(lerp(0.62, 0.95, golden), 1, T.night);
+    // Солнце идёт с востока (6 ч) через юг (12 ч) на запад (18 ч)
+    this.setSun(T.elev, this.sunAz());
     // Ночью тени отбрасывает луна
-    if (T.moonLight) this.lightDir.setFromSphericalCoords(1, THREE.MathUtils.degToRad(45), THREE.MathUtils.degToRad(200));
-    else this.lightDir.copy(this.sunDir);
-    this.sun.color.set(T.sun);
+    const moonDir = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(45), THREE.MathUtils.degToRad(200));
+    this.lightDir.copy(this.sunDir.y > 0.05 ? this.sunDir : moonDir);
+    if (this.sunDir.y > -0.05 && this.sunDir.y <= 0.05) this.lightDir.lerpVectors(moonDir, this.sunDir, (this.sunDir.y + 0.05) / 0.1).normalize();
+    this.sun.color.copy(T.sun);
     this.baseSunI = T.sunI * W.sunMul;
     this.baseHemi = T.hemi * (0.7 + 0.3 * W.sunMul);
-    this.hemi.color.set(T.night > 0.9 ? 0x334466 : 0xcfe3ff);
-    this.baseFog = new THREE.Color(T.fog).lerp(new THREE.Color(T.night > 0.9 ? 0x0a0e14 : 0x4e555e), W.rain * 0.8);
-    this.fogMul = W.fog;
+    this.hemi.color.set(0xcfe3ff).lerp(new THREE.Color(0x334466), T.night).lerp(new THREE.Color(0xffd2b0), golden * 0.35);
+    this.hemi.groundColor.set(0x4a4436).lerp(new THREE.Color(0x1a1820), T.night);
+    this.baseFog = T.fog.clone().lerp(new THREE.Color(T.night > 0.5 ? 0x0a0e14 : 0x4e555e), W.rain * 0.8);
+    this.fogMul = W.fog * (1 + golden * 0.35);
     this.night = T.night;
     this.exposure = T.exposure * (1 - 0.4 * W.rain);
     this.clouds.count = W.clouds;
-    this.cloudUniforms.uLight.value.setRGB(1, 0.99, 0.97).multiplyScalar(W.cloudLight * (T.night > 0.9 ? 0.12 : 1))
-      .lerp(new THREE.Color(T.sun), T.night > 0.9 ? 0 : 0.3);
+    // Облака на закате подсвечены розово-золотым, ночью — тёмные
+    this.cloudUniforms.uLight.value.setRGB(1, 0.99, 0.97).multiplyScalar(W.cloudLight * lerp(1, 0.12, T.night))
+      .lerp(T.sun.clone().multiplyScalar(W.cloudLight * 1.1), 0.3 + golden * 0.55);
     this.groundMat.userData.uWet.value = W.wet;
     this.rain.visible = W.rain > 0;
+  }
+
+  // Время идёт само; карта отражений неба пересчитывается, только когда солнце заметно сдвинулось
+  // Солнце встаёт из-за гор на западе и садится в океан на востоке — закат над морем
+  sunAz() { return 270 - (this.hour - 6) * 15; }
+
+  stepTime(dt) {
+    // В золотой час и сумерках время течёт медленнее — закатом можно насладиться
+    const e0 = this.T ? this.T.elev : 30;
+    const slow = smoothstep(18, 10, e0) * smoothstep(-11, -5, e0);
+    this.hour = (this.hour + dt * this.timeScale * (1 - 0.72 * slow)) % 24;
+    this.applyAtmosphere();
+    const e = this.T.elev, az = this.sunAz();
+    if (this.envDirty || Math.abs(e - this.envElev) > 3 || Math.abs(az - this.envAz) > 10) {
+      this.envDirty = false;
+      this.envElev = e; this.envAz = az;
+      this.updateEnvMap();
+    }
   }
 
   createRain() {
@@ -167,7 +246,6 @@ export class Environment {
     const theta = THREE.MathUtils.degToRad(azimuth);
     this.sunDir.setFromSphericalCoords(1, phi, theta);
     this.sky.material.uniforms.sunPosition.value.copy(this.sunDir);
-    this.updateEnvMap();
   }
 
   // Карта окружения из неба — для отражений в стёклах и воде
@@ -191,7 +269,7 @@ export class Environment {
   createGroundMaterial() {
     const g = CITY.grid;
     const data = new Uint8Array(g * g);
-    for (let k = 0; k < g * g; k++) data[k] = blockTypes[k] * 40;
+    for (let k = 0; k < g * g; k++) data[k] = blockTypes[k] * 25;
     const tex = new THREE.DataTexture(data, g, g, THREE.RedFormat, THREE.UnsignedByteType);
     tex.magFilter = tex.minFilter = THREE.NearestFilter;
     tex.needsUpdate = true;
@@ -204,6 +282,11 @@ export class Environment {
         uGrid: { value: g }, uBlock: { value: CITY.block }, uHalf: { value: HALF },
         uRoad: { value: CITY.road * 0.5 }, uWalk: { value: CITY.road * 0.5 + CITY.sidewalk },
         uRiver: { value: new THREE.Vector2(RIVER_Z, RIVER_HALF_W) },
+        uQuay: { value: QUAY_X },
+        uPark: { value: new THREE.Vector4(BIG_PARK.minX, BIG_PARK.minZ, BIG_PARK.maxX, BIG_PARK.maxZ) },
+        uPond: { value: new THREE.Vector3(POND.x, POND.z, POND.r) },
+        uStadium: { value: new THREE.Vector2(STADIUM.x, STADIUM.z) },
+        uBeach: { value: new THREE.Vector3(BEACH.x0, BEACH.minZ, BEACH.maxZ) },
         uTowns: { value: TOWNS.map((t) => new THREE.Vector3(t.x, t.z, t.grid * CITY.block * 0.5)) },
         uWet: mat.userData.uWet,
       });
@@ -215,8 +298,11 @@ export class Environment {
         .replace('#include <common>', `#include <common>
           varying vec3 vWPos;
           uniform sampler2D uBlockMap;
-          uniform float uGrid, uBlock, uHalf, uRoad, uWalk, uWet;
-          uniform vec2 uRiver;
+          uniform float uGrid, uBlock, uHalf, uRoad, uWalk, uWet, uQuay;
+          uniform vec2 uRiver, uStadium;
+          uniform vec4 uPark;
+          uniform vec3 uPond;
+          uniform vec3 uBeach;
           uniform vec3 uTowns[${TOWNS.length}];
           float h21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
           float vnoise(vec2 p) {
@@ -234,7 +320,14 @@ export class Environment {
 
             float inMain = step(abs(p.x), uHalf + uWalk) * step(abs(p.y), uHalf + uWalk);
             // Русло реки вырезаем — под ним меш канала и вода
+            float inPlane = step(abs(p.x), uHalf + 300.0) * step(abs(p.y), uHalf + 300.0);
             if (abs(p.y - uRiver.x) < uRiver.y && abs(p.x) < uHalf + 300.0) discard;
+            // Море за набережной и пруд в парке — тоже вода
+            if (inPlane > 0.5 && p.x > uQuay) discard;
+            // Пляж — отдельная сетка песка со спуском в воду
+            if (inPlane > 0.5 && p.x > uBeach.x && p.y > uBeach.y && p.y < uBeach.z) discard;
+            float pondD = length(p - uPond.xy);
+            if (pondD < uPond.z) discard;
 
             vec3 grass   = vec3(0.20, 0.30, 0.13);
             vec3 asphalt = vec3(0.055, 0.058, 0.064);
@@ -244,7 +337,7 @@ export class Environment {
             float type = 0.0;
             if (inMain > 0.5) {
               vec2 bidx = clamp(floor((p + uHalf) / uBlock), 0.0, uGrid - 1.0);
-              type = floor(texture2D(uBlockMap, (bidx + 0.5) / uGrid).r * 255.0 / 40.0 + 0.5);
+              type = floor(texture2D(uBlockMap, (bidx + 0.5) / uGrid).r * 255.0 / 25.0 + 0.5);
             }
             float inTown = 0.0;
             for (int i = 0; i < ${TOWNS.length}; i++) {
@@ -252,11 +345,44 @@ export class Environment {
               inTown = max(inTown, step(q.x, uTowns[i].z + uWalk) * step(q.y, uTowns[i].z + uWalk));
             }
             float roads = max(inMain, inTown);
+            // Центральный парк — без дорог внутри, только по периметру
+            float inPark = step(uPark.x + uWalk, p.x) * step(p.x, uPark.z - uWalk) * step(uPark.y + uWalk, p.y) * step(p.y, uPark.w - uWalk);
+            roads *= 1.0 - inPark;
 
             vec3 col = lot;
-            if (type > 0.5 && type < 1.5) col = grass * 1.15;                        // парк
+            if (type > 0.5 && type < 1.5) {                                            // парк: площадь, кольцо, аллеи
+              vec2 lq = lp - uBlock * 0.5;
+              float r = length(lq);
+              float pcross = r > 12.2 ? min(abs(lq.x), abs(lq.y)) : 1e9;
+              float pd = min(pcross, abs(r - 12.2));
+              col = mix(vec3(0.13, 0.22, 0.08), vec3(0.22, 0.31, 0.12), vnoise(p * 0.05) * 0.7 + vnoise(p * 0.4) * 0.3);
+              col = mix(col, vec3(0.52, 0.47, 0.38), 1.0 - smoothstep(1.7, 2.2, pd));
+              // Площадь с плиткой вокруг фонтана
+              vec2 tl = abs(fract(lq / 1.2) - 0.5);
+              vec3 paving = vec3(0.5, 0.48, 0.44) * (1.0 - step(0.46, max(tl.x, tl.y)) * 0.15);
+              col = mix(col, paving, 1.0 - smoothstep(8.8, 9.2, r));
+            }
             if (type > 1.5 && type < 2.5) col = grass * 1.3 + vec3(0.02, 0.03, 0.0); // пригород: газоны
             if (type > 2.5 && type < 3.5) col = vec3(0.33, 0.32, 0.29);              // набережная
+            if (type > 5.5 && type < 6.5) {                                            // промзона: бетон с пятнами
+              col = vec3(0.30, 0.295, 0.28) * (0.8 + 0.35 * vnoise(p * 0.05));
+              col *= 1.0 - smoothstep(0.65, 0.8, vnoise(p * 0.3 + 3.0)) * 0.3;
+            }
+            if (type > 6.5 && type < 7.5) {                                            // порт: светлый бетон, жёлтая разметка
+              col = vec3(0.38, 0.375, 0.36);
+              vec2 sl = abs(fract(p / vec2(14.0, 15.5)) - 0.5);
+              col = mix(col, vec3(0.75, 0.62, 0.2), step(0.48, max(sl.x, sl.y)) * 0.7);
+            }
+            if (type > 7.5) {                                                          // стадион: поле с разметкой
+              vec2 q = p - uStadium;
+              col = vec3(0.36, 0.35, 0.33);
+              float field = step(abs(q.x), 30.0) * step(abs(q.y), 21.0);
+              vec3 turf = vec3(0.16, 0.34, 0.12) * (0.88 + 0.12 * step(0.5, fract(q.x / 6.0)));
+              float lines = max(step(abs(abs(q.x) - 28.5), 0.12) * step(abs(q.y), 19.5), step(abs(abs(q.y) - 19.5), 0.12) * step(abs(q.x), 28.5));
+              lines = max(lines, step(abs(q.x), 0.12) * step(abs(q.y), 19.5));
+              lines = max(lines, step(abs(length(q) - 6.0), 0.12));
+              col = mix(col, mix(turf, vec3(0.9), lines), field);
+            }
             col = mix(col, walk, step(minD, uWalk));
             float isRoad = step(minD, uRoad);
             col = mix(col, asphalt, isRoad);
@@ -285,6 +411,19 @@ export class Environment {
             col *= 1.0 - inWalk * (1.0 - curb) * step(0.46, max(tile.x, tile.y)) * 0.25;
 
             col = mix(grass, col, roads);
+            // Набережная: бетонная полоса между последней улицей и морем
+            if (inPlane > 0.5 && p.x > uHalf + uWalk) {
+              col = vec3(0.42, 0.41, 0.39) * (0.9 + 0.1 * step(0.5, fract(p.y / 3.0)));
+              col = mix(col, vec3(0.7, 0.6, 0.2), step(uQuay - 0.6, p.x) * 0.8); // кромка причала
+            }
+            // Парк: аллеи и песчаный берег пруда
+            if (inPark > 0.5) {
+              col = mix(vec3(0.13, 0.22, 0.08), vec3(0.22, 0.31, 0.12), vnoise(p * 0.03) * 0.7 + vnoise(p * 0.25) * 0.3);
+              float path = min(abs(p.y - (uPark.y + uPark.w) * 0.5 - 60.0 * sin(p.x * 0.012)), abs(p.x - (uPark.x + uPark.z) * 0.5 - 50.0 * sin(p.y * 0.015 + 1.0)));
+              path = min(path, abs(pondD - uPond.z - 9.0));
+              col = mix(col, vec3(0.52, 0.47, 0.38), 1.0 - smoothstep(1.6, 2.2, path));
+              col = mix(col, vec3(0.58, 0.52, 0.4), 1.0 - smoothstep(uPond.z + 1.0, uPond.z + 4.0, pondD));
+            }
             float n = vnoise(p * 0.08) * 0.6 + vnoise(p * 0.6) * 0.4;
             col *= 0.82 + 0.3 * n;
             groundWet = uWet * (0.5 + 0.5 * isRoad * roads);
@@ -306,6 +445,7 @@ export class Environment {
     const H = terrainHeights, W = N + 1;
     const cGrass = new THREE.Color(0x3d5a2a), cDry = new THREE.Color(0x6b6a3e), cRock = new THREE.Color(0x6a625a);
     const cSnow = new THREE.Color(0xf2f4f8), cSand = new THREE.Color(0xcdb98e), cSea = new THREE.Color(0x4a5a52);
+    const cForest = new THREE.Color(0x1b2c14);
     const c = new THREE.Color();
     const cell = size / N;
     const ss = THREE.MathUtils.smoothstep;
@@ -322,6 +462,7 @@ export class Environment {
       c.copy(cGrass).lerp(cDry, ss(h, 150, 600));
       c.lerp(cRock, Math.max(ss(h, 700, 1300), ss(slope, 0.5, 0.9)));
       c.lerp(cSnow, ss(h, 1500, 1900) * (1 - ss(slope, 0.9, 1.4)));
+      c.lerp(cForest, Math.min(1, forestMask(x, z, h) * 1.4));
       const beach = x > coastX(z) - 500 ? 1 - ss(h, 2, 12) : 0;
       c.lerp(cSand, beach);
       c.lerp(cSea, ss(-h, 3, 20));
@@ -351,20 +492,50 @@ export class Environment {
 
   // Бетонный канал реки внутри города
   createRiverChannel() {
-    const len = PLANE_HALF * 2 + 20, depth = -WORLD.riverBed;
+    const len = PLANE_HALF + 10 + QUAY_X, cx = (QUAY_X - PLANE_HALF - 10) / 2, depth = -WORLD.riverBed;
     const group = new THREE.Group();
     const mat = new THREE.MeshStandardMaterial({ color: 0x6f6a62, roughness: 0.9 });
     const bed = new THREE.Mesh(new THREE.PlaneGeometry(len, RIVER_HALF_W * 2).rotateX(-Math.PI / 2), mat);
-    bed.position.set(0, WORLD.riverBed, RIVER_Z);
+    bed.position.set(cx, WORLD.riverBed, RIVER_Z);
     group.add(bed);
     for (const s of [-1, 1]) {
       const wall = new THREE.Mesh(new THREE.PlaneGeometry(len, depth), mat);
-      wall.position.set(0, WORLD.riverBed + depth / 2, RIVER_Z + s * RIVER_HALF_W);
+      wall.position.set(cx, WORLD.riverBed + depth / 2, RIVER_Z + s * RIVER_HALF_W);
       wall.rotation.y = s > 0 ? Math.PI : 0;
       group.add(wall);
     }
     group.traverse((o) => { o.receiveShadow = true; });
     return group;
+  }
+
+  // Бетонная стенка набережной вдоль моря (с разрывом в устье реки)
+  createQuay() {
+    const group = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: 0x77736b, roughness: 0.9 });
+    const depth = -SEA_BED, z0 = -PLANE_HALF, z1 = PLANE_HALF;
+    const spans = [[z0, RIVER_Z - RIVER_HALF_W], [RIVER_Z + RIVER_HALF_W, BEACH.minZ], [BEACH.maxZ, z1]];
+    for (const [a, b] of spans) {
+      const wall = new THREE.Mesh(new THREE.PlaneGeometry(b - a, depth), mat);
+      wall.rotation.y = Math.PI / 2;
+      wall.position.set(QUAY_X, SEA_BED + depth / 2, (a + b) / 2);
+      group.add(wall);
+    }
+    group.traverse((o) => { o.receiveShadow = true; });
+    return group;
+  }
+
+  // Пруд в центральном парке: каменная чаша
+  createPond() {
+    const depth = -WORLD.riverBed;
+    const mat = new THREE.MeshStandardMaterial({ color: 0x5d5a50, roughness: 0.95, side: THREE.BackSide });
+    const wall = new THREE.Mesh(new THREE.CylinderGeometry(POND.r, POND.r, depth, 64, 1, true), mat);
+    wall.position.set(POND.x, WORLD.riverBed + depth / 2, POND.z);
+    const bed = new THREE.Mesh(new THREE.CircleGeometry(POND.r, 64).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x3e4a38, roughness: 1 }));
+    bed.position.set(POND.x, WORLD.riverBed, POND.z);
+    const g = new THREE.Group();
+    g.add(wall, bed);
+    g.traverse((o) => { o.receiveShadow = true; });
+    return g;
   }
 
   createWater() {
@@ -478,8 +649,9 @@ export class Environment {
     return mesh;
   }
 
-  update(dt, focus, camera) {
+  update(dt, focus, camera, active = true) {
     this.time += dt;
+    if (active) this.stepTime(dt);
     this.water.material.userData.uTime.value = this.time;
     this.sun.position.copy(focus).addScaledVector(this.lightDir, 600);
     this.sun.target.position.copy(focus);

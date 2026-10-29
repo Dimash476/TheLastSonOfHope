@@ -6,7 +6,7 @@ export class HUD {
     this.el = {
       hud: $('hud'), speed: $('speed-value'), speedUnit: $('speed-unit'), mach: $('mach'), alt: $('alt-value'),
       destroyed: $('destroyed-value'), fps: $('fps-value'), help: $('help'), toast: $('toast'),
-      chargeWrap: $('charge-wrap'), chargeFill: $('charge-fill'),
+      chargeWrap: $('charge-wrap'), chargeFill: $('charge-fill'), interact: $('interact'),
     };
     this.fpsAcc = 0; this.fpsFrames = 0;
     this.toastTimer = 0;
@@ -37,6 +37,12 @@ export class HUD {
     const alt = player.pos.y;
     this.el.alt.textContent = alt >= 1000 ? `${(alt / 1000).toFixed(alt >= 100000 ? 0 : 1)} км` : `${Math.round(alt)} м`;
     this.el.destroyed.textContent = city.destroyed;
+
+    // Подсказка: можно погладить собаку или кошку
+    const pet = player.petting || player.petTarget;
+    const txt = player.petting ? '♥' : pet ? `<kbd>ПКМ</kbd> погладить ${pet.kind === 'dog' ? 'собаку' : 'кошку'}` : '';
+    if (txt !== this.lastInteract) { this.el.interact.innerHTML = txt; this.lastInteract = txt; }
+    this.el.interact.classList.toggle('show', !!txt);
 
     const c = player.charge / PLAYER.heavyMaxCharge;
     this.el.chargeWrap.classList.toggle('active', c > 0);

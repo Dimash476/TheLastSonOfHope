@@ -8,7 +8,7 @@ import * as THREE from 'three';
 
 const W = 17, H = 30;     // точек по ширине и длине
 const LENGTH = 1.95;      // длина от плеч, м (почти до земли)
-const FLARE = 2.3;        // во сколько раз низ шире верха
+const FLARE = 3.2;        // во сколько раз низ шире верха (расширяется в основном к подолу)
 
 export class Cape {
   constructor(parent) {
@@ -89,7 +89,7 @@ export class Cape {
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const i = (y * W + x) * 3;
       const v = y / (H - 1), t = x / (W - 1);
-      const flare = 1 + (FLARE - 1) * Math.pow(v, 0.8);
+      const flare = 1 + (FLARE - 1) * Math.pow(v, 1.35);
       const a = new THREE.Vector3().lerpVectors(this.anchorL, this.anchorR, t);
       this.pos[i] = this.prev[i] = mid.x + (a.x - mid.x) * flare;
       this.pos[i + 1] = this.prev[i + 1] = a.y - v * LENGTH;

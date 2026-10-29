@@ -9,7 +9,12 @@ import { Cape } from './cape.js';
 const JOINTS = ['pelvis', 'spine', 'chest', 'neck', 'shL', 'elL', 'shR', 'elR', 'hipL', 'knL', 'ankL', 'hipR', 'knR', 'ankR'];
 
 const POSE = {
-  stand: { shL: [0, 0, 0.12], shR: [0, 0, -0.12], elL: [-0.15, 0, 0], elR: [-0.15, 0, 0] },
+  // Гордая стойка: грудь вперёд, подбородок приподнят, ноги чуть шире плеч
+  stand: {
+    spine: [-0.03, 0, 0], chest: [-0.07, 0, 0], neck: [0.05, 0, 0],
+    shL: [0.04, 0, 0.16], shR: [0.04, 0, -0.16], elL: [-0.18, 0, 0], elR: [-0.18, 0, 0],
+    hipL: [0, 0, 0.07], hipR: [0, 0, -0.07], ankL: [0, 0, -0.07], ankR: [0, 0, 0.07],
+  },
   hover: {
     spine: [0.05, 0, 0], neck: [0, 0, 0],
     shL: [-0.1, 0, 0.35], shR: [-0.1, 0, -0.35], elL: [-0.45, 0, 0], elR: [-0.45, 0, 0],
@@ -61,14 +66,26 @@ export class HeroModel {
   // Человеческое тело со скелетом (Free Rigged Male Basemesh, автор Filip, CC-BY-4.0).
   // Пока грузится — виден процедурный «манекен».
   loadBody() {
-    loadSkinnedHero('assets/models/hero/scene.gltf', { height: 1.88, chestScale: 1.06 }).then((sk) => {
-      for (const m of sk.meshes) m.material = m.geometry.attributes.position.count > 5000 ? createSuitMaterial(sk, m) : createEyeMaterial();
+    loadSkinnedHero('assets/models/hero/scene.gltf', { height: 1.88, chestScale: 1.1 }).then((sk) => {
+      const body = sk.meshes.find((m) => m.geometry.attributes.position.count > 5000);
+      const eyes = sk.meshes.filter((m) => m !== body);
+      for (const m of eyes) m.material = createEyeMaterial();
+      this.eyeMats = eyes.map((m) => m.material);
+      body.material = createSuitMaterial(sk, body, eyes);
+      buildHair(sk, body);
+      buildBoots(sk, body);
       this.group.traverse((o) => { if (o.isMesh) o.visible = false; });
       this.group.add(sk.scene);
       sk.scene.traverse((o) => { if (o.isMesh) o.visible = true; });
       this.skinned = sk;
       this.cape = new Cape(this.group);
     }).catch((e) => console.warn('Модель персонажа не загрузилась, остаётся процедурная:', e));
+  }
+
+  // Глаза светятся красным, пока работает лазер
+  setEyeGlow(k) {
+    if (!this.eyeMats) return;
+    for (const m of this.eyeMats) { m.emissive.setRGB(1, 0.12, 0.05); m.emissiveIntensity = k * 8; }
   }
 
   // Положение кости в координатах группы модели
@@ -242,6 +259,17 @@ export class HeroModel {
       const a = acc[n], v = POSE.land[n];
       for (let i = 0; i < 3; i++) a[i] = lerp(a[i], v[i], p.land);
     }
+    // Гладим животное: опускаемся на колено, рука гладит по спине
+    if (p.pet > 0.01) {
+      const k = p.pet * 0.85;
+      for (const n in POSE.land) {
+        const a = acc[n], v = POSE.land[n];
+        for (let i = 0; i < 3; i++) a[i] = lerp(a[i], v[i], k);
+      }
+      const stroke = Math.sin(this.t * 4.5);
+      mixArm(acc, 'R', [-0.75 + stroke * 0.22, 0, -0.12], [-0.2 - stroke * 0.15, 0, 0], p.pet);
+      acc.neck[0] += 0.35 * p.pet;
+    }
     // Торможение накладывается поверх полётной позы
     if (p.brake > 0.01) for (const n in POSE.brake) {
       const a = acc[n], v = POSE.brake[n];
@@ -318,7 +346,7 @@ export class HeroModel {
       const a = acc[n];
       this.j[n].rotation.set(a[0], a[1], a[2]);
     }
-    this.j.pelvis.position.y = 1.0 + (p.bob || 0) - 0.5 * (p.land || 0);
+    this.j.pelvis.position.y = 1.0 + (p.bob || 0) - 0.5 * Math.max(p.land || 0, (p.pet || 0) * 0.85);
     if (this.skinned) this.skinned.sync(this);
   }
 }
@@ -332,85 +360,340 @@ function mixArm(acc, side, sh, el, w) {
   }
 }
 
-// Костюм рисуется шейдером по зонам тела (в координатах исходной позы сетки):
-// белый матовый костюм, тёмно-красные наручи с перчатками, сапоги и пояс,
-// своя эмблема-ромб на груди, открытое лицо и тёмные волосы.
-function createSuitMaterial(sk, mesh) {
-  const L = (n) => sk.bindLocal(n, mesh);
+// Рельеф (bump) по процедурной карте высот h (в метрах) — без текстур.
+// Метод Mikkelsen: производные позиции и высоты по экрану дают наклон нормали.
+const BUMP_GLSL = `
+  vec3 heroBump(vec3 pos, vec3 n, float h) {
+    vec3 dpx = dFdx(pos), dpy = dFdy(pos);
+    float dhx = dFdx(h), dhy = dFdy(h);
+    vec3 r1 = cross(dpy, n), r2 = cross(n, dpx);
+    float det = dot(dpx, r1);
+    vec3 o = abs(det) * n - sign(det) * (dhx * r1 + dhy * r2);
+    float l = length(o);
+    return l > 1e-12 ? o / l : n;
+  }`;
+
+// Точки скелета в исходной позе в координатах сетки, переведённые в метры
+function bodyRefs(sk, mesh) {
   mesh.geometry.computeBoundingBox();
-  const top = mesh.geometry.boundingBox.max.y;
-  const head = L('Head'), neck = L('Neck'), chest = L('Spine2'), hips = L('Hips');
-  const fore = L('LeftForeArm'), hand = L('LeftHand'), knee = L('LeftLeg'), foot = L('LeftFoot');
-  const u = (top - mesh.geometry.boundingBox.min.y) / 1.88; // единиц сетки на метр
+  const bb = mesh.geometry.boundingBox;
+  const u = (bb.max.y - bb.min.y) / 1.88; // единиц сетки на метр
+  const L = (n) => sk.bindLocal(n, mesh).divideScalar(u);
+  return {
+    u, top: bb.max.y / u, minY: bb.min.y / u,
+    head: L('Head'), neck: L('Neck'), chest: L('Spine2'), hips: L('Hips'),
+    fore: L('LeftForeArm'), hand: L('LeftHand'), knee: L('LeftLeg'), foot: L('LeftFoot'),
+  };
+}
+
+// Зона волос (та же формула, что и в шейдере): > 0 — волосы, значение растёт к макушке
+function hairZone(R, x, y, z) {
+  if (y < R.neck.y + 0.015 || Math.abs(x - R.head.x) > 0.4) return -1;
+  const t = (y - R.head.y) / Math.max(R.top - R.head.y, 1e-3);
+  const back = THREE.MathUtils.clamp((R.head.z - z) / 0.08 + 0.6, 0, 1);
+  // Спереди линия высокая, с залысинами у висков; сбоку — над ушами; сзади — низко
+  const front = 0.76 + 0.05 * smoothstep(0.012, 0.045, Math.abs(x - R.head.x));
+  return t - lerp(front, 0.05, back * back);
+}
+
+// Костюм рисуется шейдером по зонам тела (в координатах исходной позы сетки):
+// белый костюм с V-образными панелями и красной окантовкой, тёмно-красные кожаные
+// перчатки, сапоги и пояс, золотые кромки и пряжка, своя эмблема — круг с вытянутой
+// звездой надежды. Ткань, швы и эмблема имеют рельеф. Лицо, брови, волосы.
+function createSuitMaterial(sk, mesh, eyes) {
+  const R = bodyRefs(sk, mesh);
+  // Центр левого глаза в метрах (для бровей)
+  let eye = new THREE.Vector3(0.035, R.head.y + 0.06, R.head.z + 0.09);
+  if (eyes.length) {
+    // Оба глаза могут быть одной сеткой: берём общий габарит и радиус глаза
+    const toBody = sk.meshInv.get(mesh), box = new THREE.Box3();
+    for (const m of eyes) {
+      m.geometry.computeBoundingBox();
+      box.union(m.geometry.boundingBox.clone().applyMatrix4(sk.meshInv.get(m).clone().invert()).applyMatrix4(toBody));
+    }
+    box.min.divideScalar(R.u); box.max.divideScalar(R.u);
+    const er = (box.max.y - box.min.y) / 2;
+    eye = new THREE.Vector3(R.head.x + Math.max(0.02, (box.max.x - box.min.x) / 2 - er), (box.min.y + box.max.y) / 2, box.max.z - er);
+  }
 
   const mat = new THREE.MeshPhysicalMaterial({ roughness: 0.55, metalness: 0.0, sheen: 0.35, sheenRoughness: 0.6, sheenColor: new THREE.Color(0.9, 0.9, 0.95) });
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, {
-      uHead: { value: head }, uNeckY: { value: neck.y }, uTop: { value: top },
-      uChest: { value: chest }, uHipsY: { value: hips.y },
-      uBracerX: { value: fore.x + (hand.x - fore.x) * 0.42 },
-      uBootY: { value: knee.y - (knee.y - foot.y) * 0.38 },
-      uU: { value: u },
+      uHead: { value: R.head }, uNeckY: { value: R.neck.y }, uTop: { value: R.top },
+      uChest: { value: R.chest }, uHipsY: { value: R.hips.y },
+      uBracerX: { value: R.fore.x + (R.hand.x - R.fore.x) * 0.42 },
+      uBootY: { value: R.knee.y - (R.knee.y - R.foot.y) * 0.38 },
+      uU: { value: R.u }, uEye: { value: eye }, uFootTop: { value: R.minY + 0.08 },
     });
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vBind;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBind = position;');
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBind;\nvarying vec3 vBindN;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBind = position;\nvBindN = normal;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
         varying vec3 vBind;
-        uniform vec3 uHead, uChest;
-        uniform float uNeckY, uTop, uHipsY, uBracerX, uBootY, uU;
-        float zoneRed = 0.0, zoneSkin = 0.0, zoneHair = 0.0;`)
+        varying vec3 vBindN;
+        uniform vec3 uHead, uChest, uEye;
+        uniform float uNeckY, uTop, uHipsY, uBracerX, uBootY, uU, uFootTop;
+        float zoneRed = 0.0, zoneSkin = 0.0, zoneHair = 0.0, zoneGold = 0.0, suitH = 0.0;
+        ${BUMP_GLSL}
+        float segDist(vec2 p, vec2 a, vec2 b) {
+          vec2 pa = p - a, ba = b - a;
+          return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0));
+        }`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         {
-          vec3 p = vBind;
-          float m = 1.0 / uU; // метры в единицах сетки → множитель
+          vec3 p = vBind / uU;          // метры
+          if (p.y < uFootTop) discard;  // ступня спрятана под сапогом
+          vec3 nb = normalize(vBindN);
           // Цвета в линейном пространстве
-          vec3 white = vec3(0.6, 0.6, 0.58);
-          vec3 red = vec3(0.3, 0.018, 0.025);
-          vec3 skin = vec3(0.52, 0.27, 0.17);
-          vec3 hair = vec3(0.035, 0.022, 0.014);
-          vec3 col = white;
+          vec3 white = vec3(0.56, 0.56, 0.545);
+          vec3 pearl = vec3(0.42, 0.435, 0.46);
+          vec3 red = vec3(0.27, 0.016, 0.022);
+          vec3 gold = vec3(0.6, 0.4, 0.12);
+          vec3 skin = vec3(0.52, 0.28, 0.18);
+          vec3 hair = vec3(0.03, 0.018, 0.011);
+          // Размер пикселя на поверхности — мелкий рельеф гасим вдали (без ряби)
+          float px = length(fwidth(p));
+          float fine = 1.0 - smoothstep(0.0008, 0.0025, px);
 
-          // Тонкие швы костюма по бокам корпуса и ног
-          float seam = smoothstep(0.012 * uU, 0.0, abs(abs(p.x) - (abs(p.y - uHipsY) < 0.5 * uU ? 0.155 * uU : 0.0)));
-          col *= 1.0 - seam * 0.12 * step(uBootY, p.y) * step(p.y, uNeckY);
+          // ---- V-панели корпуса: от плеч к поясу, спереди и сзади ----
+          float beltY = uHipsY + 0.11;
+          vec2 vA = vec2(sign(p.x - uChest.x) * 0.19 + uChest.x, uNeckY - 0.04);
+          vec2 vB = vec2(uChest.x, beltY + 0.035);
+          float torso = step(beltY, p.y) * step(p.y, uNeckY - 0.02) * step(abs(p.x - uChest.x), 0.23);
+          float vd = segDist(p.xy, vA, vB);
+          float piping = torso * (1.0 - smoothstep(0.0025, 0.0045, vd));
+          float k = clamp((p.y - vB.y) / (vA.y - vB.y), 0.0, 1.0);
+          float inside = torso * step(abs(p.x - uChest.x), k * 0.19);
+          vec3 col = mix(pearl, white, max(inside, 1.0 - torso));
+          col = mix(col, white * 0.94, (1.0 - torso) * step(uBootY, p.y) * smoothstep(0.3, 0.9, abs(nb.x)) * 0.5);
+          suitH += piping * 0.0012 - torso * (1.0 - smoothstep(0.004, 0.007, vd)) * 0.0004;
 
-          // Наручи и перчатки, сапоги, пояс
-          zoneRed = max(zoneRed, step(uBracerX, abs(p.x)));
-          zoneRed = max(zoneRed, step(p.y, uBootY));
-          float belt = step(abs(p.y - (uHipsY + 0.11 * uU)), 0.032 * uU) * step(abs(p.x), 0.6 * uU);
+          // ---- Перчатки с наручами и сапоги: кожа с зерном, золотая кромка ----
+          float bracer = step(uBracerX, abs(p.x));
+          float boot = step(p.y, uBootY);
+          zoneRed = max(bracer, boot);
+          float trim = max(1.0 - smoothstep(0.004, 0.007, abs(abs(p.x) - uBracerX)),
+                           1.0 - smoothstep(0.004, 0.007, abs(p.y - uBootY)));
+          zoneGold = max(zoneGold, trim);
+          suitH += trim * 0.0018 + zoneRed * 0.0015;
+
+          // ---- Пояс с пряжкой ----
+          float bd = abs(p.y - beltY);
+          float belt = step(bd, 0.03) * step(abs(p.x - uChest.x), 0.21) * (1.0 - bracer);
           zoneRed = max(zoneRed, belt);
-          // Окантовка верха сапог и наручей
-          float trim = step(abs(p.y - uBootY), 0.012 * uU) + step(abs(abs(p.x) - uBracerX), 0.012 * uU);
+          float front = smoothstep(0.2, 0.6, nb.z);
+          float buckle = belt * front * step(length(vec2(p.x - uChest.x, p.y - beltY) / vec2(1.4, 1.0)), 0.026);
+          zoneGold = max(zoneGold, buckle);
+          suitH += belt * 0.002 + buckle * 0.0025 - belt * (1.0 - smoothstep(0.024, 0.03, bd)) * 0.0;
+          zoneRed = max(zoneRed, piping);
 
-          // Эмблема на груди: красный ромб с белым центром и красной сердцевиной
-          vec2 e = vec2(p.x - uChest.x, p.y - (uChest.y + 0.05 * uU)) / (vec2(0.085, 0.11) * uU);
-          float dm = abs(e.x) + abs(e.y);
-          float front = step(uChest.z + 0.06 * uU, p.z);
-          float emblem = front * (step(dm, 1.0) * (1.0 - step(dm, 0.78)) + step(dm, 0.38));
-          zoneRed = max(zoneRed, emblem);
+          // ---- Эмблема: тёмно-красный круг, золотой обод, белая звезда надежды ----
+          vec2 e = p.xy - vec2(uChest.x, uChest.y + 0.05);
+          float ef = step(uChest.z + 0.02, p.z) * smoothstep(0.0, 0.3, nb.z);
+          float r = length(e);
+          float disc = ef * (1.0 - smoothstep(0.075, 0.078, r));
+          float ring = ef * (1.0 - smoothstep(0.0035, 0.006, abs(r - 0.073)));
+          vec2 q = abs(e) / vec2(0.027, 0.06);
+          float star = ef * (1.0 - smoothstep(0.92, 1.0, pow(q.x, 0.55) + pow(q.y, 0.55)));
+          col = mix(col, red, disc);
+          col = mix(col, white * 1.05, star);
+          zoneGold = max(zoneGold, ring);
+          suitH += disc * 0.0016 + ring * 0.001 + star * 0.0012;
 
-          // Лицо и шея — кожа; волосы — короткая стрижка
-          zoneSkin = step(uNeckY + 0.015 * uU, p.y) * step(abs(p.x), 0.4 * uU);
+          // ---- Ткань: мелкое плетение (только белые части) ----
+          float suitZone = (1.0 - zoneRed) * (1.0 - zoneGold) * (1.0 - disc);
+          float weave = sin(p.x * 2600.0) * sin(p.y * 2600.0 + p.z * 900.0);
+          suitH += weave * 0.00012 * fine * suitZone;
+          // Кожа: зерно
+          float grain = fract(sin(dot(floor(p * 900.0), vec3(12.9, 78.2, 37.7))) * 43758.5);
+          suitH += (grain - 0.5) * 0.00012 * fine * zoneRed;
+
+          // ---- Лицо, брови, волосы ----
+          zoneSkin = step(uNeckY + 0.015, p.y) * step(abs(p.x - uHead.x), 0.4);
           float t = (p.y - uHead.y) / max(uTop - uHead.y, 1e-3);
-          float back = clamp((uHead.z - p.z) / (0.08 * uU) + 0.6, 0.0, 1.0);
-          float hairLine = mix(0.66, 0.05, back) + (fract(sin(p.x * 91.7) * 437.5) - 0.5) * 0.03;
-          zoneHair = zoneSkin * smoothstep(hairLine - 0.02, hairLine + 0.02, t);
+          float back = clamp((uHead.z - p.z) / 0.08 + 0.6, 0.0, 1.0);
+          float hFront = 0.76 + 0.05 * smoothstep(0.012, 0.045, abs(p.x - uHead.x));
+          float hairLine = mix(hFront, 0.05, back * back) + (fract(sin(p.x * 251.7) * 437.5) - 0.5) * 0.02;
+          zoneHair = zoneSkin * smoothstep(hairLine - 0.015, hairLine + 0.015, t);
+          // Брови: дуга над глазом, чуть приподнята к внешнему краю
+          float ex = abs(uEye.x - uHead.x);
+          float dx = abs(p.x - uHead.x) - ex;
+          float browY = uEye.y + 0.026 + 0.004 * (1.0 - (dx / 0.026) * (dx / 0.026)) + dx * 0.04;
+          float bw = mix(0.0045, 0.0025, clamp(dx / 0.022 * 0.5 + 0.5, 0.0, 1.0));
+          float brow = zoneSkin * step(uEye.z - 0.02, p.z) * (1.0 - smoothstep(0.019, 0.024, abs(dx + 0.002)))
+                       * (1.0 - smoothstep(bw * 0.7, bw, abs(p.y - browY)));
+          zoneHair = max(zoneHair, brow * 0.9);
+          // Лёгкий румянец на щеках и губах
+          float cheek = zoneSkin * smoothstep(0.03, 0.0, abs(p.y - (uEye.y - 0.035))) * smoothstep(0.02, 0.05, abs(p.x - uHead.x));
+          vec3 skinC = mix(skin, skin * vec3(1.08, 0.9, 0.88), cheek * 0.6);
 
-          col = mix(col, red * (1.0 + trim * 0.6), zoneRed);
-          col = mix(col, skin, zoneSkin);
-          col = mix(col, hair * (0.85 + 0.3 * fract(sin(dot(floor(p.xz * 60.0), vec2(12.9, 78.2))) * 4375.5)), zoneHair);
+          col = mix(col, red * (1.0 + grain * 0.12), zoneRed);
+          col = mix(col, gold, zoneGold);
+          col = mix(col, skinC, zoneSkin);
+          col = mix(col, hair * (0.85 + 0.3 * fract(sin(dot(floor(p.xz * 300.0), vec2(12.9, 78.2))) * 4375.5)), zoneHair);
+          suitH *= 1.0 - zoneSkin;
           diffuseColor.rgb = col;
         }`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-        roughnessFactor = mix(roughnessFactor, 0.38, zoneRed);
-        roughnessFactor = mix(roughnessFactor, 0.62, zoneSkin);
-        roughnessFactor = mix(roughnessFactor, 0.8, zoneHair);`)
+        roughnessFactor = mix(roughnessFactor, 0.33, zoneRed);
+        roughnessFactor = mix(roughnessFactor, 0.28, zoneGold);
+        roughnessFactor = mix(roughnessFactor, 0.6, zoneSkin);
+        roughnessFactor = mix(roughnessFactor, 0.75, zoneHair);`)
+      .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
+        metalnessFactor = mix(metalnessFactor, 1.0, zoneGold * (1.0 - zoneSkin));`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        normal = heroBump(-vViewPosition, normal, suitH);`)
       .replace('#include <lights_physical_fragment>', `#include <lights_physical_fragment>
-        material.sheenColor *= (1.0 - zoneSkin) * (1.0 - zoneRed) * (1.0 - zoneHair);`);
+        material.sheenColor *= (1.0 - zoneSkin) * (1.0 - zoneRed) * (1.0 - zoneHair) * (1.0 - zoneGold);`);
   };
   return mat;
+}
+
+// Объёмная причёска: участок кожи головы в зоне волос «выдавливается» по нормалям
+// (сильнее к макушке и надо лбом — зачёс назад) и становится отдельной сеткой
+// на том же скелете, поэтому двигается вместе с головой.
+function buildHair(sk, body) {
+  const R = bodyRefs(sk, body);
+  const g = body.geometry, P = g.attributes.position, N = g.attributes.normal;
+  const zone = new Float32Array(P.count);
+  for (let i = 0; i < P.count; i++) zone[i] = hairZone(R, P.getX(i) / R.u, P.getY(i) / R.u, P.getZ(i) / R.u);
+  const idx = g.index ? g.index.array : [...Array(P.count).keys()];
+  const remap = new Map(), tris = [];
+  for (let k = 0; k < idx.length; k += 3) {
+    const a = idx[k], b = idx[k + 1], c = idx[k + 2];
+    if (Math.min(zone[a], zone[b], zone[c]) < -0.012) continue;
+    for (const v of [a, b, c]) {
+      if (!remap.has(v)) remap.set(v, remap.size);
+      tris.push(remap.get(v));
+    }
+  }
+  if (!tris.length) return;
+  const n = remap.size;
+  const pos = new Float32Array(n * 3), si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
+  const SI = g.attributes.skinIndex, SW = g.attributes.skinWeight;
+  for (const [v, j] of remap) {
+    const x = P.getX(v) / R.u, y = P.getY(v) / R.u, z = P.getZ(v) / R.u;
+    const taper = Math.pow(smoothstep(-0.012, 0.3, zone[v]), 1.6);
+    const frontK = THREE.MathUtils.clamp((z - R.head.z) / 0.1 + 0.5, 0, 1);
+    const topK = THREE.MathUtils.clamp((y - R.head.y) / Math.max(R.top - R.head.y, 1e-3), 0, 1);
+    // Толщина: тонко у кромки, объём на макушке и над лбом
+    const thick = 0.0015 + taper * (0.006 + 0.012 * topK + 0.014 * frontK * topK);
+    const nx = N.getX(v), ny = N.getY(v), nz = N.getZ(v);
+    pos[j * 3] = (x + nx * thick) * R.u;
+    pos[j * 3 + 1] = (y + ny * thick + 0.004 * frontK * taper) * R.u;
+    pos[j * 3 + 2] = (z + nz * thick - 0.006 * taper * topK) * R.u; // зачёс назад
+    for (let c = 0; c < 4; c++) { si[j * 4 + c] = SI.getComponent(v, c); sw[j * 4 + c] = SW.getComponent(v, c); }
+  }
+  const hg = new THREE.BufferGeometry();
+  hg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  hg.setAttribute('skinIndex', new THREE.BufferAttribute(si, 4));
+  hg.setAttribute('skinWeight', new THREE.BufferAttribute(sw, 4));
+  hg.setIndex(tris);
+  hg.computeVertexNormals();
+
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color().setRGB(0.032, 0.019, 0.012), roughness: 0.48,
+    sheen: 1, sheenRoughness: 0.35, sheenColor: new THREE.Color().setRGB(0.3, 0.2, 0.13),
+  });
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uU = { value: R.u };
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vHair;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvHair = position;');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying vec3 vHair;\nuniform float uU;\n${BUMP_GLSL}\nfloat hairH = 0.0;`)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          vec3 p = vHair / uU;
+          // Пряди идут назад (вдоль Z) с лёгкой волной
+          float s = p.x * 900.0 + sin(p.z * 40.0) * 3.0;
+          float strand = fract(sin(floor(s) * 91.3) * 437.5);
+          float fine = 1.0 - smoothstep(0.0006, 0.002, length(fwidth(p)));
+          diffuseColor.rgb *= 0.7 + 0.6 * strand;
+          hairH = sin(s * 6.2832) * 0.00025 * fine;
+        }`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        normal = heroBump(-vViewPosition, normal, hairH);`);
+  };
+  const hair = new THREE.SkinnedMesh(hg, mat);
+  hair.position.copy(body.position);
+  hair.quaternion.copy(body.quaternion);
+  hair.scale.copy(body.scale);
+  hair.bind(body.skeleton, body.bindMatrix);
+  hair.castShadow = true;
+  hair.frustumCulled = false;
+  body.parent.add(hair);
+}
+
+// Сапоги: гладкая форма по размеру ступни (узкая пятка, широкий подъём,
+// закруглённый носок, плоская подошва). Ступня тела под ними скрыта шейдером.
+function buildBoots(sk, body) {
+  const R = bodyRefs(sk, body);
+  const P = body.geometry.attributes.position;
+  const toModel = sk.meshInv.get(body).clone().invert(); // сетка → система модели (метры)
+  const leather = new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color().setRGB(0.27, 0.016, 0.022), vertexColors: true,
+    roughness: 0.3, clearcoat: 0.7, clearcoatRoughness: 0.28,
+  });
+  for (const [side, s] of [['Left', 1], ['Right', -1]]) {
+    // Вершины ступни (нижние ~6 см) этой стороны
+    const pts = [], v = new THREE.Vector3();
+    for (let i = 0; i < P.count; i++) {
+      if (P.getY(i) / R.u > R.minY + 0.06 || Math.sign(P.getX(i) / R.u - R.hips.x) !== s) continue;
+      pts.push(v.fromBufferAttribute(P, i).applyMatrix4(toModel).clone());
+    }
+    if (!pts.length) continue;
+    // Главная ось ступни на плоскости XZ (носок может смотреть чуть в сторону)
+    let mx = 0, mz = 0, by = Infinity;
+    for (const q of pts) { mx += q.x; mz += q.z; by = Math.min(by, q.y); }
+    mx /= pts.length; mz /= pts.length;
+    let xx = 0, xz = 0, zz = 0;
+    for (const q of pts) { const dx = q.x - mx, dz = q.z - mz; xx += dx * dx; xz += dx * dz; zz += dz * dz; }
+    let yaw = 0.5 * Math.atan2(2 * xz, zz - xx);
+    if (Math.abs(yaw) > Math.PI / 2) yaw -= Math.sign(yaw) * Math.PI;
+    const ax = Math.sin(yaw), az = Math.cos(yaw);
+    let l0 = Infinity, l1 = -Infinity;
+    for (const q of pts) { const l = (q.x - mx) * ax + (q.z - mz) * az; l0 = Math.min(l0, l); l1 = Math.max(l1, l); }
+    const lc = (l0 + l1) / 2;
+    const L = Math.min(0.3, l1 - l0 + 0.01);
+    const c = new THREE.Vector3(mx + ax * lc, by - 0.004, mz + az * lc);
+    const boot = new THREE.Mesh(makeBootGeometry(L, 0.108), leather);
+    sk.attach(side + 'Foot', boot, c, new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw));
+  }
+}
+
+// Лофт по длине стопы: сечения — суперэллипсы, подошва плоская
+function makeBootGeometry(L, W) {
+  const NS = 28, NR = 24;
+  const pos = [], col = [], idx = [];
+  for (let i = 0; i <= NS; i++) {
+    const t = i / NS;                                     // 0 — пятка, 1 — носок
+    const end = Math.pow(Math.max(0, 1 - Math.pow(Math.abs(2 * t - 1), 5)), 0.32);
+    const w = W * (0.66 + 0.34 * smoothstep(0.0, 0.62, t)) * end * 0.5;
+    const h = lerp(0.115, 0.042, smoothstep(0.28, 0.95, t)) * Math.max(end, 0.15);
+    const z = (t - 0.5) * L;
+    for (let j = 0; j < NR; j++) {
+      const a = (j / NR) * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
+      const x = Math.sign(ca) * Math.pow(Math.abs(ca), 0.55) * w;
+      // Низ почти плоский (подошва), верх скруглён
+      const yy = sa < 0 ? -Math.pow(Math.abs(sa), 0.18) : Math.pow(sa, 0.8);
+      const y = h * 0.5 * (1 + yy);
+      pos.push(x, Math.max(0, y), z);
+      const sole = y < 0.012 ? 0.2 : 1;
+      col.push(sole, sole, sole * 1.05);
+    }
+  }
+  for (let i = 0; i < NS; i++) for (let j = 0; j < NR; j++) {
+    const a = i * NR + j, b = i * NR + (j + 1) % NR, c = a + NR, d = b + NR;
+    idx.push(a, b, c, b, d, c);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
 }
 
 // Глаза: белок и тёмная радужка спереди

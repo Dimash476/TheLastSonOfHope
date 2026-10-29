@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CITY } from '../config.js';
-import { HALF, RIVER_Z, RIVER_HALF_W } from './layout.js';
+import { HALF, RIVER_Z, RIVER_HALF_W, BIG_PARK } from './layout.js';
 
 const CELL = 60;
 const CHUNK = 200;
@@ -33,6 +33,7 @@ export class Props {
     const bulb = new THREE.BoxGeometry(0.4, 0.1, 0.6).translate(0, 7.62, 1.6);
     const mat = new THREE.MeshStandardMaterial({ color: 0x4a4e54, roughness: 0.5, metalness: 0.7 });
     const lim = CITY.urbanHalf;
+    const inPark = (x, z) => x > BIG_PARK.minX + 12 && x < BIG_PARK.maxX - 12 && z > BIG_PARK.minZ + 12 && z < BIG_PARK.maxZ - 12;
     const groups = new Map();
     const offset = CITY.road / 2 + 0.8;
     for (let k = 0; k <= CITY.grid; k++) {
@@ -43,8 +44,9 @@ export class Props {
         for (const t of [33, 66]) {
           for (const side of [-1, 1]) {
             // Фонари вдоль дорог по X (z = line) и по Z (x = line)
-            this.addLamp(groups, seg + t, line + side * offset, side > 0 ? Math.PI : 0);
+            if (!inPark(seg + t, line + side * offset)) this.addLamp(groups, seg + t, line + side * offset, side > 0 ? Math.PI : 0);
             const z = seg + t;
+            if (inPark(line + side * offset, z)) continue;
             if (Math.abs(z - RIVER_Z) < RIVER_HALF_W + 2) continue; // не ставим на мостах
             this.addLamp(groups, line + side * offset, z, side > 0 ? -Math.PI / 2 : Math.PI / 2);
           }
@@ -52,14 +54,19 @@ export class Props {
       }
     }
     this.lampChunks = [];
+    // Пятно света под плафоном (ночью)
+    const poolGeo = new THREE.PlaneGeometry(16, 16).rotateX(-Math.PI / 2).translate(0, 0.06, 2.2);
+    this.poolMat = createGlowPoolMaterial(0xffc27a, 0.55);
     for (const list of groups.values()) {
       const m = new THREE.InstancedMesh(pole, mat, list.length);
       const b = new THREE.InstancedMesh(bulb, this.bulbMat, list.length);
+      const pool = new THREE.InstancedMesh(poolGeo, this.poolMat, list.length);
       m.castShadow = true;
-      list.forEach((L, i) => { L.mesh = m; L.bulb = b; L.slot = i; this.writeLamp(L); });
-      m.computeBoundingSphere(); b.computeBoundingSphere();
-      this.scene.add(m, b);
-      this.lampChunks.push({ m, b, x: m.boundingSphere.center.x, z: m.boundingSphere.center.z });
+      list.forEach((L, i) => { L.mesh = m; L.bulb = b; L.pool = pool; L.slot = i; this.writeLamp(L); });
+      m.computeBoundingSphere(); b.computeBoundingSphere(); pool.computeBoundingSphere();
+      pool.renderOrder = 2;
+      this.scene.add(m, b, pool);
+      this.lampChunks.push({ m, b, pool, x: m.boundingSphere.center.x, z: m.boundingSphere.center.z });
     }
   }
 
@@ -81,7 +88,8 @@ export class Props {
     } else _m.copy(_zero);
     L.mesh.setMatrixAt(L.slot, _m);
     L.bulb.setMatrixAt(L.slot, _m);
-    L.mesh.instanceMatrix.needsUpdate = L.bulb.instanceMatrix.needsUpdate = true;
+    L.pool.setMatrixAt(L.slot, _m);
+    L.mesh.instanceMatrix.needsUpdate = L.bulb.instanceMatrix.needsUpdate = L.pool.instanceMatrix.needsUpdate = true;
   }
 
   lampsNear(x, z, r, cb) {
@@ -178,12 +186,14 @@ export class Props {
     for (const c of this.lampChunks) {
       const v = camPos.y < 1500 && Math.hypot(c.x - camPos.x, c.z - camPos.z) < LAMP_VIEW;
       c.m.visible = c.b.visible = v;
+      c.pool.visible = v && this.night > 0.05;
     }
   }
 
   setNight(k) {
     this.night = k;
     this.bulbMat.color.setRGB(1, 0.85, 0.55).multiplyScalar(0.25 + k * 3.5);
+    this.poolMat.uniforms.uK.value = k;
   }
 
   reset() {
@@ -225,4 +235,27 @@ function makeStationGeometry(w, d) {
   parts.push(colorize(new THREE.BoxGeometry(w * 0.25 + 0.1, 0.6, d * 0.5 + 0.1).translate(w * 0.36, 4.2, 0), 0x2e7d32));
   parts.push(colorize(new THREE.PlaneGeometry(w, d).rotateX(-Math.PI / 2).translate(0, 0.03, 0), 0x3a3a3c));
   return mergeGeometries(parts);
+}
+
+// Пятно света на земле (ночью): мягкий радиальный градиент, аддитивно, без настоящего источника света
+export function createGlowPoolMaterial(color, strength) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uK: { value: 0 }, uColor: { value: new THREE.Color(color) } },
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        vec4 p = vec4(position, 1.0);
+        #ifdef USE_INSTANCING
+          p = instanceMatrix * p;
+        #endif
+        gl_Position = projectionMatrix * modelViewMatrix * p;
+      }`,
+    fragmentShader: `uniform float uK; uniform vec3 uColor; varying vec2 vUv;
+      void main() {
+        float r = length(vUv - 0.5) * 2.0;
+        float a = pow(max(0.0, 1.0 - r), 2.2) * uK * ${strength.toFixed(2)};
+        gl_FragColor = vec4(uColor * a, 1.0);
+      }`,
+  });
 }

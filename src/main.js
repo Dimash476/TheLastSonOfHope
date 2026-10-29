@@ -18,9 +18,20 @@ import { HUD } from './hud.js';
 import { Fire } from './fx/fire.js';
 import { Traffic } from './world/traffic.js';
 import { People } from './world/people.js';
+import { StreetLife } from './world/streetlife.js';
+import { AirLife } from './world/air.js';
+import { Beach } from './world/beach.js';
+import { Pier } from './world/pier.js';
+import { Nature } from './world/nature.js';
+import { Animals } from './world/animals.js';
 import { Props } from './world/props.js';
 import { Space } from './world/space.js';
 import { Trees } from './world/trees.js';
+import { Soundscape } from './soundscape.js';
+import { installSunFog, createGodRaysPass, createGradePass, updateCinematic } from './fx/cinematic.js';
+
+// Туман со светом солнца — до создания и компиляции материалов
+installSunFog();
 
 // ---------------------------------------------------------------- рендер
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
@@ -58,6 +69,9 @@ composer.addPass(new ShaderPass({
 }));
 const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.3, 0.4, 1.0);
 composer.addPass(bloom);
+// Лучи солнца (по яркому небу, до тонмаппинга)
+const godRays = createGodRaysPass();
+composer.addPass(godRays);
 // Эффект удара и скорости: радиальное размытие, цветовой сдвиг, вспышка, виньетка
 const impactPass = new ShaderPass({
   uniforms: {
@@ -87,10 +101,14 @@ const impactPass = new ShaderPass({
 });
 composer.addPass(impactPass);
 composer.addPass(new OutputPass());
+// Цветокоррекция по времени суток и зерно — в самом конце
+const grade = createGradePass();
+composer.addPass(grade);
 
 // ---------------------------------------------------------------- мир
 const hud = new HUD();
 const audio = new GameAudio();
+const soundscape = new Soundscape(audio);
 const debris = new Debris(scene);
 const dust = new Particles(scene, { max: 6000, color: 0x9a8f80, drag: 1.1 });
 const glass = new Debris(scene, { max: 2500, glass: true });
@@ -113,11 +131,23 @@ world.impact = (point, radius, force, source) => {
   people.impulse(point, radius, force);
   props.impulse(point, radius, force);
   trees.impulse(point, radius, force);
+  street.impulse(point, radius, force);
+  air.impulse(point, radius, force);
+  beach.impulse(point, radius, force);
+  nature.impulse(point, radius, force);
+  animals.impulse(point, radius, force);
 };
 const traffic = world.traffic = new Traffic(scene, world);
 const people = world.people = new People(scene, world);
 const props = world.props = new Props(scene, world, city.gasSpots);
 const trees = world.trees = new Trees(scene, world);
+const street = world.street = new StreetLife(scene, world);
+const air = world.air = new AirLife(scene, world);
+const beach = world.beach = new Beach(scene, world);
+const pier = world.pier = new Pier(scene, world);
+const nature = world.nature = new Nature(scene, world);
+const animals = world.animals = new Animals(scene, world);
+world.soundscape = soundscape;
 city.onImpact = (p, r, f) => world.impact(p, r, f);
 debris.onImpact = (p, r, f) => world.impact(p, r, f);
 const player = new Player(scene, world);
@@ -188,6 +218,7 @@ function applyQuality(i) {
   if (/Intel|UHD|Iris|Mali|Adreno|SwiftShader/i.test(gpu)) { qualityIndex = 1; applyQuality(1); }
 }
 window.addEventListener('keydown', (e) => {
+  if (e.code === 'KeyN' && !paused) hud.toast(soundscape.toggleScore() ? 'МУЗЫКА: ВКЛ' : 'МУЗЫКА: ВЫКЛ');
   if (e.code === 'KeyG' && !paused) { qualityIndex = (qualityIndex + 1) % QUALITY.length; hud.toast(applyQuality(qualityIndex)); }
 });
 
@@ -201,14 +232,20 @@ function resetWorld() {
   fire.clear();
   traffic.clear();
   people.clear();
+  animals.clear();
   props.reset();
   trees.reset();
+  street.reset();
+  air.reset();
+  beach.reset();
+  nature.reset();
   player.spawn();
   hud.toast('ГОРОД ВОССТАНОВЛЕН');
 }
 
 // ---------------------------------------------------------------- цикл
 const clock = new THREE.Clock();
+const _camRight = new THREE.Vector3();
 let hitstop = 0;
 
 function frame() {
@@ -245,25 +282,35 @@ function step(dt, active) {
     glass.update(gdt);
     traffic.update(gdt, player.pos);
     people.update(gdt, player);
+    animals.update(gdt, player);
     fire.update(gdt);
     dust.update(gdt);
     sparks.update(gdt);
     effects.update(gdt, player);
+    air.update(gdt, player, camera.position, env.night, env.W.rain);
     hud.update(dt, player, city);
   }
 
   camRig.update(dt, input, player, city, effects.shakeOffset);
-  env.update(dt, player.pos, camera);
+  env.update(dt, player.pos, camera, !paused);
   space.update(dt, camera, env.sunDir, env.altitudeK, env.night);
   // Космос рисуем, только когда небо хоть немного прозрачное
   spacePass.enabled = env.sky.material.uniforms.uOpacity.value < 0.995;
   mainPass.clear = !spacePass.enabled;
   props.update(camera.position);
+  city.updateView(camera.position, dt);
   trees.update(dt, camera.position);
+  street.update(dt, camera.position);
+  beach.update(dt);
+  pier.update(paused ? 0 : dt, env.night, camera.position);
+  nature.update(dt, camera.position);
   // На высоком и среднем качестве (со свечением) картинка чуть темнее
   renderer.toneMappingExposure = env.exposure * (1 - env.altitudeK * 0.25) * (bloom.enabled ? 0.88 : 1);
   city.material.userData.uNight.value = env.night;
   props.setNight(env.night);
+  traffic.setNight(env.night);
+  street.setNight(env.night);
+  nature.setNight(env.night);
   const h = renderer.domElement.height;
   dust.setScale(h, camera.fov);
   sparks.setScale(h, camera.fov);
@@ -275,15 +322,19 @@ function step(dt, active) {
   impactPass.uniforms.uCharge.value = effects.chargeK;
   impactPass.uniforms.uSpeed.value = THREE.MathUtils.smoothstep(player.vel.length(), 150, 3000) * (1 - env.altitudeK * 0.6);
   camRig.extraFov = effects.fovKick - effects.chargeK * 9;
+  updateCinematic({ env, camera, godRays, grade, dt, quality: qualityIndex });
   audio.listener = camera.position;
   // Фон мегаполиса: громче в центре и у земли, тише в пригороде и с высотой, нет в космосе
   {
     const cp = camera.position, r = Math.max(Math.abs(cp.x), Math.abs(cp.z));
-    const inCity = 1 - THREE.MathUtils.smoothstep(r, 1300, 2600);
-    const inSuburb = THREE.MathUtils.smoothstep(r, 1000, 1800) * (1 - THREE.MathUtils.smoothstep(r, 2600, 3600));
+    const inCity = 1 - THREE.MathUtils.smoothstep(r, 1700, 3000);
+    const inSuburb = THREE.MathUtils.smoothstep(r, 1400, 2200) * (1 - THREE.MathUtils.smoothstep(r, 3000, 4000));
     const low = 1 - THREE.MathUtils.smoothstep(cp.y, 150, 1800);
     audio.setAmbience(Math.max(inCity, inSuburb * 0.45) * low, inSuburb * low, env.night, env.W.rain);
   }
+  audio.listenerRight = _camRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+  soundscape.update({ dt, player, camera, people, traffic, city, env, paused });
+  if (paused) air.mute();
   audio.update(player.vel.length(), paused, player.pos.y < 1500 ? env.W.rain : 0, env.altitudeK);
   endFrame(input);
 }
@@ -294,7 +345,7 @@ frame();
 
 // Для отладки из консоли
 window.game = {
-  scene, camera, renderer, player, city, debris, glass, effects, input, camRig, traffic, people, props, trees, fire, env, audio, space,
+  scene, camera, renderer, player, city, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, soundscape, fire, composer, bloom, godRays, grade, env, audio, space,
   // Запуск без захвата мыши (для автотестов)
   unpause() { paused = false; overlay.classList.add('hidden'); hud.show(true); },
   // Прогнать n кадров симуляции с фиксированным шагом

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { PLAYER as P, MACH, WORLD, SPACE } from '../config.js';
 import { HeroModel } from './model.js';
 import { clamp, damp, lerp, smoothstep } from '../utils.js';
+import { EyeLaser } from './laser.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _v = new THREE.Vector3();
@@ -40,6 +41,8 @@ export class Player {
     this.dashDir = new THREE.Vector3();
     this.ghostT = 0;
     this.held = null; // { kind, sys, ref }
+    this.laser = new EyeLaser(scene, world);
+    this.lasering = false;
     this.braking = false;
     this.latAccel = new THREE.Vector3();
     this.roll = 0;
@@ -91,6 +94,12 @@ export class Player {
       this.vel.set(camFlat.x * 25, -P.slamSpeed, camFlat.z * 25);
       W.audio?.whoosh(1);
     }
+    // Отпустили X до земли — пике прерывается, герой зависает на месте
+    if (this.slamming && !input.slamHeld && !input.slam) {
+      this.slamming = false;
+      this.vel.set(0, 0, 0);
+      W.dust.burst(this.center.clone(), 6, { size: [1.5, 3], speed: 6, life: [0.4, 0.8] });
+    }
 
     // Рывок: короткий бросок в сторону движения
     this.dashCd -= dt;
@@ -118,8 +127,17 @@ export class Player {
       if (this.speed < 30) this.vel.addScaledVector(camDir, 10);
     }
 
+    // Лазер из глаз (удерживать Z): бьёт туда, куда смотрит камера
+    this.lasering = input.laser && !this.slamming && !this.held && this.charge <= 0;
+    this.laser.update(dt, this.lasering, camDir, this);
+
+    // Погладить собаку или кошку: рядом с животным ПКМ гладит, а не заряжает удар
+    this.petTarget = this.grounded && !this.held && !this.lasering && this.charge <= 0 ? W.animals?.findPettable(this.pos, 2.4) : null;
+    this.petting = this.petTarget && input.heavyHeld ? this.petTarget : null;
+    if (this.petting) W.animals.pet(this.petting, dt);
+
     // Мощный удар: зарядка и отпускание
-    if (input.heavyHeld && !this.slamming && !this.held) {
+    if (input.heavyHeld && !this.slamming && !this.held && !this.petting) {
       this.charge = Math.min(P.heavyMaxCharge, this.charge + dt);
     } else if (this.charge > 0) {
       if (this.charge > 0.12) this.heavyPunch(camDir, this.charge / P.heavyMaxCharge);
@@ -142,7 +160,7 @@ export class Player {
       const wish = new THREE.Vector3().addScaledVector(camFlat, input.moveZ).addScaledVector(right, input.moveX);
       if (wish.lengthSq() > 1) wish.normalize();
       // Пока поднимается с колена — стоит на месте
-      const top = this.landT > 0.25 ? 0 : input.boost ? P.sprintSpeed : P.runSpeed;
+      const top = this.landT > 0.25 || this.petting ? 0 : input.boost ? P.sprintSpeed : P.runSpeed;
       this.vel.x = damp(this.vel.x, wish.x * top, P.groundAccel, dt);
       this.vel.z = damp(this.vel.z, wish.z * top, P.groundAccel, dt);
       this.vel.y = 0;
@@ -155,6 +173,13 @@ export class Player {
       }
     } else {
       this.fly(dt, input, camDir, right);
+    }
+
+    // Обычный спуск у самой земли плавно гасится — герой встаёт мягко.
+    // Резкое падение (с ускорением, рывок, удар о землю) — без смягчения.
+    if (!this.grounded && !this.slamming && this.dashT <= 0 && !input.boost) {
+      const h = this.pos.y - this.groundY, limit = -Math.max(5, h * 2.2);
+      if (h < 14 && this.vel.y < limit) this.vel.y = damp(this.vel.y, limit, 10, dt);
     }
 
     this.moveAndCollide(dt, input);
@@ -260,8 +285,8 @@ export class Player {
     wish.normalize();
     const boosting = input.boost && input.moveZ > 0;
     const spaceK = smoothstep(SPACE.atmosphere, SPACE.spaceAlt, this.pos.y);
-    // Уровни ускорения: Shift → Shift+E (гипер) → Shift+Q (третий уровень)
-    const hyper = !boosting ? 1 : input.ultra ? P.ultraMul : input.hyper ? P.hyperMul : 1;
+    // Уровни ускорения: Shift → Shift+E (гипер) → Shift+Q (третий) → Shift+F (четвёртый)
+    const hyper = !boosting ? 1 : input.warp ? P.warpMul : input.ultra ? P.ultraMul : input.hyper ? P.hyperMul : 1;
     const target = boosting ? lerp(P.boostSpeed, P.spaceBoostSpeed, spaceK) * hyper : P.flySpeed * wl;
 
     if (speed < 90 && !boosting) {
@@ -309,7 +334,9 @@ export class Player {
   moveAndCollide(dt, input) {
     const W = this.world, city = W.city;
     const dist = this.vel.length() * dt;
-    const steps = Math.max(1, Math.ceil(dist / 1.5));
+    // Выше самых высоких зданий дробить шаг незачем (на 4-м уровне это тысячи подшагов)
+    const aboveCity = Math.min(this.pos.y, this.pos.y + this.vel.y * dt) > 600;
+    const steps = aboveCity ? 1 : Math.max(1, Math.ceil(dist / 1.5));
     const sdt = dt / steps;
     const hits = [];
 
@@ -416,8 +443,9 @@ export class Player {
       if (this.vel.y < 0) this.vel.y = 0;
       if (!this.grounded && input.moveY <= 0 && Math.hypot(this.vel.x, this.vel.z) < 25) {
         this.grounded = true;
-        if (impact > 15) W.dust.burst(this.pos.clone().setY(this.groundY + 0.4), 10, { size: [2, 4], speed: 10, life: [0.6, 1.4], flat: true });
-        if (impact > 28) this.heroLanding(Math.min(1, impact / 120));
+        if (impact > 8) W.dust.burst(this.pos.clone().setY(this.groundY + 0.3), Math.min(10, 3 + Math.round(impact / 5)), { size: [1.5, 3.5], speed: 4 + impact * 0.12, life: [0.5, 1.2], flat: true });
+        // Эффектная посадка на колено — только после быстрого падения
+        if (impact > 45) this.heroLanding(Math.min(1, (impact - 45) / 110));
       }
     } else if (this.grounded && this.pos.y > this.groundY + 0.05) {
       // Здание под нами разрушено или сошли с края крыши — просто зависаем
@@ -432,7 +460,7 @@ export class Player {
     this.landT = 0.55 + 0.35 * k;
     this.vel.set(0, 0, 0);
     const p = this.pos.clone();
-    if (p.y < 1) W.effects.crater(p, 3 + 6 * k);
+    if (p.y < 1 && k > 0.45) W.effects.crater(p, 3 + 6 * k);
     W.effects.shockwave(p.clone().setY(p.y + 0.3), { type: 'ring', radius: 8 + 22 * k, life: 0.6, opacity: 0.7 });
     W.dust.burst(p.clone().setY(p.y + 0.4), Math.round(14 + 26 * k), { size: [2, 5 + 6 * k], speed: 10 + 25 * k, life: [0.8, 2.2], flat: true });
     W.debris.explode(p, 6 + 12 * k, 8 + 15 * k);
@@ -551,7 +579,9 @@ export class Player {
     if (W.traffic?.hit(c, 1.0, this.vel.clone().multiplyScalar(0.9), sp * 0.8)) {
       if (sp < P.ramSpeed) this.vel.multiplyScalar(0.85);
     }
-    W.people?.hit(c, 0.8, this.vel.clone().multiplyScalar(0.5));
+    // Шагом и бегом по земле люди просто расступаются; сбивает только быстрый полёт или рывок
+    if (this.grounded && sp < 25) W.people?.nudge?.(c, 1.1);
+    else W.people?.hit(c, 0.8, this.vel.clone().multiplyScalar(0.5));
     W.props?.hit(c, 0.6, this.vel, sp);
     W.trees?.hit(c, 0.8, this.vel);
   }
@@ -611,11 +641,12 @@ export class Player {
   updateOrientation(dt, camDir, camFlat) {
     const hv = new THREE.Vector3(this.vel.x, 0, this.vel.z);
     const speed = this.vel.length();
-    const acting = this.punchT >= 0 || this.charge > 0 || !!this.held;
+    const acting = this.punchT >= 0 || this.charge > 0 || !!this.held || this.lasering;
 
     // Куда смотрит персонаж по горизонтали
     let targetFacing;
-    if (acting) targetFacing = camFlat;
+    if (this.petting) targetFacing = new THREE.Vector3(this.petting.pos.x - this.pos.x, 0, this.petting.pos.z - this.pos.z).normalize();
+    else if (acting) targetFacing = camFlat;
     else if (this.grounded) targetFacing = hv.lengthSq() > 1 ? hv.clone().normalize() : this.facing;
     else targetFacing = speed > 5 && hv.lengthSq() > 4 ? hv.clone().normalize() : camFlat;
     this.facing.lerp(targetFacing, 1 - Math.exp(-12 * dt)).setY(0).normalize();
@@ -689,6 +720,7 @@ export class Player {
     a.lift = damp(a.lift, this.held && this.held.kind !== 'person' ? 1 : 0, 10, dt);
     a.brake = damp(a.brake || 0, this.braking && !this.grounded ? 1 : 0, 6, dt);
     a.carry = damp(a.carry || 0, this.held && this.held.kind === 'person' ? 1 : 0, 10, dt);
+    a.pet = damp(a.pet || 0, this.petting ? 1 : 0, 7, dt);
     this.model.animate(dt, a);
   }
 }

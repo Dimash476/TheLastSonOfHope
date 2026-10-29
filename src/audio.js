@@ -25,6 +25,7 @@ export class GameAudio {
     this.musicOn = true;
     this.music = null;
     this.listener = null; // позиция камеры (Vector3), задаётся снаружи
+    this.listenerRight = null; // направление «вправо» от камеры — для панорамы
     this.voices = 0;
     this.watchT = 0;
     // Фон города: 0..1 — насколько мы «в городе» (место, высота, космос)
@@ -209,6 +210,106 @@ export class GameAudio {
     }
   }
 
+  // Взлёт стаи: частые мягкие хлопки крыльев
+  flutter(k = 1, pos = null) {
+    if (!this.ctx) return;
+    const n = 6 + Math.floor(k * 10), dest = this.out(pos);
+    for (let i = 0; i < n; i++) {
+      this.noiseBurst({ dur: 0.05 + Math.random() * 0.04, freq: 900 + Math.random() * 900, type: 'bandpass', q: 0.8, gain: 0.06 * k, attack: 0.004, delay: i * (0.03 + Math.random() * 0.05), dest });
+    }
+  }
+
+  // Винт вертолёта: ровное глухое «хлопанье» лопастей; громкость задаёт игра (по расстоянию)
+  setRotor(k) {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    if (!this.rotorGain) {
+      const src = ctx.createBufferSource(); src.buffer = this.brown; src.loop = true;
+      const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 170; bp.Q.value = 0.9;
+      const chop = ctx.createGain(); chop.gain.value = 0.5;
+      const lfo = ctx.createOscillator(); lfo.type = 'triangle'; lfo.frequency.value = 17;
+      const depth = ctx.createGain(); depth.gain.value = 0.48;
+      lfo.connect(depth).connect(chop.gain);
+      this.rotorGain = ctx.createGain(); this.rotorGain.gain.value = 0;
+      src.connect(bp).connect(chop).connect(this.rotorGain).connect(this.ambBus);
+      src.start(); lfo.start();
+    }
+    this.rotorGain.gain.setTargetAtTime(Math.min(0.5, k), ctx.currentTime, 0.25);
+  }
+
+  // Лазер-плазма. charge 0..1 — накопление (нарастающий писк с ускоряющейся пульсацией),
+  // power 0..1 — мощность луча: электрический гул с вибрацией, треск разрядов, шипение.
+  buildLaser() {
+    const ctx = this.ctx;
+    this.laserOut = ctx.createGain(); this.laserOut.gain.value = 0.9;
+    this.laserOut.connect(this.master);
+    // --- зарядка: два тона, громкость «дрожит» всё быстрее
+    this.chgOsc = [ctx.createOscillator(), ctx.createOscillator()];
+    this.chgOsc[0].type = 'sine'; this.chgOsc[1].type = 'triangle';
+    this.chgTrem = ctx.createGain(); this.chgTrem.gain.value = 0.6;
+    this.chgLfo = ctx.createOscillator(); this.chgLfo.frequency.value = 6;
+    const lfoDepth = ctx.createGain(); lfoDepth.gain.value = 0.4;
+    this.chgLfo.connect(lfoDepth).connect(this.chgTrem.gain);
+    this.chgGain = ctx.createGain(); this.chgGain.gain.value = 0;
+    for (const o of this.chgOsc) { o.connect(this.chgTrem); o.start(); }
+    this.chgTrem.connect(this.chgGain).connect(this.laserOut);
+    this.chgLfo.start();
+    // --- гул плазмы: пила с частотной вибрацией, перегруз, фильтр раскрывается с мощностью
+    const buzz = [ctx.createOscillator(), ctx.createOscillator()];
+    buzz[0].type = 'sawtooth'; buzz[1].type = 'square';
+    buzz[0].frequency.value = 58; buzz[1].frequency.value = 116.7;
+    const fm = ctx.createOscillator(); fm.frequency.value = 27;
+    const fmDepth = ctx.createGain(); fmDepth.gain.value = 9;
+    fm.connect(fmDepth); for (const o of buzz) fmDepth.connect(o.frequency);
+    const drive = ctx.createWaveShaper(); drive.curve = softClipCurve(4); drive.oversample = '2x';
+    this.plasmaFilter = ctx.createBiquadFilter(); this.plasmaFilter.type = 'lowpass'; this.plasmaFilter.frequency.value = 500; this.plasmaFilter.Q.value = 4;
+    this.buzzGain = ctx.createGain(); this.buzzGain.gain.value = 0;
+    const bmix = ctx.createGain(); bmix.gain.value = 0.5;
+    for (const o of buzz) { o.connect(bmix); o.start(); }
+    fm.start();
+    bmix.connect(drive).connect(this.plasmaFilter).connect(this.buzzGain).connect(this.laserOut);
+    // --- треск разрядов: петля из случайных щелчков разной силы
+    const len = ctx.sampleRate * 2, crackle = ctx.createBuffer(1, len, ctx.sampleRate), c = crackle.getChannelData(0);
+    for (let i = 0; i < len;) {
+      const amp = Math.pow(Math.random(), 2.5), dur = 40 + Math.random() * 300;
+      for (let k = 0; k < dur && i + k < len; k++) c[i + k] += (Math.random() * 2 - 1) * amp * Math.exp(-k / (dur * 0.3));
+      i += Math.floor(dur * 0.3 + Math.random() * ctx.sampleRate * 0.012);
+    }
+    const cs = ctx.createBufferSource(); cs.buffer = crackle; cs.loop = true;
+    const cbp = ctx.createBiquadFilter(); cbp.type = 'bandpass'; cbp.frequency.value = 2600; cbp.Q.value = 0.6;
+    this.crackGain = ctx.createGain(); this.crackGain.gain.value = 0;
+    cs.connect(cbp).connect(this.crackGain).connect(this.laserOut); cs.start();
+    // --- шипение
+    const hs = ctx.createBufferSource(); hs.buffer = this.noise; hs.loop = true;
+    const hhp = ctx.createBiquadFilter(); hhp.type = 'highpass'; hhp.frequency.value = 4500;
+    this.hissGain = ctx.createGain(); this.hissGain.gain.value = 0;
+    hs.connect(hhp).connect(this.hissGain).connect(this.laserOut); hs.start();
+  }
+
+  setLaser(charge, power) {
+    if (!this.ctx) return;
+    if (!this.laserOut) this.buildLaser();
+    const t = this.ctx.currentTime, k = 0.04;
+    // Писк зарядки растёт по тону и громкости; при выстреле уходит под гул
+    const f = 160 + 1500 * Math.pow(charge, 1.6);
+    this.chgOsc[0].frequency.setTargetAtTime(f, t, k);
+    this.chgOsc[1].frequency.setTargetAtTime(f * 1.505, t, k);
+    this.chgLfo.frequency.setTargetAtTime(5 + 38 * charge * charge, t, k);
+    this.chgGain.gain.setTargetAtTime(charge * charge * 0.05 * (1 - power * 0.8), t, k);
+    this.buzzGain.gain.setTargetAtTime(power * 0.11, t, power > 0.01 ? 0.05 : 0.12);
+    this.plasmaFilter.frequency.setTargetAtTime(400 + 3200 * power, t, 0.08);
+    this.crackGain.gain.setTargetAtTime(power * 0.5, t, 0.06);
+    this.hissGain.gain.setTargetAtTime(power * 0.035, t, 0.08);
+  }
+
+  // Вспышка выстрела: хлопок с уходящим вниз «вжухом»
+  laserIgnite() {
+    if (!this.ctx) return;
+    this.noiseBurst({ dur: 0.45, freq: 7000, sweepTo: 400, type: 'lowpass', gain: 0.35, attack: 0.003 });
+    this.tone({ dur: 0.35, from: 420, to: 70, gain: 0.3, type: 'sawtooth' });
+    this.tone({ dur: 0.5, from: 90, to: 40, gain: 0.35 });
+  }
+
   // Данные о месте: urban 0..1 (центр города у земли — 1), park 0..1 (пригород/зелень), night, rain
   setAmbience(urban, park, night, rain) {
     this.amb.urban = urban; this.amb.park = park; this.amb.night = night; this.amb.rain = rain;
@@ -269,6 +370,7 @@ export class GameAudio {
     this.windGain.disconnect(); this.windGain.connect(this.master);
     this.rainGain.disconnect(); this.rainGain.connect(this.master);
     this.chargeGain.disconnect(); this.chargeGain.connect(this.master);
+    if (this.laserOut) { this.laserOut.disconnect(); this.laserOut.connect(this.master); }
     this.voices = 0;
   }
 
@@ -331,7 +433,20 @@ export class GameAudio {
     if (!Number.isFinite(d)) d = 0;
     let i = 0;
     while (i < BUS_DIST.length - 1 && d > (BUS_DIST[i] + BUS_DIST[i + 1]) / 2) i++;
-    return this.buses[i];
+    // Панорама: звук справа — в правом канале. Вблизи (меньше 3 м) — по центру.
+    const r = this.listenerRight;
+    if (!pos || !r || d < 3) return this.buses[i];
+    const pan = this.ctx.createStereoPanner();
+    const k = ((pos.x - this.listener.x) * r.x + (pos.y - this.listener.y) * r.y + (pos.z - this.listener.z) * r.z) / d;
+    pan.pan.value = Math.max(-1, Math.min(1, k)) * Math.min(0.9, d / 20);
+    pan.connect(this.buses[i]);
+    return pan;
+  }
+
+  // Пространство: в «каньонах» небоскрёбов эхо глубже, на открытом месте — суше
+  setSpace(enclosed, inSpace) {
+    if (!this.ctx) return;
+    this.reverbGain.gain.setTargetAtTime((0.3 + 0.55 * enclosed) * (1 - inSpace * 0.8), this.ctx.currentTime, 0.5);
   }
 
   // ---------------------------------------------------------------- примитивы

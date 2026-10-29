@@ -2,11 +2,14 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CITY } from '../config.js';
 import { mulberry32 } from '../utils.js';
-import { HALF, BLOCK, blockTypes } from './layout.js';
+import { HALF, BLOCK, blockTypes, BIG_PARK, POND, PLANE_HALF, forestMask, groundHeight, fbm, parkPathDist, bigParkPaths, bigParkPathDist, PARK_RING } from './layout.js';
 
 const CELL = 60;
 const CHUNK = 250;
 const VIEW = 900;      // дальше деревья не рисуем
+const FOREST_CHUNK = 600;
+const FOREST_VIEW = 1900; // лес на холмах виден дальше
+const FOREST_R = 6500;
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _v = new THREE.Vector3();
@@ -29,8 +32,8 @@ export class Trees {
 
   generate(rnd) {
     const g = CITY.grid, B = CITY.block;
-    const add = (x, z) => {
-      const t = { x, z, alive: true, s: 0.75 + rnd() * 0.6, rot: rnd() * Math.PI * 2, shade: 0.8 + rnd() * 0.35 };
+    const add = (x, z, y = 0, scale = 1, forest = false) => {
+      const t = { x, z, y, forest, alive: true, s: (0.75 + rnd() * 0.6) * scale, rot: rnd() * Math.PI * 2, shade: 0.8 + rnd() * 0.35 };
       this.list.push(t);
       const key = Math.floor(x / CELL) * 100000 + Math.floor(z / CELL);
       if (!this.cells.has(key)) this.cells.set(key, []);
@@ -40,7 +43,18 @@ export class Trees {
       const type = blockTypes[j * g + i];
       const bx = -HALF + i * B, bz = -HALF + j * B;
       if (type === BLOCK.PARK) {
-        for (let k = 0; k < 34; k++) add(bx + 15 + rnd() * 70, bz + 15 + rnd() * 70);
+        const cx = bx + B / 2, cz = bz + B / 2;
+        // Аллеи: деревья по обе стороны дорожек крест-накрест
+        for (let t = PARK_RING + 6; t < B / 2 - 12; t += 7.5) for (const sgn of [-1, 1]) for (const side of [-4.2, 4.2]) {
+          add(cx + sgn * t, cz + side, 0, 1.05); add(cx + side, cz + sgn * t, 0, 1.05);
+        }
+        // Кольцо деревьев вокруг площади
+        for (let a = 0; a < 12; a++) { const an = a / 12 * Math.PI * 2 + 0.26; add(cx + Math.cos(an) * (PARK_RING + 4.5), cz + Math.sin(an) * (PARK_RING + 4.5), 0, 0.95); }
+        // Рощицы в четвертях, подальше от дорожек
+        for (let k = 0; k < 40; k++) {
+          const x = bx + 15 + rnd() * 70, z = bz + 15 + rnd() * 70;
+          if (parkPathDist(x, z) > 6.5 && Math.hypot(x - cx, z - cz) > PARK_RING + 8) add(x, z);
+        }
       } else if (type === BLOCK.URBAN || type === BLOCK.SUBURB) {
         // Деревья на тротуаре (в городе) или на газоне у дороги (в пригороде)
         const inset = type === BLOCK.URBAN ? 10.8 : 14;
@@ -51,6 +65,39 @@ export class Trees {
           add(bx + inset, bz + t); add(bx + B - inset, bz + t);
         }
       }
+    }
+    // Центральный парк: густые рощи, поляны и берег пруда без деревьев
+    const P = BIG_PARK;
+    for (let k = 0; k < 2600; k++) {
+      const x = P.minX + 14 + rnd() * (P.maxX - P.minX - 28), z = P.minZ + 14 + rnd() * (P.maxZ - P.minZ - 28);
+      if (Math.hypot(x - POND.x, z - POND.z) < POND.r + 14) continue;
+      if (bigParkPathDist(x, z) < 9) continue;          // вдоль дорожек — аллеи (ниже)
+      if (fbm(x * 0.012, z * 0.012, 3) < 0.48) continue; // поляны
+      add(x, z, 0, 1.15);
+    }
+    // Аллеи центрального парка: ровные ряды деревьев вдоль извилистых дорожек
+    const along = (fx, fz, from, to, step) => {
+      for (let u = from; u < to; u += step) {
+        const x = fx(u), z = fz(u), x2 = fx(u + 1), z2 = fz(u + 1);
+        const tx = x2 - x, tz = z2 - z, tl = Math.hypot(tx, tz) || 1, nx = -tz / tl, nz = tx / tl;
+        for (const s of [-5.2, 5.2]) {
+          const ax = x + nx * s, az = z + nz * s;
+          if (ax > P.minX + 10 && ax < P.maxX - 10 && az > P.minZ + 10 && az < P.maxZ - 10 && Math.hypot(ax - POND.x, az - POND.z) > POND.r + 4) add(ax, az, 0, 1.1);
+        }
+      }
+    };
+    const cxP = (P.minX + P.maxX) / 2, czP = (P.minZ + P.maxZ) / 2;
+    along((u) => u, (u) => czP + 60 * Math.sin(u * 0.012), P.minX, P.maxX, 9);
+    along((u) => cxP + 50 * Math.sin(u * 0.015 + 1), (u) => u, P.minZ, P.maxZ, 9);
+    along((u) => POND.x + Math.cos(u / (POND.r + 9)) * (POND.r + 9), (u) => POND.z + Math.sin(u / (POND.r + 9)) * (POND.r + 9), 0, Math.PI * 2 * (POND.r + 9), 10);
+    // Леса на холмах вокруг города
+    const step = 30;
+    for (let x = -FOREST_R; x <= FOREST_R; x += step) for (let z = -FOREST_R; z <= FOREST_R; z += step) {
+      if (Math.max(Math.abs(x), Math.abs(z)) < PLANE_HALF + 150) continue;
+      const px = x + (rnd() - 0.5) * step, pz = z + (rnd() - 0.5) * step;
+      const y = groundHeight(px, pz);
+      if (rnd() > forestMask(px, pz, y)) continue;
+      add(px, pz, y - 0.5, 2.3 + rnd() * 0.9, true);
     }
   }
 
@@ -72,7 +119,8 @@ export class Trees {
     };
     const groups = new Map();
     for (const t of this.list) {
-      const key = Math.floor(t.x / CHUNK) * 1000 + Math.floor(t.z / CHUNK);
+      const C = t.forest ? FOREST_CHUNK : CHUNK;
+      const key = (t.forest ? 1e7 : 0) + Math.floor(t.x / C) * 1000 + Math.floor(t.z / C);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(t);
     }
@@ -90,14 +138,14 @@ export class Trees {
       });
       m.computeBoundingSphere();
       this.scene.add(m);
-      this.chunks.push({ m, x: m.boundingSphere.center.x, z: m.boundingSphere.center.z });
+      this.chunks.push({ m, x: m.boundingSphere.center.x, z: m.boundingSphere.center.z, view: list[0].forest ? FOREST_VIEW : VIEW });
     }
   }
 
   write(t) {
     if (t.alive) {
       _q.setFromAxisAngle(UP, t.rot);
-      _m.compose(_v.set(t.x, 0, t.z), _q, _s.setScalar(t.s));
+      _m.compose(_v.set(t.x, t.y, t.z), _q, _s.setScalar(t.s));
     } else _m.copy(_zero);
     t.mesh.setMatrixAt(t.slot, _m);
     t.mesh.instanceMatrix.needsUpdate = true;
@@ -117,8 +165,8 @@ export class Trees {
     t.alive = false;
     this.write(t);
     const W = this.world, f = Math.min(35, force);
-    W.debris.spawn(t.x, 1.8 * t.s, t.z, 0.35 * t.s, 3.2 * t.s, 0.35 * t.s, dir.x * f, 3 + f * 0.25, dir.z * f, new THREE.Color(0x4a3524), 0);
-    W.dust.burst(_v.set(t.x, 4.5 * t.s, t.z), 10, { size: [2, 5], speed: 6 + f * 0.3, life: [1.5, 3], color: 0x3f6b2a, gravity: 4, dir });
+    W.debris.spawn(t.x, t.y + 1.8 * t.s, t.z, 0.35 * t.s, 3.2 * t.s, 0.35 * t.s, dir.x * f, 3 + f * 0.25, dir.z * f, new THREE.Color(0x4a3524), 0);
+    W.dust.burst(_v.set(t.x, t.y + 4.5 * t.s, t.z), 10, { size: [2, 5], speed: 6 + f * 0.3, life: [1.5, 3], color: 0x3f6b2a, gravity: 4, dir });
   }
 
   impulse(center, radius, force) {
@@ -132,8 +180,8 @@ export class Trees {
 
   hit(center, radius, vel) {
     let any = false;
-    if (center.y > 8) return false;
     this.near(center.x, center.z, radius + 0.6, (t) => {
+      if (center.y - t.y > 8 * t.s) return;
       this.breakTree(t, vel.clone().setY(0).normalize(), Math.max(12, vel.length() * 0.4));
       any = true;
     });
@@ -142,7 +190,7 @@ export class Trees {
 
   update(dt, camPos) {
     this.uTime.value += dt;
-    for (const c of this.chunks) c.m.visible = camPos.y < 2500 && Math.hypot(c.x - camPos.x, c.z - camPos.z) < VIEW + camPos.y;
+    for (const c of this.chunks) c.m.visible = camPos.y < 2500 && Math.hypot(c.x - camPos.x, c.z - camPos.z) < c.view + camPos.y;
   }
 
   reset() { for (const t of this.list) if (!t.alive) { t.alive = true; this.write(t); } }

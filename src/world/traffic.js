@@ -1,9 +1,9 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CITY, TRAFFIC, DEBRIS } from '../config.js';
-import { HALF, isBridgeRoad } from './layout.js';
+import { HALF, isBridgeRoad, BIG_PARK, BEACH } from './layout.js';
+import { VEHICLE_TYPES, createVehicleMaterial } from './vehicles.js';
+import { createGlowPoolMaterial } from './props.js';
 
-const CAR_COLORS = [0xc0392b, 0x2c3e50, 0xecf0f1, 0x7f8c8d, 0x2980b9, 0x16a085, 0xf1c40f, 0x111111, 0x8e44ad, 0xd35400, 0xbdc3c7];
 const N_NODES = CITY.grid + 1;
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 const _m = new THREE.Matrix4();
@@ -20,25 +20,43 @@ export class Traffic {
   constructor(scene, world) {
     this.world = world; // { city, fire, effects, audio, debris, dust, sparks, impact }
     this.cars = [];
-    const geo = makeCarGeometry();
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, metalness: 0.5 });
-    this.mesh = new THREE.InstancedMesh(geo, mat, TRAFFIC.cars);
-    this.mesh.castShadow = this.mesh.receiveShadow = true;
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(TRAFFIC.cars * 3), 3);
-    this.mesh.frustumCulled = false;
-    scene.add(this.mesh);
-
-    for (let i = 0; i < TRAFFIC.cars; i++) {
-      const color = new THREE.Color(CAR_COLORS[i % CAR_COLORS.length]);
-      this.cars.push({
-        slot: i, state: 'none', pos: new THREE.Vector3(), vel: new THREE.Vector3(), quat: new THREE.Quaternion(),
-        ang: new THREE.Vector3(), color, heading: 0, node: [0, 0], dir: [1, 0], progress: 0, speed: 14,
-        hp: 100, burn: null, timer: 0, dead: false,
-      });
-      this.mesh.setColorAt(i, color);
-    }
+    // Свет фар на асфальте перед машиной (ночью)
+    this.beamMat = createGlowPoolMaterial(0xfff0d0, 0.5);
+    this.beams = new THREE.InstancedMesh(new THREE.PlaneGeometry(7, 20).rotateX(-Math.PI / 2).translate(0, 0.08, 12), this.beamMat, TRAFFIC.cars);
+    this.beams.frustumCulled = false;
+    this.beams.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.beams.renderOrder = 2;
+    scene.add(this.beams);
+    // Несколько типов машин — у каждого своя инстанс-сетка, материал общий
+    this.uNight = { value: 0 };
+    const mat = createVehicleMaterial(this.uNight);
+    this.meshes = [];
+    let made = 0;
+    VEHICLE_TYPES.forEach((type, ti) => {
+      const n = ti === VEHICLE_TYPES.length - 1 ? TRAFFIC.cars - made : Math.round(TRAFFIC.cars * type.weight);
+      made += n;
+      if (n <= 0) return;
+      const mesh = new THREE.InstancedMesh(type.geo(), mat, n);
+      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+      mesh.frustumCulled = false;
+      scene.add(mesh);
+      this.meshes.push(mesh);
+      for (let i = 0; i < n; i++) {
+        const color = new THREE.Color(type.colors[Math.floor(Math.random() * type.colors.length)]);
+        color.offsetHSL(0, 0, (Math.random() - 0.5) * 0.04);
+        this.cars.push({
+          mesh, slot: i, idx: this.cars.length, type: type.name, state: 'none', pos: new THREE.Vector3(), vel: new THREE.Vector3(), quat: new THREE.Quaternion(),
+          ang: new THREE.Vector3(), color, heading: 0, node: [0, 0], dir: [1, 0], progress: 0, speed: 14,
+          hp: type.name === 'bus' ? 220 : 100, burn: null, timer: 0, dead: false,
+        });
+        mesh.setColorAt(i, color);
+      }
+    });
   }
+
+  setNight(k) { this.uNight.value = k; if (this.beamMat) this.beamMat.uniforms.uK.value = k; }
 
   // ---------------------------------------------------------------- дороги
   edgeValid(k, l, d) {
@@ -46,6 +64,11 @@ export class Traffic {
     if (k2 < 0 || l2 < 0 || k2 >= N_NODES || l2 >= N_NODES) return false;
     // Дорога вдоль Z через реку — только там, где мост
     if (d[1] !== 0 && Math.min(l, l2) === CITY.riverRow && !isBridgeRoad(k)) return false;
+    // Внутри центрального парка дорог нет
+    const mx = -HALF + (k + k2) * CITY.block / 2, mz = -HALF + (l + l2) * CITY.block / 2;
+    if (mx > BIG_PARK.minX && mx < BIG_PARK.maxX && mz > BIG_PARK.minZ && mz < BIG_PARK.maxZ) return false;
+    // По пляжу машины не ездят
+    if (mx > BEACH.x0 && mz > BEACH.minZ && mz < BEACH.maxZ) return false;
     return true;
   }
 
@@ -63,14 +86,14 @@ export class Traffic {
       car.node = [k, l];
       car.dir = options[Math.floor(Math.random() * options.length)];
       car.progress = Math.random() * 60;
-      car.speed = 10 + Math.random() * 8;
+      car.speed = car.type === 'bus' ? 8 + Math.random() * 3 : 10 + Math.random() * 8;
       car.state = 'drive';
-      car.hp = 100;
+      car.hp = car.type === 'bus' ? 220 : 100;
       car.dead = false;
       car.burn = null;
       car.heading = Math.atan2(car.dir[0], car.dir[1]);
-      this.mesh.setColorAt(car.slot, car.color);
-      this.mesh.instanceColor.needsUpdate = true;
+      car.mesh.setColorAt(car.slot, car.color);
+      car.mesh.instanceColor.needsUpdate = true;
       this.placeOnRoad(car);
       return true;
     }
@@ -114,8 +137,8 @@ export class Traffic {
     W.city.damageRadius(p, 8, 60, 15);
     car.burn = W.fire.add(car.pos, { size: 1.1, life: 25, target: car });
     // Обгоревший корпус
-    this.mesh.setColorAt(car.slot, new THREE.Color(0x1a1714));
-    this.mesh.instanceColor.needsUpdate = true;
+    car.mesh.setColorAt(car.slot, new THREE.Color(0x1a1714));
+    car.mesh.instanceColor.needsUpdate = true;
     if (car.state === 'drive') this.launch(car, new THREE.Vector3((Math.random() - 0.5) * 6, 10, (Math.random() - 0.5) * 6));
   }
 
@@ -184,15 +207,16 @@ export class Traffic {
   update(dt, focus) {
     const W = this.world, city = W.city;
     const inGrid = Math.abs(focus.x) < HALF + 400 && Math.abs(focus.z) < HALF + 400 && focus.y < 3000;
+    const night = this.uNight.value > 0.05;
     for (const car of this.cars) {
       if (car.state === 'none') {
         if (inGrid && Math.random() < 0.05) this.spawnCar(car, focus);
-        else { this.mesh.setMatrixAt(car.slot, _zero); continue; }
+        else { car.mesh.setMatrixAt(car.slot, _zero); if (night) this.beams.setMatrixAt(car.idx, _zero); continue; }
       }
       const far = car.pos.distanceTo(focus) > TRAFFIC.radius + 150;
 
       if (car.state === 'drive') {
-        if (far || !inGrid) { car.state = 'none'; this.mesh.setMatrixAt(car.slot, _zero); continue; }
+        if (far || !inGrid) { car.state = 'none'; car.mesh.setMatrixAt(car.slot, _zero); if (night) this.beams.setMatrixAt(car.idx, _zero); continue; }
         car.progress += car.speed * dt;
         if (car.progress >= CITY.block) {
           car.node = [car.node[0] + car.dir[0], car.node[1] + car.dir[1]];
@@ -219,9 +243,12 @@ export class Traffic {
         } else this.flyStep(car, dt);
       }
       _m.compose(car.pos, car.quat, _one);
-      this.mesh.setMatrixAt(car.slot, _m);
+      car.mesh.setMatrixAt(car.slot, _m);
+      if (night) this.beams.setMatrixAt(car.idx, car.state === 'drive' && car.hp > 0 ? _m : _zero);
     }
-    this.mesh.instanceMatrix.needsUpdate = true;
+    this.beams.visible = night;
+    if (night) this.beams.instanceMatrix.needsUpdate = true;
+    for (const m of this.meshes) m.instanceMatrix.needsUpdate = true;
   }
 
   flyStep(car, dt) {
@@ -284,33 +311,7 @@ export class Traffic {
   }
 
   clear() {
-    for (const car of this.cars) { car.state = 'none'; car.dead = true; this.mesh.setMatrixAt(car.slot, _zero); }
-    this.mesh.instanceMatrix.needsUpdate = true;
+    for (const car of this.cars) { car.state = 'none'; car.dead = true; car.mesh.setMatrixAt(car.slot, _zero); }
+    for (const m of this.meshes) m.instanceMatrix.needsUpdate = true;
   }
-}
-
-// Машина из простых блоков: кузов (окрашивается), стёкла, колёса, фары. Смотрит вдоль +Z.
-function makeCarGeometry() {
-  const parts = [];
-  const add = (geo, color, x, y, z) => {
-    geo.translate(x, y, z);
-    const c = new THREE.Color(color);
-    const n = geo.attributes.position.count;
-    const col = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
-    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    geo.deleteAttribute('uv');
-    parts.push(geo);
-  };
-  add(new THREE.BoxGeometry(1.9, 0.75, 4.4), 0xffffff, 0, 0.75, 0);                 // кузов
-  add(new THREE.BoxGeometry(1.7, 0.65, 2.3), 0x101418, 0, 1.45, -0.25);            // кабина/стёкла
-  add(new THREE.BoxGeometry(1.75, 0.08, 2.0), 0xffffff, 0, 1.8, -0.3);             // крыша
-  for (const [x, z] of [[-0.85, 1.35], [0.85, 1.35], [-0.85, -1.35], [0.85, -1.35]]) {
-    add(new THREE.CylinderGeometry(0.36, 0.36, 0.3, 12).rotateZ(Math.PI / 2), 0x0c0c0c, x, 0.36, z);
-  }
-  add(new THREE.BoxGeometry(0.4, 0.15, 0.05), 0xfff4c0, -0.6, 0.85, 2.21);         // фары
-  add(new THREE.BoxGeometry(0.4, 0.15, 0.05), 0xfff4c0, 0.6, 0.85, 2.21);
-  add(new THREE.BoxGeometry(0.4, 0.15, 0.05), 0xaa1010, -0.6, 0.85, -2.21);        // стопы
-  add(new THREE.BoxGeometry(0.4, 0.15, 0.05), 0xaa1010, 0.6, 0.85, -2.21);
-  return mergeGeometries(parts);
 }

@@ -13,11 +13,14 @@ export function createInputState() {
     boost: false,    // сверхскорость
     hyper: false,    // гиперскорость (Shift + E)
     ultra: false,    // третий уровень (Shift + Q)
+    warp: false,     // четвёртый уровень (Shift + F)
     lookDX: 0,       // накопленное смещение камеры за кадр (пиксели)
     lookDY: 0,
     punch: false,    // одиночный удар (срабатывает один кадр)
     heavyHeld: false,// мощный удар: зарядка, пока true; удар при отпускании
     slam: false,     // удар о землю (один кадр)
+    slamHeld: false, // X удерживается: пике продолжается, отпустили — остановка
+    laser: false,    // лазер из глаз (пока удерживается Z)
     grab: false,     // схватить / бросить (один кадр)
     dash: false,     // рывок (один кадр)
     reset: false,    // восстановить город (один кадр)
@@ -85,7 +88,10 @@ export class KeyboardMouseSource {
     // Ctrl не используем: в браузере Ctrl+W закрывает вкладку
     s.hyper = s.boost && k.has('KeyE');
     s.ultra = s.boost && k.has('KeyQ');
+    s.warp = s.boost && k.has('KeyF');
     s.moveY = (k.has('Space') ? 1 : 0) - (k.has('KeyC') ? 1 : 0);
+    s.slamHeld = k.has('KeyX');
+    s.laser = k.has('KeyZ');
   }
 }
 

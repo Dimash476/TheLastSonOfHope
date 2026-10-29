@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { CITY, WORLD, DEBRIS } from '../config.js';
 import { mulberry32, clamp, lerp } from '../utils.js';
-import { BLOCK, HALF, blockTypes, isBridgeRoad, RIVER_Z, RIVER_HALF_W, TOWNS, groundHeight } from './layout.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { BLOCK, HALF, blockTypes, isBridgeRoad, RIVER_Z, RIVER_HALF_W, TOWNS, groundHeight, skylineAt, inOldTown, LANDMARK, QUAY_X, blockAt, BEACH, PIER, pierDeckY, beachHeight } from './layout.js';
 
 const PALETTE = [
   0xc9bba3, 0xb5a58c, 0xd8d2c4, // бетон / песчаник
@@ -13,6 +14,9 @@ const PALETTE = [
 const GLASS = new Set([0x7d93ad, 0x5a7896, 0x40566e]);
 const HOUSE_PALETTE = [0xe9dcc4, 0xd7c3a3, 0xc9d3d8, 0xe6d2b5, 0xb9c4a8, 0xd9b8a0, 0xf0ece4];
 const ROOF_PALETTE = [0x7a3b2e, 0x5d4a3f, 0x3e464f, 0x6b5a4a, 0x8a4a36];
+const OLD_PALETTE = [0x9c5b45, 0x8a4f3c, 0xa86a50, 0x7e4636, 0x94503a, 0xc9bba3, 0xd6c6a6];
+const WAREHOUSE_PALETTE = [0x9a9890, 0xb3ada0, 0x7f8a91, 0xa49a86, 0x8c8f88, 0x6f7a72];
+const CONTAINER_PALETTE = [0xa8402e, 0x2f5f8f, 0xc77a2a, 0x3d7a4a, 0xd8d4c8, 0x8a2f2a, 0x4a6b7d, 0xb59a3a];
 
 const CELL = 50;  // ячейка пространственной сетки
 const CHUNK = 400;
@@ -42,7 +46,7 @@ export class City {
     this.onImpact = null; // (point, radius, force) — для машин, людей, фонарей
 
     this.material = createBuildingMaterial();
-    this.concrete = new THREE.MeshStandardMaterial({ color: 0x8e8c88, roughness: 0.85, metalness: 0.05 });
+    this.concrete = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0.05 });
     this.roofMat = new THREE.MeshStandardMaterial({ color: 0x6d6f73, roughness: 0.8, metalness: 0.2 });
     this.gableMat = new THREE.MeshStandardMaterial({ roughness: 0.75 });
 
@@ -50,7 +54,11 @@ export class City {
     this.generateMain(rnd);
     for (const t of TOWNS) this.generateTown(t);
     this.generateBridges();
+    this.generateHarbor(mulberry32(CITY.seed + 9));
+    this.generatePier();
     this.buildMeshes();
+    this.uTime = { value: 0 };
+    this.generateAttachments();
     this.buildGrid();
   }
 
@@ -60,8 +68,149 @@ export class City {
     for (let i = 0; i < g; i++) for (let j = 0; j < g; j++) {
       const type = blockTypes[j * g + i];
       const bx = -HALF + i * CITY.block, bz = -HALF + j * CITY.block;
-      if (type === BLOCK.URBAN) this.fillUrbanBlock(bx, bz, rnd, 1);
-      else if (type === BLOCK.SUBURB) this.fillSuburbBlock(bx, bz, rnd);
+      const cx = bx + CITY.block / 2, cz = bz + CITY.block / 2;
+      if (type === BLOCK.URBAN) {
+        if (Math.abs(cx - LANDMARK.x) < 50 && Math.abs(cz - LANDMARK.z) < 50) this.addLandmark(cx, cz);
+        else if (inOldTown(cx, cz)) this.fillOldTownBlock(bx, bz, rnd);
+        else this.fillUrbanBlock(bx, bz, rnd, 1);
+      } else if (type === BLOCK.SUBURB) this.fillSuburbBlock(bx, bz, rnd);
+      else if (type === BLOCK.INDUSTRIAL) this.fillIndustrialBlock(bx, bz, rnd);
+      else if (type === BLOCK.PORT) this.fillPortBlock(bx, bz, rnd);
+      else if (type === BLOCK.STADIUM) this.addStadium(cx, cz);
+    }
+  }
+
+  // Главный небоскрёб города: подиум, ярусы стекла и шпиль
+  addLandmark(x, z) {
+    const fixed = () => 0.5;
+    this.addBuilding({ x, z, w: 80, d: 80, h: 18, color: 0xd8d2c4, glass: false, roof: null }, fixed);
+    const b = this.addBuilding({
+      x, z, w: 46, d: 46, h: 432, color: 0x5a7896, glass: true,
+      tiers: [{ at: 260, k: 0.78 }, { at: 360, k: 0.56 }, { at: 408, k: 0.36 }], roof: null,
+    }, fixed);
+    // Шпиль — часть здания: рушится вместе с ним
+    for (let k = 0; k < 4; k++) this.addSeg(b, { x, z, w: 2.2 - k * 0.4, d: 2.2 - k * 0.4, y0: 432 + k * 12, h: 12, type: 'concrete' });
+  }
+
+  // Старый город: плотная кирпичная застройка по периметру квартала, двор внутри
+  fillOldTownBlock(bx, bz, rnd) {
+    const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2;
+    const n = 4, cell = lot / n;
+    for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) {
+      if (a > 0 && a < n - 1 && b > 0 && b < n - 1) continue; // двор
+      if (rnd() < 0.05) continue;
+      const x = bx + margin + cell * (a + 0.5), z = bz + margin + cell * (b + 0.5);
+      const color = OLD_PALETTE[Math.floor(rnd() * OLD_PALETTE.length)];
+      this.addBuilding({
+        x, z, w: cell - 0.6, d: cell - 0.6, h: 10 + rnd() * 14, color, glass: false,
+        roof: rnd() < 0.6 ? 'gable' : 'box', roofColor: ROOF_PALETTE[Math.floor(rnd() * ROOF_PALETTE.length)],
+      }, rnd);
+    }
+  }
+
+  // Промзона: склады и цеха без окон, трубы
+  fillIndustrialBlock(bx, bz, rnd) {
+    const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2;
+    const x0 = bx + margin, z0 = bz + margin;
+    const parts = rnd() < 0.55 ? [[0, 0.5], [0.5, 1]] : [[0, 1]];
+    for (const [u0, u1] of parts) {
+      if (rnd() < 0.1) continue;
+      const w = lot * (u1 - u0) - 6 - rnd() * 8, d = lot - 10 - rnd() * 20;
+      const x = x0 + lot * (u0 + u1) / 2, z = z0 + lot / 2 + (rnd() - 0.5) * 8;
+      const color = WAREHOUSE_PALETTE[Math.floor(rnd() * WAREHOUSE_PALETTE.length)];
+      this.addBuilding({ x, z, w, d, h: 8 + rnd() * 9, color, glass: false, type: 'concrete', roof: rnd() < 0.6 ? 'box' : null }, rnd);
+    }
+    if (rnd() < 0.3) {
+      const x = x0 + 6 + rnd() * (lot - 12), z = z0 + 3 + rnd() * 3;
+      this.addBuilding({ x, z, w: 4.5, d: 4.5, h: 36 + rnd() * 40, color: rnd() < 0.5 ? 0x8a4f3c : 0xa9a49a, glass: false, type: 'concrete', roof: null }, rnd);
+    }
+  }
+
+  // Штабель контейнеров 12×2.6×2.5 (длинная сторона вдоль X)
+  addContainerStack(x, z, levels, rnd, y0 = 0, d = 2.5) {
+    const b = this.newBuilding({ kind: 'building', x, z, color: CONTAINER_PALETTE[Math.floor(rnd() * CONTAINER_PALETTE.length)], glass: false });
+    for (let k = 0; k < levels; k++) this.addSeg(b, { x, z, w: 12, d, y0: y0 + k * 2.6, h: 2.6, type: 'concrete' });
+    return b;
+  }
+
+  // Порт: контейнерные штабели и портальные краны у набережной
+  fillPortBlock(bx, bz, rnd) {
+    const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2;
+    const x0 = bx + margin, z0 = bz + margin;
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 5; c++) {
+      if (rnd() < 0.3) continue;
+      const x = x0 + 8 + r * 14, z = z0 + 6 + c * 15.5;
+      const levels = 1 + Math.floor(rnd() * 4);
+      for (let m = 0; m < 4; m++) {
+        if (m > 0 && rnd() < 0.2) break;
+        this.addContainerStack(x, z + m * 2.8, Math.max(1, levels - (m > 0 ? Math.floor(rnd() * 2) : 0)), rnd);
+      }
+    }
+    // Кран у причала (через квартал)
+    if (Math.round((bz + HALF) / CITY.block) % 2 === 0) {
+      const x = HALF - 20, z = bz + CITY.block / 2 + (rnd() - 0.5) * 30;
+      const b = this.newBuilding({ kind: 'building', x, z, color: rnd() < 0.5 ? 0xd88a2a : 0xc9a227, glass: false });
+      for (let k = 0; k < 3; k++) this.addSeg(b, { x, z, w: 3.2, d: 3.2, y0: k * 13, h: 13, type: 'concrete' });
+      this.addSeg(b, { x, z, w: 9, d: 7, y0: 39, h: 6, type: 'concrete' });             // кабина и машинное
+      this.addSeg(b, { x: x + 30, z, w: 64, d: 2.4, y0: 45, h: 2.6, type: 'concrete' }); // стрела над водой
+      this.addSeg(b, { x: x - 9, z, w: 10, d: 4, y0: 45, h: 3.2, type: 'concrete' });    // противовес
+    }
+  }
+
+  // Стадион: трибуны в три яруса вокруг поля и мачты освещения
+  addStadium(x, z) {
+    const fixed = () => 0.5, seats = [0x7a3430, 0xa9a59c, 0x4a5a6e];
+    const fw = 30, fd = 21, th = 5; // половины размеров поля, толщина яруса
+    for (let t = 0; t < 3; t++) {
+      const h = 4 + t * 4, o = t * th;
+      const side = { color: seats[t], glass: false, type: 'concrete', roof: null, h };
+      this.addBuilding({ ...side, x, z: z - fd - o - th / 2, w: (fw + o + th) * 2, d: th }, fixed);
+      this.addBuilding({ ...side, x, z: z + fd + o + th / 2, w: (fw + o + th) * 2, d: th }, fixed);
+      this.addBuilding({ ...side, x: x - fw - o - th / 2, z, w: th, d: (fd + o) * 2 }, fixed);
+      this.addBuilding({ ...side, x: x + fw + o + th / 2, z, w: th, d: (fd + o) * 2 }, fixed);
+    }
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      const mx = x + sx * 44, mz = z + sz * 36;
+      const b = this.addBuilding({ x: mx, z: mz, w: 1.6, d: 1.6, h: 36, color: 0x9aa0a6, glass: false, type: 'concrete', roof: null }, fixed);
+      this.addSeg(b, { x: mx, z: mz, w: 6, d: 1.2, y0: 36, h: 3, type: 'concrete' });
+    }
+  }
+
+  // Причалы в море за набережной и пришвартованные корабли
+  // Деревянный пирс на сваях: по нему можно ходить, от ударов он ломается, как мосты
+  generatePier() {
+    const b = this.newBuilding({ kind: 'bridge', x: BEACH.x0 + PIER.len / 2, z: PIER.z, color: 0x8b6b4a, glass: false });
+    const step = 15;
+    for (let t = 0; t < PIER.len; t += step) {
+      const x = BEACH.x0 + t + step / 2, top = pierDeckY(x);
+      const wide = t >= PIER.platFrom, d = wide ? PIER.platW : PIER.w;
+      this.addSeg(b, { x, z: PIER.z, w: step, d, y0: top - 0.5, h: 0.5, type: 'concrete' });
+      // Сваи: ряды поперёк настила
+      const rows = wide ? [-30, -15, 0, 15, 30] : [-PIER.w / 2 + 1, 0, PIER.w / 2 - 1];
+      for (const dz of rows) {
+        const bottom = Math.min(beachHeight(x), -1) - 3;
+        this.addSeg(b, { x, z: PIER.z + dz, w: 0.7, d: 0.7, y0: bottom, h: top - 0.5 - bottom, type: 'concrete' });
+      }
+    }
+  }
+
+  generateHarbor(rnd) {
+    for (let j = 2; j < CITY.grid - 2; j += 5) {
+      const z = -HALF + j * CITY.block + CITY.block / 2;
+      if (Math.abs(z - RIVER_Z) < 300 || (z > BEACH.minZ - 60 && z < BEACH.maxZ + 60)) continue;
+      const len = 90 + rnd() * 60, x0 = QUAY_X - 2, parts = Math.ceil(len / 30);
+      const b = this.newBuilding({ kind: 'bridge', x: x0 + len / 2, z, color: 0x9a978f, glass: false });
+      for (let p = 0; p < parts; p++) this.addSeg(b, { x: x0 + (p + 0.5) * len / parts, z, w: len / parts, d: 18, y0: -1.6, h: 1.6, type: 'concrete' });
+      for (let p = 1; p < parts; p++) for (const s of [-1, 1]) this.addSeg(b, { x: x0 + p * len / parts, z: z + s * 7, w: 2, d: 2, y0: -14, h: 12.4, type: 'concrete' });
+      if (rnd() > 0.7) continue;
+      // Корабль у причала: корпус, надстройка, палубный груз
+      const sl = 70 + rnd() * 70, sz = z + (rnd() < 0.5 ? -1 : 1) * 19, sx = x0 + 10 + sl / 2;
+      const ship = this.newBuilding({ kind: 'ship', x: sx, z: sz, color: [0x2b3a4a, 0x6b2a24, 0x2f4a3a, 0x3a3a3e][Math.floor(rnd() * 4)], glass: false });
+      const n = Math.ceil(sl / 25);
+      for (let p = 0; p < n; p++) this.addSeg(ship, { x: sx - sl / 2 + (p + 0.5) * sl / n, z: sz, w: sl / n, d: 16, y0: -6, h: 9, type: 'concrete' });
+      const sup = this.newBuilding({ kind: 'building', x: sx - sl / 2 + 10, z: sz, color: 0xe8e4dc, glass: false });
+      for (let k = 0; k < 3; k++) this.addSeg(sup, { x: sup.x, z: sz, w: 12, d: 14, y0: 3 + k * 3.5, h: 3.5, type: 'concrete' });
+      for (let p = 1; p < n; p++) this.addContainerStack(sx - sl / 2 + (p + 0.5) * sl / n, sz, 1 + Math.floor(rnd() * 3), rnd, 3, 12);
     }
   }
 
@@ -81,7 +230,7 @@ export class City {
   fillUrbanBlock(bx, bz, rnd, heightScale) {
     const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2;
     const cx = bx + CITY.block / 2, cz = bz + CITY.block / 2;
-    const core = heightScale === 1 ? Math.exp(-((Math.hypot(cx, cz) / CITY.downtownRadius) ** 2)) : 0.35;
+    const core = heightScale === 1 ? skylineAt(cx, cz) : 0.35;
     const hMax = lerp(22, CITY.maxHeight * heightScale, core);
     const nx = core > 0.6 ? (rnd() < 0.5 ? 1 : 2) : 2 + Math.floor(rnd() * 2);
     const nz = core > 0.6 ? (rnd() < 0.5 ? 1 : 2) : 2 + Math.floor(rnd() * 2);
@@ -157,20 +306,22 @@ export class City {
   addBuilding(p, rnd) {
     const b = this.newBuilding({ kind: 'building', x: p.x, z: p.z, color: p.color, glass: p.glass });
     b.color.offsetHSL(0, 0, (rnd() - 0.5) * 0.08);
-    // Нарезаем по высоте на секции
+    // Нарезаем по высоте на секции; уступы сужают верхние ярусы
+    const tiers = p.tiers || (p.step ? [p.step] : []);
     const n = Math.max(1, Math.round(p.h / CITY.segment));
     const sh = p.h / n;
     for (let k = 0; k < n; k++) {
       const y0 = k * sh;
-      const upper = p.step && y0 >= p.step.at;
-      const w = upper ? p.w * p.step.k : p.w, d = upper ? p.d * p.step.k : p.d;
-      this.addSeg(b, { x: p.x, z: p.z, w, d, y0, h: sh });
+      let kk = 1;
+      for (const t of tiers) if (y0 >= t.at - 0.01) kk = t.k;
+      this.addSeg(b, { x: p.x, z: p.z, w: p.w * kk, d: p.d * kk, y0, h: sh, type: p.type || 'building' });
     }
     // Подряд идущие секции одного размера — «цельный» блок для рендера
     if (n > 1) {
       let run = null;
       for (const si of b.segs) {
         const sg = this.segs[si];
+        if (sg.type !== 'building') { run = null; continue; }
         if (!run || Math.abs(run.w - sg.w) > 0.01) {
           run = { b: b.index, x: sg.x, z: sg.z, w: sg.w, d: sg.d, y0: sg.y0, h: 0, segs: [], whole: true };
           this.runs.push(run);
@@ -264,6 +415,7 @@ export class City {
   }
 
   writeSeg(s, init = false) {
+    if (s.att) this.writeAttachments(s);
     if (s.run && s.run.whole) {
       if (!init) this.splitRun(s.run);
       return;
@@ -288,6 +440,113 @@ export class City {
     } else r.mesh.setMatrixAt(r.slot, _zero);
     if (r.color) { r.mesh.setColorAt(r.slot, r.color); r.mesh.instanceColor.needsUpdate = true; }
     r.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // ================================================================ детали на зданиях
+  // Кондиционеры, баки, антенны и вытяжки на крышах, рекламные щиты, неоновые вывески.
+  // Каждая деталь привязана к секции здания и исчезает вместе с ней.
+  generateAttachments() {
+    const rnd = mulberry32(CITY.seed + 31);
+    const geos = makeAttachmentGeometries();
+    const groups = new Map(); // ключ чанка → { тип: [{ seg, m, color }] }
+    const put = (type, seg, m, color = 0xffffff) => {
+      const key = Math.floor(seg.x / CHUNK) * 100000 + Math.floor(seg.z / CHUNK);
+      if (!groups.has(key)) groups.set(key, {});
+      const g = groups.get(key);
+      (g[type] = g[type] || []).push({ seg, m, color });
+    };
+    const NEON = [0xff2a6d, 0x05d9e8, 0xffd319, 0x9b5de5, 0x00f5a0, 0xff7b00];
+    const AD = [0xe63946, 0x2a9d8f, 0xf4a261, 0x457b9d, 0xffb703, 0x8338ec, 0x06d6a0];
+    for (const b of this.buildings) {
+      if (b.kind !== 'building' || (b.roof && b.roof.kind === 'gable')) continue;
+      const top = this.segs[b.segs[b.segs.length - 1]];
+      const roofY = top.y0 + top.h, H = roofY;
+      // Красные заградительные огни на высотках, кранах и трубах (мигают)
+      if (H > 38) {
+        const ident = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
+        if (top.w > 10 && top.d > 10) {
+          for (const [sx, sz] of [[-1, -1], [1, 1]]) put('beacon', top, new THREE.Matrix4().compose(_v.set(top.x + sx * (top.w / 2 - 0.6), roofY, top.z + sz * (top.d / 2 - 0.6)), ident, one), 0xff1a10);
+        } else put('beacon', top, new THREE.Matrix4().compose(_v.set(top.x, roofY, top.z), ident, one), 0xff1a10);
+      }
+      if (top.w < 6 || top.d < 6) continue;
+      if (H < 7 || Math.abs(b.x) > HALF + 50 || Math.abs(b.z) > HALF + 50) continue;
+      // Крыша: 1–4 детали в зависимости от площади
+      const n = Math.min(4, 1 + Math.floor(top.w * top.d / 260 * rnd()));
+      for (let i = 0; i < n; i++) {
+        const x = top.x + (rnd() - 0.5) * (top.w - 4), z = top.z + (rnd() - 0.5) * (top.d - 4);
+        const r = rnd(), rot = Math.floor(rnd() * 4) * Math.PI / 2;
+        _q.setFromAxisAngle(_v.set(0, 1, 0), rot);
+        if (r < 0.45) put('ac', top, new THREE.Matrix4().compose(_v.set(x, roofY, z), _q, new THREE.Vector3(1, 1, 1)));
+        else if (r < 0.62 && H < 80) put('tank', top, new THREE.Matrix4().compose(_v.set(x, roofY, z), _q, new THREE.Vector3(1, 1, 1)));
+        else if (r < 0.8) put('vent', top, new THREE.Matrix4().compose(_v.set(x, roofY, z), _q, new THREE.Vector3(1, 0.7 + rnd(), 1)));
+        else put('antenna', top, new THREE.Matrix4().compose(_v.set(x, roofY, z), _q, new THREE.Vector3(1, 0.5 + rnd() * (H > 100 ? 2.5 : 1), 1)));
+      }
+      const urban = blockAt(b.x, b.z) === BLOCK.URBAN;
+      if (!urban || top.type !== 'building') continue;
+      const core = skylineAt(b.x, b.z), old = inOldTown(b.x, b.z);
+      // Рекламный щит на крыше невысокого здания, повёрнут к улице
+      if (H > 14 && H < 95 && top.w > 13 && rnd() < 0.05 + core * 0.08) {
+        const face = rnd() < 0.5 ? 0 : Math.PI / 2;
+        const len = (face ? top.d : top.w) * 0.75;
+        _q.setFromAxisAngle(_v.set(0, 1, 0), face + (rnd() < 0.5 ? Math.PI : 0));
+        put('board', top, new THREE.Matrix4().compose(_v.set(top.x, roofY, top.z), _q, new THREE.Vector3(len / 10, len / 10, 1)), AD[Math.floor(rnd() * AD.length)]);
+      }
+      // Неоновые вывески на фасаде у тротуара (чаще в старом городе и в центре)
+      const signs = rnd() < (old ? 0.45 : 0.12 + core * 0.25) ? 1 + Math.floor(rnd() * 2) : 0;
+      const base = this.segs[b.segs[0]];
+      for (let i = 0; i < signs; i++) {
+        const y = 4.5 + rnd() * Math.min(8, H - 7);
+        const seg = b.segs.map((si) => this.segs[si]).find((s) => s.y0 <= y && s.y0 + s.h > y) || base;
+        const side = Math.floor(rnd() * 4), a = side * Math.PI / 2;
+        const nx = Math.round(Math.sin(a)), nz = Math.round(Math.cos(a));
+        const along = (rnd() - 0.5) * 0.7;
+        const px = seg.x + nx * (seg.w / 2) + (nz ? along * seg.w : 0);
+        const pz = seg.z + nz * (seg.d / 2) + (nx ? along * seg.d : 0);
+        _q.setFromAxisAngle(_v.set(0, 1, 0), a);
+        put(rnd() < 0.6 ? 'neonV' : 'neonH', seg, new THREE.Matrix4().compose(_v.set(px, y, pz), _q, new THREE.Vector3(1, 1, 1)), NEON[Math.floor(rnd() * NEON.length)]);
+      }
+    }
+
+    this.attachMat = createAttachmentMaterial(this.material.userData.uNight, this.uTime);
+    this.attachChunks = [];
+    for (const g of groups.values()) {
+      const meshes = [];
+      for (const type in g) {
+        const list = g[type];
+        const mesh = new THREE.InstancedMesh(geos[type], this.attachMat, list.length);
+        mesh.castShadow = type === 'board' || type === 'tank';
+        mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(list.length * 3).fill(1), 3);
+        list.forEach((a, i) => {
+          a.mesh = mesh; a.slot = i;
+          mesh.setMatrixAt(i, a.m);
+          mesh.setColorAt(i, _c.set(a.color));
+          (a.seg.att = a.seg.att || []).push(a);
+        });
+        mesh.computeBoundingSphere();
+        this.scene.add(mesh);
+        meshes.push(mesh);
+      }
+      const c = meshes[0].boundingSphere.center;
+      this.attachChunks.push({ meshes, x: c.x, z: c.z });
+    }
+  }
+
+  // Детали дальше ~1.6 км не рисуем: их не видно, а вершины считаются
+  updateView(camPos, dt) {
+    this.uTime.value += dt;
+    if (!this.attachChunks) return;
+    const far = 1600 + camPos.y * 0.5;
+    for (const c of this.attachChunks) {
+      const v = Math.hypot(c.x - camPos.x, c.z - camPos.z) < far;
+      for (const m of c.meshes) m.visible = v;
+    }
+  }
+
+  writeAttachments(s) {
+    for (const a of s.att) {
+      a.mesh.setMatrixAt(a.slot, s.alive ? a.m : _zero);
+      a.mesh.instanceMatrix.needsUpdate = true;
+    }
   }
 
   // ================================================================ пространственная сетка
@@ -525,7 +784,7 @@ export class City {
     for (const s of segs) { s.alive = false; this.writeSeg(s); this.fx.effects.clearDecals?.(s.index); }
     if (b.roof) this.writeRoof(b);
 
-    const mesh = new THREE.InstancedMesh(this.segs[0].mesh.geometry, this.material, segs.length);
+    const mesh = new THREE.InstancedMesh(this.segs[0].mesh.geometry, segs[0].type === 'building' ? this.material : this.concrete, segs.length);
     segs.forEach((s, i) => {
       mesh.setMatrixAt(i, this.segMatrix(s, _m));
       _c.copy(b.color).multiplyScalar(0.55 + 0.45 * (s.hp / s.maxHp));
@@ -763,9 +1022,12 @@ function createBuildingMaterial() {
           vec2 bu = fuv / vec2(0.25, 0.075);
           bu.x += step(1.0, mod(floor(bu.y), 2.0)) * 0.5;
           vec2 bf = fract(bu);
+          // Вдали кладка мельче пикселя — заменяем её средним тоном (иначе муар)
+          vec2 bw = fwidth(bu);
+          float bfade = 1.0 - smoothstep(0.25, 0.6, max(bw.x, bw.y));
           float mortar = 1.0 - step(0.07, bf.x) * step(0.12, bf.y);
-          vec3 brick = wallCol * (0.82 + 0.3 * bh21(floor(bu)));
-          brick = mix(brick, vec3(0.55, 0.53, 0.5) * 0.8, mortar * 0.7);
+          vec3 brick = wallCol * mix(0.97, 0.82 + 0.3 * bh21(floor(bu)), bfade);
+          brick = mix(brick, vec3(0.55, 0.53, 0.5) * 0.8, mix(0.13, mortar * 0.7, bfade));
           wallCol = mix(wallCol, brick, isBrick);
           // Пилястры у офисов
           float pil = step(fract(cell.x * 0.5), 0.06);
@@ -834,6 +1096,84 @@ function createBuildingMaterial() {
           float lit = step(mix(0.93, 0.6, uNight), winRnd);
           vec3 warm = mix(vec3(1.0, 0.8, 0.52), vec3(0.78, 0.87, 1.0), step(0.8, fract(winRnd * 7.3)));
           totalEmissiveRadiance += winMask * lit * warm * (interior * 1.4 + 0.08) * mix(0.25, 1.35, uNight);
+        }`);
+  };
+  return mat;
+}
+
+// Геометрии деталей (точка опоры — на крыше / на фасаде). Атрибуты:
+// tint — брать цвет экземпляра (щиты, неон), glow — светится.
+function makeAttachmentGeometries() {
+  const part = (geo, color, tint = 0, glow = 0) => {
+    if (geo.index) geo = geo.toNonIndexed();
+    geo.deleteAttribute('uv');
+    const c = new THREE.Color(color), n = geo.attributes.position.count;
+    const col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.setAttribute('tint', new THREE.BufferAttribute(new Float32Array(n).fill(tint), 1));
+    geo.setAttribute('glow', new THREE.BufferAttribute(new Float32Array(n).fill(glow), 1));
+    return geo;
+  };
+  const B = (w, h, d, x, y, z) => new THREE.BoxGeometry(w, h, d).translate(x, y, z);
+  const C = (r, h, x, y, z, s = 10) => new THREE.CylinderGeometry(r, r, h, s).translate(x, y, z);
+  const merge = (l) => mergeGeometries(l);
+  return {
+    // Кондиционер: корпус, решётка вентилятора сверху
+    ac: merge([part(B(2.2, 1.1, 1.4, 0, 0.55, 0), 0xb9bcbf), part(C(0.45, 0.06, 0.45, 1.13, 0), 0x2a2c2e), part(B(0.25, 0.3, 0.25, -0.8, 1.25, 0), 0x8a8d90)]),
+    // Бак для воды на опорах (как на старых крышах)
+    tank: merge([
+      part(C(1.3, 2.4, 0, 2.4, 0, 14), 0x6b5240), part(new THREE.ConeGeometry(1.4, 0.7, 14).translate(0, 3.95, 0), 0x4a3a2e),
+      ...[[-0.8, -0.8], [0.8, -0.8], [-0.8, 0.8], [0.8, 0.8]].map(([x, z]) => part(B(0.15, 1.2, 0.15, x, 0.6, z), 0x3a3c3e)),
+    ]),
+    vent: merge([part(C(0.35, 1.8, 0, 0.9, 0), 0x9a9da0), part(C(0.5, 0.25, 0, 1.85, 0), 0x6a6d70)]),
+    antenna: merge([part(C(0.05, 6, 0, 3, 0, 5), 0x7a7d80), part(B(1.2, 0.05, 0.05, 0, 4.2, 0), 0x7a7d80), part(B(0.8, 0.05, 0.05, 0, 5.2, 0), 0x7a7d80),
+      part(new THREE.SphereGeometry(0.12, 6, 4).translate(0, 6.05, 0), 0xff2020, 0, 1)]),
+    // Щит 10×3.5 м на двух опорах (масштабируется по длине)
+    board: merge([
+      part(B(10, 3.5, 0.15, 0, 4.25, 0), 0xffffff, 1, 1),
+      part(B(10.3, 3.8, 0.1, 0, 4.25, -0.12), 0x2b2d30),
+      part(B(0.25, 2.5, 0.25, -3.5, 1.25, -0.3), 0x3a3c3e), part(B(0.25, 2.5, 0.25, 3.5, 1.25, -0.3), 0x3a3c3e),
+      part(B(10, 0.1, 0.8, 0, 2.45, 0.3), 0x3a3c3e),
+    ]),
+    // Вертикальная вывеска торчит из стены; горизонтальная — над входом
+    neonV: merge([part(B(0.35, 3.4, 1.3, 0, 0, 0.75), 0xffffff, 1, 1), part(B(0.45, 3.6, 0.1, 0, 0, 0.05), 0x222326)]),
+    beacon: merge([part(C(0.12, 0.6, 0, 0.3, 0, 5), 0x3a3c3e), part(new THREE.SphereGeometry(0.32, 8, 6).translate(0, 0.75, 0), 0xffffff, 1, 2)]),
+    neonH: merge([part(B(3.2, 0.7, 0.18, 0, 0, 0.12), 0xffffff, 1, 1), part(B(3.4, 0.85, 0.06, 0, 0, 0.02), 0x222326)]),
+  };
+}
+
+// Материал деталей: щиты и неон берут цвет экземпляра и светятся (ночью — ярко, неон мерцает)
+function createAttachmentMaterial(uNight, uTime) {
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.3 });
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uNight = uNight;
+    shader.uniforms.uTime = uTime;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float tint;\nattribute float glow;\nvarying float vGlow;\nvarying vec3 vLoc;\nvarying float vSeed;')
+      .replace('#include <color_vertex>', `
+        vColor.rgb = color.rgb;
+        #ifdef USE_INSTANCING_COLOR
+          vColor.rgb *= mix(vec3(1.0), instanceColor.rgb, tint);
+        #endif
+        vGlow = glow;
+        vLoc = position;
+        vSeed = fract(sin(dot(instanceMatrix[3].xz, vec2(12.9898, 78.233))) * 43758.5453);`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uNight, uTime;\nvarying float vGlow;\nvarying vec3 vLoc;\nvarying float vSeed;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        // Абстрактный «плакат»: диагональные полосы и светлое поле
+        float poster = 0.6 + 0.4 * smoothstep(-0.3, 0.3, sin(vLoc.x * 0.9 + vLoc.y * 1.7 + vSeed * 6.0));
+        poster *= 1.0 - 0.35 * step(0.55, fract(vLoc.x * 0.12 + vSeed));
+        diffuseColor.rgb *= mix(1.0, poster, vGlow);`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        {
+          float flick = 0.85 + 0.15 * sin(uTime * (2.0 + vSeed * 5.0) + vSeed * 40.0);
+          flick *= step(0.04, fract(uTime * 0.13 + vSeed)); // изредка гаснет на миг
+          float neon = min(vGlow, 1.0) * mix(0.18, 2.6, uNight) * mix(1.0, flick, uNight);
+          // glow = 2: заградительный огонь — медленно мигает, виден и днём
+          float beacon = step(1.5, vGlow) * smoothstep(0.35, 0.5, fract(uTime * 0.55 + vSeed * 0.3)) * mix(1.5, 6.0, uNight);
+          totalEmissiveRadiance += diffuseColor.rgb * mix(neon, beacon, step(1.5, vGlow));
         }`);
   };
   return mat;
