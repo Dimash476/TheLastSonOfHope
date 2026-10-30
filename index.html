@@ -47,21 +47,51 @@
       <kbd>B</kbd>/<kbd>ЛКМ</kbd> удар · <kbd>ПКМ</kbd> (держать) мощный удар / погладить животное рядом<br />
       <kbd>R</kbd> схватить / бросить · <kbd>Y</kbd> рывок<br />
       <kbd>X</kbd> (держать) удар о землю · <kbd>Z</kbd> (держать) лазер из глаз<br />
+      <kbd>E</kbd> действие рядом: мяч собаке, привет людям, помочь подняться<br />
+      <kbd>P</kbd> фоторежим · <kbd>V</kbd> замедление времени<br />
       <kbd>T</kbd> время суток · <kbd>U</kbd> погода · <kbd>M</kbd> своя музыка · <kbd>N</kbd> музыка игры<br />
       <kbd>G</kbd> качество графики · <kbd>K</kbd> восстановить · <kbd>Esc</kbd> пауза
     </div>
 
     <div id="toast"></div>
     <div id="interact"></div>
+    <div id="slowmo-badge">ЗАМЕДЛЕНИЕ</div>
   </div>
+
+  <!-- Фоторежим -->
+  <div id="photo-ui" class="hidden">
+    <div id="photo-filter">Без фильтра</div>
+    <div class="photo-keys">
+      <kbd>Мышь</kbd> вращать · <kbd>W</kbd>/<kbd>S</kbd>, колесо — ближе/дальше · <kbd>A</kbd>/<kbd>D</kbd> облёт · <kbd>Space</kbd>/<kbd>C</kbd> выше/ниже<br />
+      <kbd>1</kbd>–<kbd>6</kbd> фильтр · <kbd>L</kbd> кинокадр · <kbd>Enter</kbd> сохранить снимок · <kbd>H</kbd> скрыть подсказку · <kbd>P</kbd> выход
+    </div>
+  </div>
+  <div id="photo-flash"></div>
 
   <!-- Start / pause screen -->
   <div id="overlay">
     <div class="panel">
       <h1>THE LAST SON<br />OF HOPE</h1>
-      <div class="sub">симулятор · version 3</div>
+      <div class="sub">version 4</div>
       <div id="loading">Загрузка…</div>
-      <button id="play-btn" class="hidden">Играть</button>
+      <!-- Выбор режима -->
+      <div id="modes" class="hidden">
+        <button class="mode" id="mode-sim">
+          <div class="mode-title">Симулятор</div>
+          <div class="mode-desc">Свободная игра в живом городе: полёт до Луны, сила, скорость и разрушения — без правил и заданий.</div>
+        </button>
+        <button class="mode locked" id="mode-story">
+          <span class="badge">Скоро</span>
+          <div class="mode-title">Сюжет</div>
+          <div class="mode-desc">История героя: кто он, откуда пришёл и что ему предстоит.</div>
+        </button>
+      </div>
+      <div id="story-note" class="hidden">Сюжетная часть сейчас в разработке. А пока — свободный полёт в симуляторе!</div>
+      <!-- Пауза -->
+      <div id="pause-btns" class="hidden">
+        <button id="play-btn">Продолжить</button>
+        <button id="menu-btn">Главное меню</button>
+      </div>
       <div class="hint">Клик — захват мыши. Esc — пауза.</div>
       <div class="credits">Модель персонажа: «Free Rigged Male Basemesh» by Filip (Sketchfab), CC-BY-4.0</div>
     </div>

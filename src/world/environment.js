@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { CITY, WORLD, SPACE } from '../config.js';
 import { mulberry32, smoothstep, lerp } from '../utils.js';
-import { HALF, PLANE_HALF, RIVER_Z, RIVER_HALF_W, TOWNS, blockTypes, TERRAIN_RES, terrainHeights, coastX, forestMask, QUAY_X, SEA_BED, BIG_PARK, POND, STADIUM, BEACH } from './layout.js';
+import { HALF, PLANE_HALF, RIVER_Z, RIVER_HALF_W, TOWNS, blockTypes, TERRAIN_RES, terrainHeights, coastX, forestMask, QUAY_X, SEA_BED, BIG_PARK, POND, STADIUM, BEACH, plainK } from './layout.js';
 
 // Небо, солнце, туман, земля с дорогами, рельеф, вода, облака.
 export class Environment {
@@ -311,7 +311,7 @@ export class Environment {
             return mix(mix(h21(i), h21(i + vec2(1, 0)), f.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), f.x), f.y);
           }`)
         .replace('#include <color_fragment>', `#include <color_fragment>
-          float groundWet = 0.0;
+          float groundWet = 0.0, puddle = 0.0;
           {
             vec2 p = vWPos.xz;
             vec2 lp = mod(p, uBlock);
@@ -399,6 +399,16 @@ export class Environment {
             float zA = step(d.x, uRoad - 0.6) * step(uWalk + 0.5, d.y) * step(d.y, uWalk + 4.5) * step(0.5, fract(p.x * 0.9));
             float zB = step(d.y, uRoad - 0.6) * step(uWalk + 0.5, d.x) * step(d.x, uWalk + 4.5) * step(0.5, fract(p.y * 0.9));
             col = mix(col, vec3(0.86), max(zA, zB) * isRoad * 0.9);
+            // Люки на полосах движения
+            {
+              float mA = length(vec2(mod(p.x, 33.0) - 16.5, d.y - 3.6)) * step(uWalk, d.x);
+              float mB = length(vec2(mod(p.y, 33.0) - 16.5, d.x - 3.6)) * step(uWalk, d.y);
+              float mh = min(mA + step(uRoad, d.y) * 99.0, mB + step(uRoad, d.x) * 99.0);
+              float lid = 1.0 - smoothstep(0.42, 0.46, mh);
+              float rim = smoothstep(0.36, 0.4, mh) * lid;
+              col = mix(col, vec3(0.1, 0.1, 0.105) * (0.85 + 0.3 * step(0.5, fract(p.x * 4.0 + p.y * 4.0))), lid * isRoad);
+              col = mix(col, vec3(0.2, 0.2, 0.2), rim * isRoad);
+            }
             // Заплатки и тёмные пятна на асфальте
             float patchN = vnoise(p * 0.15);
             col *= 1.0 - isRoad * smoothstep(0.62, 0.7, patchN) * 0.25;
@@ -427,11 +437,15 @@ export class Environment {
             float n = vnoise(p * 0.08) * 0.6 + vnoise(p * 0.6) * 0.4;
             col *= 0.82 + 0.3 * n;
             groundWet = uWet * (0.5 + 0.5 * isRoad * roads);
+            // Лужи после дождя: тёмные гладкие пятна, в них отражается небо
+            puddle = uWet * smoothstep(0.6, 0.68, vnoise(p * 0.06) * 0.7 + vnoise(p * 0.31) * 0.3) * roads;
+            col = mix(col, col * 0.55 + vec3(0.01, 0.012, 0.016), puddle);
             col *= 1.0 - groundWet * 0.35;
             diffuseColor.rgb = col;
           }`)
         .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-          roughnessFactor = mix(roughnessFactor, 0.12, groundWet);`);
+          roughnessFactor = mix(roughnessFactor, 0.12, groundWet);
+          roughnessFactor = mix(roughnessFactor, 0.02, puddle);`);
     };
     return mat;
   }
@@ -442,6 +456,7 @@ export class Environment {
     const geo = new THREE.PlaneGeometry(size, size, N, N).rotateX(-Math.PI / 2);
     const pos = geo.attributes.position;
     const colors = new Float32Array(pos.count * 3);
+    const farmA = new Float32Array(pos.count), meadowA = new Float32Array(pos.count);
     const H = terrainHeights, W = N + 1;
     const cGrass = new THREE.Color(0x3d5a2a), cDry = new THREE.Color(0x6b6a3e), cRock = new THREE.Color(0x6a625a);
     const cSnow = new THREE.Color(0xf2f4f8), cSand = new THREE.Color(0xcdb98e), cSea = new THREE.Color(0x4a5a52);
@@ -467,23 +482,51 @@ export class Environment {
       c.lerp(cSand, beach);
       c.lerp(cSea, ss(-h, 3, 20));
       colors[k * 3] = c.r; colors[k * 3 + 1] = c.g; colors[k * 3 + 2] = c.b;
+      // Равнины: поля (подальше от города, ровные места) и луга с цветами
+      const pk = plainK(x, z), flat = 1 - ss(slope, 0.06, 0.18), low = 1 - ss(h, 120, 260), dry = h > 0.5 ? 1 : 0;
+      farmA[k] = pk * flat * low * dry * ss(Math.hypot(x, z), 4200, 5600) * (1 - forestMask(x, z, h));
+      meadowA[k] = Math.max(0, pk * low * dry - farmA[k]);
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.setAttribute('farm', new THREE.BufferAttribute(farmA, 1));
+    geo.setAttribute('meadow', new THREE.BufferAttribute(meadowA, 1));
     geo.computeVertexNormals();
 
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 });
     mat.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vTPos;')
-        .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvTPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+        .replace('#include <common>', '#include <common>\nvarying vec3 vTPos;\nattribute float farm;\nattribute float meadow;\nvarying float vFarm;\nvarying float vMeadow;')
+        .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvTPos = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvFarm = farm;\nvMeadow = meadow;');
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
           varying vec3 vTPos;
+          varying float vFarm;
+          varying float vMeadow;
           float th(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
           float tn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
             return mix(mix(th(i), th(i+vec2(1,0)), f.x), mix(th(i+vec2(0,1)), th(i+vec2(1,1)), f.x), f.y); }`)
         .replace('#include <color_fragment>', `#include <color_fragment>
-          diffuseColor.rgb *= 0.8 + 0.35 * (tn(vTPos.xz * 0.01) * 0.6 + tn(vTPos.xz * 0.12) * 0.4);`);
+          diffuseColor.rgb *= 0.8 + 0.35 * (tn(vTPos.xz * 0.01) * 0.6 + tn(vTPos.xz * 0.12) * 0.4);
+          {
+            // Лоскутные поля: повёрнутые участки, у каждого своя культура и борозды
+            vec2 q = mat2(0.94, -0.34, 0.34, 0.94) * vTPos.xz;
+            vec2 cellId = floor(q / vec2(220.0, 160.0));
+            float r = th(cellId);
+            vec3 crop = r < 0.3 ? vec3(0.62, 0.52, 0.22) : r < 0.55 ? vec3(0.28, 0.42, 0.14) : r < 0.75 ? vec3(0.34, 0.25, 0.16) : vec3(0.45, 0.5, 0.2);
+            float rc = (r < 0.5 ? q.x : q.y) * 1.6;
+            float rows = 0.88 + 0.12 * sin(rc) * (1.0 - smoothstep(0.4, 1.2, fwidth(rc)));
+            vec2 fb = abs(fract(q / vec2(220.0, 160.0)) - 0.5);
+            float hedge = smoothstep(0.485, 0.495, max(fb.x, fb.y));
+            vec3 farmCol = mix(crop * rows, vec3(0.16, 0.24, 0.1), hedge);
+            diffuseColor.rgb = mix(diffuseColor.rgb, farmCol, smoothstep(0.25, 0.6, vFarm));
+            // Луга: сочная трава и россыпь полевых цветов вблизи
+            vec3 grass = mix(vec3(0.22, 0.36, 0.12), vec3(0.32, 0.44, 0.16), tn(vTPos.xz * 0.03));
+            float fl = th(floor(vTPos.xz * 1.3));
+            vec3 flower = fl > 0.985 ? vec3(0.9, 0.85, 0.3) : fl > 0.975 ? vec3(0.85, 0.3, 0.45) : fl > 0.965 ? vec3(0.9, 0.9, 0.95) : grass;
+            float near = 1.0 - smoothstep(60.0, 220.0, length(vTPos - cameraPosition));
+            vec3 meadowCol = mix(grass, flower, near * 0.9);
+            diffuseColor.rgb = mix(diffuseColor.rgb, meadowCol, smoothstep(0.3, 0.7, vMeadow) * 0.85);
+          }`);
     };
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
@@ -540,7 +583,7 @@ export class Environment {
 
   createWater() {
     const geo = new THREE.PlaneGeometry(WORLD.terrainSize, WORLD.terrainSize, 1, 1).rotateX(-Math.PI / 2);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x0f2a36, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.92 });
+    const mat = new THREE.MeshStandardMaterial({ color: 0x0f2a36, roughness: 0.035, metalness: 0.15, transparent: true, opacity: 0.92 });
     mat.userData.uTime = { value: 0 };
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = mat.userData.uTime;
@@ -561,6 +604,9 @@ export class Environment {
             g += vec2(-0.4, 0.9) * cos(dot(p, vec2(-0.4, 0.9)) * 0.21 + t * 1.6) * 0.35;
             g += vec2(0.6, -0.7) * cos(dot(p, vec2(0.6, -0.7)) * 0.53 + t * 2.3) * 0.2;
             g += vec2(-0.9, -0.2) * cos(dot(p, vec2(-0.9, -0.2)) * 1.31 + t * 3.1) * 0.1;
+            // Мелкая рябь — солнечные блики искрятся
+            g += vec2(0.3, 0.95) * cos(dot(p, vec2(0.3, 0.95)) * 2.9 + t * 4.3) * 0.06;
+            g += vec2(-0.75, 0.66) * cos(dot(p, vec2(-0.75, 0.66)) * 5.7 + t * 5.9) * 0.035;
             float fade = 1.0 / (1.0 + length(vViewPosition) * 0.002);
             vec3 wn = normalize(vec3(-g.x * 0.25 * fade, 1.0, -g.y * 0.25 * fade));
             normal = normalize((viewMatrix * vec4(wn, 0.0)).xyz);

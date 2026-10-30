@@ -40,7 +40,10 @@ export class HUD {
 
     // Подсказка: можно погладить собаку или кошку
     const pet = player.petting || player.petTarget;
-    const txt = player.petting ? '♥' : pet ? `<kbd>ПКМ</kbd> погладить ${pet.kind === 'dog' ? 'собаку' : 'кошку'}` : '';
+    const it = player.interactTarget;
+    const act = it ? `<kbd>E</kbd> ${it.type === 'help' ? 'помочь подняться' : it.type === 'ball' ? 'бросить мяч' : 'поприветствовать'}` : '';
+    const petTxt = pet ? `<kbd>ПКМ</kbd> погладить ${pet.kind === 'dog' ? 'собаку' : 'кошку'}` : '';
+    const txt = player.petting ? '♥' : [petTxt, act].filter(Boolean).join(' &nbsp;·&nbsp; ');
     if (txt !== this.lastInteract) { this.el.interact.innerHTML = txt; this.lastInteract = txt; }
     this.el.interact.classList.toggle('show', !!txt);
 

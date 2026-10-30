@@ -24,6 +24,7 @@ const _m = new THREE.Matrix4();
 const _m2 = new THREE.Matrix4();
 const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 const _c = new THREE.Color();
+const SMALL_ATTACH = new Set(['door', 'awning', 'cornice', 'fireescape', 'vent', 'ac', 'neonH']);
 const _v = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const GLASS_COLOR = new THREE.Color(0xbcd6e8);
@@ -457,6 +458,7 @@ export class City {
     };
     const NEON = [0xff2a6d, 0x05d9e8, 0xffd319, 0x9b5de5, 0x00f5a0, 0xff7b00];
     const AD = [0xe63946, 0x2a9d8f, 0xf4a261, 0x457b9d, 0xffb703, 0x8338ec, 0x06d6a0];
+    const AWNING = [0x7a2a2a, 0x2a5a4a, 0x2a3f6a, 0x8a6a2a, 0x5a2a5a, 0x3a3a3a, 0xa0522d];
     for (const b of this.buildings) {
       if (b.kind !== 'building' || (b.roof && b.roof.kind === 'gable')) continue;
       const top = this.segs[b.segs[b.segs.length - 1]];
@@ -483,6 +485,37 @@ export class City {
       }
       const urban = blockAt(b.x, b.z) === BLOCK.URBAN;
       if (!urban || top.type !== 'building') continue;
+      // ---- Улица: какая сторона здания смотрит на ближайшую дорогу
+      {
+        const base0 = this.segs[b.segs[0]];
+        const lx = ((b.x + HALF) % CITY.block + CITY.block) % CITY.block, lz = ((b.z + HALF) % CITY.block + CITY.block) % CITY.block;
+        const opts = [[lx, -1, 0], [CITY.block - lx, 1, 0], [lz, 0, -1], [CITY.block - lz, 0, 1]].sort((p, q) => p[0] - q[0]);
+        const [, nx, nz] = opts[0];
+        const fa = Math.atan2(nx, nz), half = nx ? base0.w / 2 : base0.d / 2, along = nx ? base0.d : base0.w;
+        const fx = base0.x + nx * half, fz = base0.z + nz * (nx ? 0 : half);
+        const ox = nx ? 0 : 1, oz = nx ? 1 : 0;       // направление вдоль фасада
+        _q.setFromAxisAngle(_v.set(0, 1, 0), fa);
+        // Вход: дверь с козырьком
+        const dOff = (rnd() - 0.5) * along * 0.5;
+        put('door', base0, new THREE.Matrix4().compose(_v.set(fx + ox * dOff, 0, fz + oz * dOff), _q, new THREE.Vector3(1, 1, 1)));
+        // Маркиза над витриной (не над дверью)
+        if (rnd() < 0.45 && along > 9) {
+          const aOff = dOff > 0 ? -along * 0.22 : along * 0.22, len = Math.min(along * 0.4, 9);
+          put('awning', base0, new THREE.Matrix4().compose(_v.set(fx + ox * aOff, 0, fz + oz * aOff), _q, new THREE.Vector3(len / 4, 1, 1)), AWNING[Math.floor(rnd() * AWNING.length)]);
+        }
+        // Пожарная лестница на кирпичных домах старого города — на фасаде сбоку от входа
+        if (inOldTown(b.x, b.z) && H > 9 && rnd() < 0.6) {
+          const eOff = dOff > 0 ? -along * 0.3 : along * 0.3;
+          for (let y = 3.6; y < H - 2; y += 3.6) {
+            const seg = b.segs.map((si) => this.segs[si]).find((q) => q.y0 <= y && q.y0 + q.h > y) || base0;
+            put('fireescape', seg, new THREE.Matrix4().compose(_v.set(fx + ox * eOff, y, fz + oz * eOff), _q, new THREE.Vector3(1, 1, 1)));
+          }
+        }
+        // Карниз по краю крыши у невысоких каменных домов
+        if (!b.glass && H > 10 && H < 120) {
+          put('cornice', top, new THREE.Matrix4().compose(_v.set(top.x, roofY - 0.45, top.z), _q.identity(), new THREE.Vector3(top.w + 0.9, 1, top.d + 0.9)), 0xffffff);
+        }
+      }
       const core = skylineAt(b.x, b.z), old = inOldTown(b.x, b.z);
       // Рекламный щит на крыше невысокого здания, повёрнут к улице
       if (H > 14 && H < 95 && top.w > 13 && rnd() < 0.05 + core * 0.08) {
@@ -514,6 +547,7 @@ export class City {
       for (const type in g) {
         const list = g[type];
         const mesh = new THREE.InstancedMesh(geos[type], this.attachMat, list.length);
+        mesh.name = type;
         mesh.castShadow = type === 'board' || type === 'tank';
         mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(list.length * 3).fill(1), 3);
         list.forEach((a, i) => {
@@ -537,8 +571,9 @@ export class City {
     if (!this.attachChunks) return;
     const far = 1600 + camPos.y * 0.5;
     for (const c of this.attachChunks) {
-      const v = Math.hypot(c.x - camPos.x, c.z - camPos.z) < far;
-      for (const m of c.meshes) m.visible = v;
+      const d = Math.hypot(c.x - camPos.x, c.z - camPos.z);
+      // Мелкие детали фасадов (двери, маркизы, карнизы, лестницы) — только вблизи (дальше они меньше пикселя)
+      for (const m of c.meshes) m.visible = SMALL_ATTACH.has(m.name) ? d < 450 && camPos.y < 400 : d < far;
     }
   }
 
@@ -957,7 +992,7 @@ function createBuildingMaterial() {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = mat.userData.uNight;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vBPos;\nvarying vec3 vBNrm;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBPos;\nvarying vec3 vBNrm;\nvarying vec2 vEdge;')
       .replace('#include <project_vertex>', `#include <project_vertex>
         {
           vec4 bp = vec4(transformed, 1.0);
@@ -967,6 +1002,12 @@ function createBuildingMaterial() {
             bn = mat3(instanceMatrix) * bn;
           #endif
           vBPos = bp.xyz;
+          // Расстояние до вертикальных рёбер здания (м) — для мягкого затенения углов
+          #ifdef USE_INSTANCING
+            vEdge = vec2((0.5 - abs(position.z)) * length(instanceMatrix[2].xyz), (0.5 - abs(position.x)) * length(instanceMatrix[0].xyz));
+          #else
+            vEdge = vec2(9.0);
+          #endif
           vBNrm = normalize(bn);
         }`);
 
@@ -974,6 +1015,7 @@ function createBuildingMaterial() {
       .replace('#include <common>', `#include <common>
         varying vec3 vBPos;
         varying vec3 vBNrm;
+        varying vec2 vEdge;
         uniform float uNight;
         float bh21(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 15731.743); }`)
       .replace('#include <color_fragment>', `#include <color_fragment>
@@ -1081,6 +1123,9 @@ function createBuildingMaterial() {
           vec3 glassTint = mix(vec3(0.55, 0.68, 0.78), vec3(0.45, 0.55, 0.6), isGlass);
           vec3 winCol = interior * glassTint * 0.32;
           diffuseColor.rgb = mix(wallCol, winCol, winMask);
+          // Мягкая тень у углов фасада (рассеянный свет хуже попадает в углы)
+          float edgeD = xFace ? vEdge.x : vEdge.y;
+          diffuseColor.rgb *= mix(1.0, mix(0.8, 1.0, smoothstep(0.0, 1.8, edgeD)), wall);
           // Рамы окон
           vec2 fr = abs(f - (rect.xz + rect.yw) * 0.5) - (rect.yw - rect.xz) * 0.5;
           float frame = winMask * step(-0.025, max(fr.x / cellSize.y * cellSize.x, fr.y));
@@ -1137,6 +1182,27 @@ function makeAttachmentGeometries() {
       part(B(10, 0.1, 0.8, 0, 2.45, 0.3), 0x3a3c3e),
     ]),
     // Вертикальная вывеска торчит из стены; горизонтальная — над входом
+    // Вход: дверь (стекло в раме), козырёк, ступенька, два фонарика
+    door: merge([
+      part(B(1.9, 2.5, 0.12, 0, 1.25, 0.04), 0x2a2c30), part(B(1.6, 2.2, 0.14, 0, 1.15, 0.05), 0x1a2834),
+      part(B(0.06, 2.2, 0.16, 0, 1.15, 0.06), 0x8a8d92),
+      part(B(2.8, 0.14, 1.4, 0, 2.9, 0.7), 0x3a3c40), part(B(2.4, 0.15, 0.6, 0, 0.07, 0.3), 0x9a968e),
+      part(B(0.15, 0.25, 0.15, -1.2, 2.3, 0.12), 0xfff0c8, 0, 1), part(B(0.15, 0.25, 0.15, 1.2, 2.3, 0.12), 0xfff0c8, 0, 1),
+    ]),
+    // Маркиза 4 м (масштабируется по длине): наклонное полотно (цвет экземпляра) и кронштейны
+    awning: merge([
+      part(B(4, 0.06, 1.8, 0, 3.3, 0.85).rotateX(0.32).translate(0, 0.3, 0), 0xffffff, 1),
+      part(B(4, 0.35, 0.04, 0, 2.95, 1.72), 0xffffff, 1),
+      part(B(0.05, 0.05, 1.7, -1.9, 3.2, 0.85), 0x2a2a2a), part(B(0.05, 0.05, 1.7, 1.9, 3.2, 0.85), 0x2a2a2a),
+    ]),
+    // Пожарная лестница (один этаж): площадка с перилами и марш вниз
+    fireescape: merge([
+      part(B(3.2, 0.08, 1.2, 0, 0, 0.6), 0x2a2522), part(B(3.2, 0.9, 0.05, 0, 0.45, 1.2), 0x2a2522),
+      part(B(0.05, 0.9, 1.2, -1.6, 0.45, 0.6), 0x2a2522), part(B(0.05, 0.9, 1.2, 1.6, 0.45, 0.6), 0x2a2522),
+      part(new THREE.BoxGeometry(3.6, 0.06, 0.55).rotateZ(0.85).translate(0, -1.8, 0.85), 0x2a2522),
+    ]),
+    // Карниз: плита по периметру крыши (масштабируется под здание)
+    cornice: merge([part(B(1, 0.5, 1, 0, 0.25, 0), 0xc8c0b0), part(B(0.98, 0.25, 0.98, 0, -0.1, 0), 0xa8a090)]),
     neonV: merge([part(B(0.35, 3.4, 1.3, 0, 0, 0.75), 0xffffff, 1, 1), part(B(0.45, 3.6, 0.1, 0, 0, 0.05), 0x222326)]),
     beacon: merge([part(C(0.12, 0.6, 0, 0.3, 0, 5), 0x3a3c3e), part(new THREE.SphereGeometry(0.32, 8, 6).translate(0, 0.75, 0), 0xffffff, 1, 2)]),
     neonH: merge([part(B(3.2, 0.7, 0.18, 0, 0, 0.12), 0xffffff, 1, 1), part(B(3.4, 0.85, 0.06, 0, 0, 0.02), 0x222326)]),

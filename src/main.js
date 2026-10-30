@@ -24,10 +24,14 @@ import { Beach } from './world/beach.js';
 import { Pier } from './world/pier.js';
 import { Nature } from './world/nature.js';
 import { Animals } from './world/animals.js';
+import { WaterLife } from './world/waterlife.js';
+import { Critters } from './world/critters.js';
+import { Countryside } from './world/countryside.js';
 import { Props } from './world/props.js';
 import { Space } from './world/space.js';
 import { Trees } from './world/trees.js';
 import { Soundscape } from './soundscape.js';
+import { WildSound } from './wildsound.js';
 import { installSunFog, createGodRaysPass, createGradePass, updateCinematic } from './fx/cinematic.js';
 
 // Туман со светом солнца — до создания и компиляции материалов
@@ -109,6 +113,7 @@ composer.addPass(grade);
 const hud = new HUD();
 const audio = new GameAudio();
 const soundscape = new Soundscape(audio);
+const wild = new WildSound(audio, soundscape);
 const debris = new Debris(scene);
 const dust = new Particles(scene, { max: 6000, color: 0x9a8f80, drag: 1.1 });
 const glass = new Debris(scene, { max: 2500, glass: true });
@@ -124,7 +129,7 @@ const env = new Environment(scene, renderer);
 env.onThunder = () => setTimeout(() => audio.thunder(), 300 + Math.random() * 1200);
 
 const fire = new Fire(scene, dust);
-const world = { ...fx, city, fire, toast: (t) => hud.toast(t) };
+const world = { ...fx, city, fire, camera, toast: (t) => hud.toast(t) };
 // Общее событие «удар/взрыв в точке»: разлетаются машины, люди, ломаются фонари
 world.impact = (point, radius, force, source) => {
   traffic.impulse(point, radius, force, source);
@@ -147,6 +152,9 @@ const beach = world.beach = new Beach(scene, world);
 const pier = world.pier = new Pier(scene, world);
 const nature = world.nature = new Nature(scene, world);
 const animals = world.animals = new Animals(scene, world);
+const waterlife = world.waterlife = new WaterLife(scene, world);
+const critters = world.critters = new Critters(scene, world);
+const countryside = world.countryside = new Countryside(scene, world);
 world.soundscape = soundscape;
 city.onImpact = (p, r, f) => world.impact(p, r, f);
 debris.onImpact = (p, r, f) => world.impact(p, r, f);
@@ -163,21 +171,38 @@ const kbm = new KeyboardMouseSource(renderer.domElement, input);
 
 const overlay = document.getElementById('overlay');
 const playBtn = document.getElementById('play-btn');
-document.getElementById('loading').classList.add('hidden');
-playBtn.classList.remove('hidden');
+const $ = (id) => document.getElementById(id);
+$('loading').classList.add('hidden');
 
+// Главное меню: выбор режима. Пока доступен симулятор; сюжет — в разработке.
 let paused = true;
+let mode = null;            // 'sim' (потом — 'story')
+const showMenu = (main) => {
+  $('modes').classList.toggle('hidden', !main);
+  $('pause-btns').classList.toggle('hidden', main);
+  if (!main) $('story-note').classList.add('hidden');
+};
+showMenu(true);
 function startPlaying() {
   audio.init();
   kbm.requestLock();
 }
+$('mode-sim').addEventListener('click', () => { mode = 'sim'; startPlaying(); });
+$('mode-story').addEventListener('click', () => { $('story-note').classList.remove('hidden'); });
 playBtn.addEventListener('click', startPlaying);
-renderer.domElement.addEventListener('click', () => { if (paused) startPlaying(); });
+$('menu-btn').addEventListener('click', () => {
+  showMenu(true);
+  // В меню — без фоторежима и замедления
+  if (photo.on) setPhoto(false);
+  if (slow.on) { slow.on = false; audio.setMuffle?.(0); slowBadge.classList.remove('show'); }
+});
+renderer.domElement.addEventListener('click', () => { if (paused && mode) startPlaying(); });
 document.addEventListener('pointerlockchange', () => {
   paused = !kbm.locked;
   overlay.classList.toggle('hidden', !paused);
-  hud.show(!paused);
-  playBtn.textContent = 'Продолжить';
+  hud.show(!paused && !photo.on);
+  // На паузе — «Продолжить» и «Главное меню»
+  if (paused && mode) showMenu(false);
 });
 
 window.addEventListener('resize', () => {
@@ -217,7 +242,80 @@ function applyQuality(i) {
   const gpu = ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : '';
   if (/Intel|UHD|Iris|Mali|Adreno|SwiftShader/i.test(gpu)) { qualityIndex = 1; applyQuality(1); }
 }
+// ---------------------------------------------------------------- фоторежим (P)
+// Мир замирает, камера свободно облетает героя, фильтры, снимок сохраняется в PNG
+const FILTERS = ['Без фильтра', 'Кино', 'Нуар', 'Тёплый закат', 'Винтаж', 'Холод'];
+const photo = { on: false, yaw: 0, pitch: 0.15, dist: 5, lift: 0, filter: 0, letter: false };
+const photoUI = document.getElementById('photo-ui');
+const photoFilterEl = document.getElementById('photo-filter');
+const photoFlash = document.getElementById('photo-flash');
+const _pc = new THREE.Vector3();
+function setPhoto(on) {
+  photo.on = on;
+  if (on) {
+    _pc.copy(player.pos).setY(player.pos.y + 1.1);
+    const off = camera.position.clone().sub(_pc);
+    photo.dist = THREE.MathUtils.clamp(off.length(), 1.2, 60);
+    photo.yaw = Math.atan2(off.x, off.z);
+    photo.pitch = Math.asin(THREE.MathUtils.clamp(off.y / Math.max(off.length(), 1e-3), -1, 1));
+    photo.lift = 0;
+    photo.near = camera.near;
+  } else if (photo.near) {
+    camera.near = photo.near;
+    camera.updateProjectionMatrix();
+  }
+  photoUI.classList.toggle('hidden', !on);
+  hud.show(!on && !paused);
+  grade.uniforms.uFilter.value = on ? photo.filter : 0;
+  grade.uniforms.uLetter.value = on && photo.letter ? 1 : 0;
+  photoFilterEl.textContent = FILTERS[photo.filter];
+}
+function updatePhotoCamera(dt) {
+  photo.yaw -= input.lookDX * 0.004 + input.moveX * dt * 1.2;
+  photo.pitch = THREE.MathUtils.clamp(photo.pitch + input.lookDY * 0.004, -1.2, 1.45);
+  photo.dist = THREE.MathUtils.clamp(photo.dist * (1 - input.moveZ * dt * 1.6), 0.9, 120);
+  photo.lift = THREE.MathUtils.clamp(photo.lift + input.moveY * dt * 2.5, -1.5, 40);
+  _pc.copy(player.pos).setY(player.pos.y + 1.1 + photo.lift);
+  const cp = Math.cos(photo.pitch);
+  camera.position.set(_pc.x + Math.sin(photo.yaw) * cp * photo.dist, _pc.y + Math.sin(photo.pitch) * photo.dist, _pc.z + Math.cos(photo.yaw) * cp * photo.dist);
+  camera.near = 0.08;
+  camera.lookAt(_pc);
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld();
+}
+function savePhoto() {
+  composer.render();
+  renderer.domElement.toBlob((blob) => {
+    if (!blob) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `last-son-of-hope-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+  }, 'image/png');
+  photoFlash.classList.add('on');
+  requestAnimationFrame(() => requestAnimationFrame(() => photoFlash.classList.remove('on')));
+  audio.ctx && soundscape.shutter?.(camera.position.clone());
+}
+renderer.domElement.addEventListener('wheel', (e) => {
+  if (!photo.on) return;
+  photo.dist = THREE.MathUtils.clamp(photo.dist * (e.deltaY > 0 ? 1.12 : 0.89), 0.9, 120);
+}, { passive: true });
+
+// ---------------------------------------------------------------- замедление времени (V)
+// Мир живёт в 4 раза медленнее, герой — в обычном темпе; звук приглушён
+const slow = { on: false, k: 1 };
+const slowBadge = document.getElementById('slowmo-badge');
+
 window.addEventListener('keydown', (e) => {
+  if (photo.on && !paused) {
+    const n = e.code.startsWith('Digit') ? Number(e.code.slice(5)) : 0;
+    if (n >= 1 && n <= FILTERS.length) { photo.filter = n - 1; grade.uniforms.uFilter.value = photo.filter; photoFilterEl.textContent = FILTERS[photo.filter]; }
+    if (e.code === 'KeyL') { photo.letter = !photo.letter; grade.uniforms.uLetter.value = photo.letter ? 1 : 0; }
+    if (e.code === 'Enter') savePhoto();
+    if (e.code === 'KeyH') photoUI.classList.toggle('min');
+    return;
+  }
   if (e.code === 'KeyN' && !paused) hud.toast(soundscape.toggleScore() ? 'МУЗЫКА: ВКЛ' : 'МУЗЫКА: ВЫКЛ');
   if (e.code === 'KeyG' && !paused) { qualityIndex = (qualityIndex + 1) % QUALITY.length; hud.toast(applyQuality(qualityIndex)); }
 });
@@ -258,8 +356,19 @@ function frame() {
 function step(dt, active) {
   // Кадр с нулевым шагом времени пропускаем: деление на dt дало бы NaN
   if (!(dt > 1e-5)) return;
-  if (active) {
+  if (active && input.photo) setPhoto(!photo.on);
+  if (active && photo.on) {
+    // Фоторежим: мир стоит, крутится только камера
     kbm.update();
+    if (input.toggleHelp) hud.toggleHelp();
+    updatePhotoCamera(dt);
+  } else if (active) {
+    kbm.update();
+    if (input.slowmo) {
+      slow.on = !slow.on;
+      audio.setMuffle?.(slow.on ? 1 : 0);
+      slowBadge.classList.toggle('show', slow.on);
+    }
     if (input.reset) resetWorld();
     if (input.toggleHelp) hud.toggleHelp();
     if (input.cycleTime && env.cycleTime) hud.toast(env.cycleTime());
@@ -275,14 +384,21 @@ function step(dt, active) {
     if (hitstop > 0) { hitstop -= dt; gdt = dt * 0.08; }
     // Замедление времени после полностью заряженного удара
     if (player.slowmo > 0) { player.slowmo -= dt; gdt *= 0.25; }
+    // Замедление: мир медленнее, герой в своём темпе
+    slow.k += ((slow.on ? 0.25 : 1) - slow.k) * Math.min(1, dt * 6);
+    const pdt = gdt;
+    gdt *= slow.k;
 
-    player.update(gdt, input, camRig);
+    player.update(pdt, input, camRig);
     city.update(gdt);
     debris.update(gdt);
     glass.update(gdt);
     traffic.update(gdt, player.pos);
     people.update(gdt, player);
     animals.update(gdt, player);
+    waterlife.update(gdt, player, camera.position);
+    critters.update(gdt, player, camera.position, env.night);
+    countryside.update(gdt, camera.position);
     fire.update(gdt);
     dust.update(gdt);
     sparks.update(gdt);
@@ -291,8 +407,8 @@ function step(dt, active) {
     hud.update(dt, player, city);
   }
 
-  camRig.update(dt, input, player, city, effects.shakeOffset);
-  env.update(dt, player.pos, camera, !paused);
+  if (!photo.on) camRig.update(dt, input, player, city, effects.shakeOffset);
+  env.update(dt, player.pos, camera, !paused && !photo.on);
   space.update(dt, camera, env.sunDir, env.altitudeK, env.night);
   // Космос рисуем, только когда небо хоть немного прозрачное
   spacePass.enabled = env.sky.material.uniforms.uOpacity.value < 0.995;
@@ -302,7 +418,7 @@ function step(dt, active) {
   trees.update(dt, camera.position);
   street.update(dt, camera.position);
   beach.update(dt);
-  pier.update(paused ? 0 : dt, env.night, camera.position);
+  pier.update(paused || photo.on ? 0 : dt * slow.k, env.night, camera.position);
   nature.update(dt, camera.position);
   // На высоком и среднем качестве (со свечением) картинка чуть темнее
   renderer.toneMappingExposure = env.exposure * (1 - env.altitudeK * 0.25) * (bloom.enabled ? 0.88 : 1);
@@ -323,6 +439,7 @@ function step(dt, active) {
   impactPass.uniforms.uSpeed.value = THREE.MathUtils.smoothstep(player.vel.length(), 150, 3000) * (1 - env.altitudeK * 0.6);
   camRig.extraFov = effects.fovKick - effects.chargeK * 9;
   updateCinematic({ env, camera, godRays, grade, dt, quality: qualityIndex });
+  grade.uniforms.uVig.value = photo.on ? 0.35 : (1 - slow.k) * 0.6;
   audio.listener = camera.position;
   // Фон мегаполиса: громче в центре и у земли, тише в пригороде и с высотой, нет в космосе
   {
@@ -334,6 +451,7 @@ function step(dt, active) {
   }
   audio.listenerRight = _camRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
   soundscape.update({ dt, player, camera, people, traffic, city, env, paused });
+  wild.update({ dt: dt * slow.k, camera, env, world, paused: paused || photo.on });
   if (paused) air.mute();
   audio.update(player.vel.length(), paused, player.pos.y < 1500 ? env.W.rain : 0, env.altitudeK);
   endFrame(input);
@@ -345,7 +463,7 @@ frame();
 
 // Для отладки из консоли
 window.game = {
-  scene, camera, renderer, player, city, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, soundscape, fire, composer, bloom, godRays, grade, env, audio, space,
+  scene, camera, renderer, player, city, wild, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space,
   // Запуск без захвата мыши (для автотестов)
   unpause() { paused = false; overlay.classList.add('hidden'); hud.show(true); },
   // Прогнать n кадров симуляции с фиксированным шагом

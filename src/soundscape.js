@@ -51,9 +51,10 @@ export class Soundscape {
     // --- плащ хлопает на ветру: полоса шума с неровной амплитудной «дробью»
     this.capeGain = gain();
     const capeAM = gain(0.5);
-    this.capeLfo = osc('square', 12);
+    // Плавная волна (прямоугольная давала «трещотку»)
+    this.capeLfo = osc('sine', 9);
     const capeDepth = gain(0.5); this.capeLfo.connect(capeDepth).connect(capeAM.gain);
-    loop(a.noise).connect(filt('bandpass', 380, 0.8)).connect(capeAM).connect(this.capeGain).connect(a.master);
+    loop(a.noise).connect(filt('bandpass', 320, 0.6)).connect(filt('lowpass', 900)).connect(capeAM).connect(this.capeGain).connect(a.master);
     // --- гул сверхзвука: глубокий рокот
     this.sonicGain = gain();
     loop(a.brown).connect(filt('lowpass', 140)).connect(this.sonicGain).connect(a.master);
@@ -138,6 +139,7 @@ export class Soundscape {
 
   // Восторг толпы: «о-о-о!» разными голосами, потом аплодисменты
   cheer(k, pos) {
+    if (!this.a.ctx) return;
     const a = this.a, t = a.ctx.currentTime, dest = a.out(pos);
     const n = 4 + Math.round(k * 7);
     for (let i = 0; i < n; i++) {
@@ -151,6 +153,7 @@ export class Soundscape {
 
   // Испуганные короткие «ах!»
   gasp(k, pos) {
+    if (!this.a.ctx) return;
     const a = this.a, t = a.ctx.currentTime, dest = a.out(pos);
     for (let i = 0; i < 2 + Math.round(k * 4); i++) {
       this.voice(t + Math.random() * 0.25, 280 + Math.random() * 180, [1.1, 0.7], 0.3 + Math.random() * 0.2, 0.05, [[820, 5, 1], [1300, 6, 0.7]], dest);
@@ -208,6 +211,31 @@ export class Soundscape {
     for (let i = 0; i < 24; i++) a.noiseBurst({ dur: 0.02, freq: 3000 + Math.random() * 3000, type: 'bandpass', q: 1, gain: 0.04, attack: 0.001, delay: 0.25 + Math.random() * 1.4, dest });
   }
 
+  // Щелчок затвора телефона
+  shutter(pos) {
+    const a = this.a;
+    if (!a.ctx || !a.listener || pos.distanceTo(a.listener) > 40) return;
+    const dest = a.out(pos);
+    a.noiseBurst({ dur: 0.03, freq: 4200, type: 'bandpass', q: 1.5, gain: 0.06, attack: 0.001, dest });
+    a.noiseBurst({ dur: 0.04, freq: 2600, type: 'bandpass', q: 1.5, gain: 0.05, attack: 0.001, delay: 0.07, dest });
+  }
+
+  // Мягкий отскок теннисного мяча
+  ballBounce(pos, k = 1) {
+    const a = this.a;
+    if (!a.ctx || !a.listener || pos.distanceTo(a.listener) > 50) return;
+    a.tone({ dur: 0.08, from: 260, to: 180, gain: 0.06 * k, dest: a.out(pos) });
+  }
+
+  // «Спасибо!» — две слоговые гласные с подъёмом интонации
+  thanks(pos) {
+    const a = this.a;
+    if (!a.ctx || !a.listener) return;
+    const t = a.ctx.currentTime, dest = a.out(pos), f0 = 160 + Math.random() * 120;
+    this.voice(t, f0, [1.05, 1.0], 0.16, 0.06, [[700, 5, 1], [1200, 6, 0.5]], dest);
+    this.voice(t + 0.2, f0 * 1.2, [1.25, 1.1], 0.3, 0.06, [[500, 5, 1], [1700, 6, 0.6]], dest);
+  }
+
   // Мурлыканье: низкий «рокот» с частыми пульсами (громкость задаёт игра)
   setPurr(k, pos) {
     const a = this.a, ctx = a.ctx;
@@ -239,6 +267,15 @@ export class Soundscape {
     o.connect(g).connect(dest); o.start(t0); o.stop(t0 + 0.55);
   }
 
+  // Плеск рыбы: короткий «плюх»
+  plop(pos) {
+    const a = this.a;
+    if (!a.ctx || !a.listener || pos.distanceTo(a.listener) > 45) return;
+    const dest = a.out(pos);
+    // Мягкий всплеск без «тука»: шум с плавной атакой
+    a.noiseBurst({ dur: 0.35, freq: 1100, sweepTo: 450, type: 'bandpass', q: 0.6, gain: 0.05, attack: 0.03, dest });
+  }
+
   // Крик чайки: тон падает, с вибрато
   gull(pos) {
     const a = this.a, ctx = a.ctx, dest = a.out(pos);
@@ -259,7 +296,7 @@ export class Soundscape {
   // «Вжух» мимо здания: шум, тон уходит вниз
   passBy(speed, pos) {
     const k = Math.min(1, speed / 350);
-    this.a.noiseBurst({ dur: 0.35 + 0.25 * (1 - k), freq: 2600 + k * 2000, sweepTo: 350, type: 'bandpass', q: 1.2, gain: 0.12 + 0.3 * k, attack: 0.05, dest: this.a.out(pos) });
+    this.a.noiseBurst({ dur: 0.5 + 0.3 * (1 - k), freq: 1800 + k * 1600, sweepTo: 300, type: 'bandpass', q: 0.8, gain: 0.1 + 0.25 * k, attack: 0.15, dest: this.a.out(pos) });
   }
 
   // ---------------------------------------------------------------- музыка
@@ -373,7 +410,7 @@ export class Soundscape {
 
     // ---- полёт
     this.capeGain.gain.setTargetAtTime(live * air * ss(speed, 15, 250) * 0.07 * (1 - inSpace), t, tc);
-    this.capeLfo.frequency.setTargetAtTime(9 + Math.min(speed, 500) * 0.035 + Math.random() * 3, t, 0.05);
+    this.capeLfo.frequency.setTargetAtTime(5 + Math.min(speed, 500) * 0.02, t, 0.4);
     this.sonicGain.gain.setTargetAtTime(live * ss(speed / 343, 0.9, 2.5) * 0.22 * (1 - inSpace), t, 0.25);
     this.highGain.gain.setTargetAtTime(live * ss(cam.y, 400, 6000) * (1 - inSpace) * (0.01 + 0.03 * ss(speed, 50, 900)), t, 0.3);
     this.spaceGain.gain.setTargetAtTime(live * ss(inSpace, 0.3, 0.9) * 0.05, t, 1);
@@ -386,13 +423,19 @@ export class Soundscape {
         const d = _v.distanceTo(player.center);
         if (d < best) { best = d; bp = _v.clone(); }
       }
-      // Ближе всего — в момент пролёта: расстояние перестало уменьшаться
-      if (bp && best < 16 && best > this.prevNearest - 0.01 && this.t - this.lastPass > 0.45) {
-        this.passBy(speed, bp);
+      // «Вжух» — только при настоящем пролёте мимо: расстояние заметно уменьшалось
+      // и начало расти (а не когда летим вдоль стены на одном расстоянии)
+      if (best < this.minNearest) this.minNearest = best;
+      const passing = this.minNearest < 12 && best > this.minNearest + 2.5 && this.approachedFrom - this.minNearest > 6;
+      if (bp && passing && speed > 45 && this.t - this.lastPass > 0.9) {
+        this.passBy(speed, this.passPoint || bp);
         this.lastPass = this.t;
       }
+      if (best <= this.minNearest + 0.01) this.passPoint = bp;
+      if (passing || best > 25) { this.minNearest = best; this.approachedFrom = best; }
+      this.approachedFrom = Math.max(this.approachedFrom || 0, best);
       this.prevNearest = best;
-    } else this.prevNearest = 1e9;
+    } else { this.prevNearest = 1e9; this.minNearest = 1e9; this.approachedFrom = 0; }
 
     // ---- пространство: сколько высоких секций вокруг камеры (раз в полсекунды)
     this.spaceT -= dt;
@@ -415,8 +458,8 @@ export class Soundscape {
     const murmur = live * Math.min(1, near / 25) * (1 - inSpace);
     this.murmurGain.gain.setTargetAtTime(murmur * 0.1, t, 0.4);
     for (const m of this.murmurBands) {
-      if (Math.random() < dt * 8) {
-        m.g.gain.setTargetAtTime(0.2 + Math.random() * 0.8, t, 0.05);
+      if (Math.random() < dt * 3) {
+        m.g.gain.setTargetAtTime(0.35 + Math.random() * 0.65, t, 0.25);
         m.b.frequency.setTargetAtTime(m.f * (0.85 + Math.random() * 0.3), t, 0.05);
       }
     }

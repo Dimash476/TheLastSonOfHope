@@ -49,6 +49,7 @@ export class Player {
     this.boomT = 0;
     this.landT = 0;      // «супергеройское» приземление на колено
     this.slowmo = 0;     // замедление времени (читает главный цикл)
+    this.throwT = -1;    // бросок мяча: время с начала замаха (-1 — не бросаем)
     this.stepIdx = 0;
 
     this.anim = { stand: 1, hover: 0, fly: 0, slam: 0, run: 0, runPhase: 0, sprint: 0, punch: null, charge: 0, bob: 0, lift: 0 };
@@ -74,6 +75,7 @@ export class Player {
     this.punchT = -1;
     this.dashT = 0;
     this.held = null;
+    this.throwT = -1;
   }
 
   get speed() { return this.vel.length(); }
@@ -135,6 +137,34 @@ export class Player {
     this.petTarget = this.grounded && !this.held && !this.lasering && this.charge <= 0 ? W.animals?.findPettable(this.pos, 2.4) : null;
     this.petting = this.petTarget && input.heavyHeld ? this.petTarget : null;
     if (this.petting) W.animals.pet(this.petting, dt);
+
+    // Действие рядом (E): помочь упавшему подняться, бросить мяч собаке, поприветствовать людей
+    this.interactTarget = null;
+    if (this.grounded && !this.held && !this.lasering && this.charge <= 0 && !this.petting && this.vel.length() < 8) {
+      const down = W.people?.findDown(this.pos, 3);
+      const dog = !down && W.animals?.findDogForBall(this.pos, 7);
+      if (down) this.interactTarget = { type: 'help', ref: down };
+      else if (dog) this.interactTarget = { type: 'ball', ref: dog };
+      else if (W.people?.countNear(this.pos, 14) > 0) this.interactTarget = { type: 'greet' };
+    }
+    if (input.interact && this.interactTarget && this.throwT < 0) {
+      const it = this.interactTarget;
+      if (it.type === 'help') { W.people.helpUp(it.ref, this.pos); this.helpT = 0.9; }
+      else if (it.type === 'ball') { this.throwT = 0; this.throwDir = camFlat.clone(); }
+      else { W.people.greet(this.pos, cam.camera.position); this.waveT = 1.8; }
+    }
+    this.waveT = Math.max(0, (this.waveT || 0) - dt);
+    this.helpT = Math.max(0, (this.helpT || 0) - dt);
+    // Бросок мяча: замах из-за головы, мяч уходит в момент выноса руки вперёд
+    if (this.throwT >= 0) {
+      const t0 = this.throwT;
+      this.throwT += dt;
+      if (t0 < 0.3 && this.throwT >= 0.3) {
+        const hand = this.model.fistWorldPos('R', new THREE.Vector3());
+        W.animals.throwBall(hand, this.throwDir);
+      }
+      if (this.throwT > 0.65) this.throwT = -1;
+    }
 
     // Мощный удар: зарядка и отпускание
     if (input.heavyHeld && !this.slamming && !this.held && !this.petting) {
@@ -699,8 +729,8 @@ export class Player {
     a.run = this.grounded ? clamp(hs / P.runSpeed, 0, 1) : 0;
     a.sprint = smoothstep(P.runSpeed, P.sprintSpeed, hs);
     a.runPhase += dt * Math.min(24, 3 + hs * 0.55);
-    // Тяжёлые шаги: стук, пыль, лёгкий толчок камеры на спринте
-    const step = Math.floor(a.runPhase / Math.PI);
+    // Тяжёлые шаги: стук, пыль, лёгкий толчок камеры на спринте (касание — нога впереди)
+    const step = Math.floor((a.runPhase - Math.PI / 2) / Math.PI);
     if (this.grounded && hs > 3 && step !== this.stepIdx) {
       const k = Math.min(1, hs / P.sprintSpeed);
       this.world.audio?.footstep(0.4 + 0.8 * k);
@@ -720,7 +750,28 @@ export class Player {
     a.lift = damp(a.lift, this.held && this.held.kind !== 'person' ? 1 : 0, 10, dt);
     a.brake = damp(a.brake || 0, this.braking && !this.grounded ? 1 : 0, 6, dt);
     a.carry = damp(a.carry || 0, this.held && this.held.kind === 'person' ? 1 : 0, 10, dt);
-    a.pet = damp(a.pet || 0, this.petting ? 1 : 0, 7, dt);
+    a.pet = damp(a.pet || 0, this.petting || this.helpT > 0 ? 1 : 0, 7, dt);
+    a.wave = damp(a.wave || 0, this.waveT > 0 ? 1 : 0, 8, dt);
+    a.throwT = this.throwT >= 0 ? this.throwT / 0.65 : -1;
+
+    // Покой на земле дольше 3 с — руки на пояс
+    const busy = hs > 1 || this.punchT >= 0 || this.charge > 0 || this.held || this.lasering || this.petting || this.landT > 0 || this.waveT > 0 || this.throwT >= 0 || this.helpT > 0;
+    this.idleT = this.grounded && !busy ? (this.idleT || 0) + dt : 0;
+    a.idle = damp(a.idle || 0, this.idleT > 3 ? 1 : 0, 3, dt);
+    // Полёт: крен, сила встречного ветра, набор/снижение, гиперскорость
+    const speed = this.vel.length();
+    a.roll = this.roll || 0;
+    a.gust = smoothstep(30, 400, speed);
+    a.climb = speed > 1 ? this.vel.y / speed : 0;
+    a.hyper = damp(a.hyper || 0, smoothstep(1200, 2600, speed), 3, dt);   // гипер (Shift+E) и выше
+    // Взгляд за камерой: угол между направлением камеры и лицом героя
+    const fz = this.facing.x * camDir.x + this.facing.z * camDir.z;
+    const fx = this.facing.z * camDir.x - this.facing.x * camDir.z;
+    const yaw = Math.atan2(fx, fz);
+    const toward = Math.abs(yaw) < 2.2 ? 1 : 0;   // камера спереди — смотрим прямо
+    a.lookYaw = damp(a.lookYaw || 0, toward * yaw, 5, dt);
+    a.lookPitch = damp(a.lookPitch || 0, toward * Math.asin(clamp(camDir.y, -1, 1)), 5, dt);
+    a.look = this.petting || this.landT > 0 ? 0 : 1;
     this.model.animate(dt, a);
   }
 }

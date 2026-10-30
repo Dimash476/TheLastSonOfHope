@@ -5,11 +5,12 @@ import { mulberry32 } from '../utils.js';
 import { HALF, BLOCK, blockTypes, BIG_PARK, POND, PLANE_HALF, forestMask, groundHeight, fbm, parkPathDist, bigParkPaths, bigParkPathDist, PARK_RING } from './layout.js';
 
 const CELL = 60;
-const CHUNK = 250;
+const CHUNK = 500;      // крупные участки — меньше вызовов отрисовки
 const VIEW = 900;      // дальше деревья не рисуем
-const FOREST_CHUNK = 600;
+const FOREST_CHUNK = 1200;
 const FOREST_VIEW = 1900; // лес на холмах виден дальше
-const FOREST_R = 6500;
+const FOREST_R = 9000;
+const LOD_NEAR = 230;    // ближе — подробные деревья, дальше — упрощённые (на глаз не отличить)
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _v = new THREE.Vector3();
@@ -32,8 +33,14 @@ export class Trees {
 
   generate(rnd) {
     const g = CITY.grid, B = CITY.block;
+    // Порода: в лесу на высоте — ели, ниже — смешанный лес; в городе — липы, дубы, берёзы
+    const pick = (forest, y) => {
+      const r = rnd();
+      if (forest) return y > 220 || r < 0.35 ? 'conifer' : r < 0.65 ? 'oak' : 'broad';
+      return r < 0.52 ? 'broad' : r < 0.74 ? 'oak' : r < 0.93 ? 'birch' : 'conifer';
+    };
     const add = (x, z, y = 0, scale = 1, forest = false) => {
-      const t = { x, z, y, forest, alive: true, s: (0.75 + rnd() * 0.6) * scale, rot: rnd() * Math.PI * 2, shade: 0.8 + rnd() * 0.35 };
+      const t = { x, z, y, forest, kind: pick(forest, y), alive: true, s: (0.75 + rnd() * 0.6) * scale, rot: rnd() * Math.PI * 2, shade: 0.8 + rnd() * 0.35 };
       this.list.push(t);
       const key = Math.floor(x / CELL) * 100000 + Math.floor(z / CELL);
       if (!this.cells.has(key)) this.cells.set(key, []);
@@ -102,7 +109,11 @@ export class Trees {
   }
 
   buildMeshes(rnd) {
-    const geo = makeTreeGeometry();
+    const geos = makeTreeGeometries(false);
+    const lods = makeTreeGeometries(true);
+    // Теневой двойник в кадре невидим (ни цвета, ни глубины), а в карту теней пишется
+    // упрощённой формой: тень та же, а вершин в разы меньше
+    const shadowOnly = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
     // Ветер: кроны (выше 2.5 м) покачиваются, у каждого дерева своя фаза
     mat.onBeforeCompile = (shader) => {
@@ -120,15 +131,14 @@ export class Trees {
     const groups = new Map();
     for (const t of this.list) {
       const C = t.forest ? FOREST_CHUNK : CHUNK;
-      const key = (t.forest ? 1e7 : 0) + Math.floor(t.x / C) * 1000 + Math.floor(t.z / C);
+      const key = `${t.forest ? 'f' : 'c'}${t.kind}:${Math.floor(t.x / C)},${Math.floor(t.z / C)}`;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(t);
     }
     this.chunks = [];
     const col = new THREE.Color();
     for (const list of groups.values()) {
-      const m = new THREE.InstancedMesh(geo, mat, list.length);
-      m.castShadow = true;
+      const m = new THREE.InstancedMesh(geos[list[0].kind], mat, list.length);
       m.receiveShadow = true;
       list.forEach((t, i) => {
         t.mesh = m; t.slot = i;
@@ -137,8 +147,22 @@ export class Trees {
         m.setColorAt(i, col);
       });
       m.computeBoundingSphere();
-      this.scene.add(m);
-      this.chunks.push({ m, x: m.boundingSphere.center.x, z: m.boundingSphere.center.z, view: list[0].forest ? FOREST_VIEW : VIEW });
+      m.computeBoundingBox();
+      // Упрощённая копия (вдали) и теневой двойник — те же матрицы и цвета, другая сетка
+      const lo = new THREE.InstancedMesh(lods[list[0].kind], mat, list.length);
+      const sh = new THREE.InstancedMesh(lods[list[0].kind], shadowOnly, list.length);
+      for (const x of [lo, sh]) {
+        x.instanceMatrix = m.instanceMatrix;
+        x.instanceColor = m.instanceColor;
+        x.boundingSphere = m.boundingSphere;
+        x.boundingBox = m.boundingBox;
+      }
+      lo.receiveShadow = true;
+      sh.castShadow = true;
+      sh.renderOrder = 10;   // в кадре — после всего: почти все пиксели отсекает тест глубины
+      this.scene.add(m, lo, sh);
+      const b = m.boundingBox;
+      this.chunks.push({ m, lo, sh, x: m.boundingSphere.center.x, z: m.boundingSphere.center.z, b, view: list[0].forest ? FOREST_VIEW : VIEW });
     }
   }
 
@@ -190,7 +214,15 @@ export class Trees {
 
   update(dt, camPos) {
     this.uTime.value += dt;
-    for (const c of this.chunks) c.m.visible = camPos.y < 2500 && Math.hypot(c.x - camPos.x, c.z - camPos.z) < c.view + camPos.y;
+    for (const c of this.chunks) {
+      const vis = camPos.y < 2500 && Math.hypot(c.x - camPos.x, c.z - camPos.z) < c.view + camPos.y;
+      // Расстояние до ближайшей точки участка (а не до центра)
+      const dx = Math.max(c.b.min.x - camPos.x, 0, camPos.x - c.b.max.x), dz = Math.max(c.b.min.z - camPos.z, 0, camPos.z - c.b.max.z);
+      const near = Math.hypot(dx, dz, Math.max(0, camPos.y - c.b.max.y)) < LOD_NEAR;
+      c.m.visible = vis && near;
+      c.lo.visible = vis && !near;
+      c.sh.visible = vis;
+    }
   }
 
   reset() { for (const t of this.list) if (!t.alive) { t.alive = true; this.write(t); } }
@@ -209,12 +241,46 @@ function colorize(geo, color) {
   return geo;
 }
 
-function makeTreeGeometry() {
-  const trunk = colorize(new THREE.CylinderGeometry(0.14, 0.22, 3.2, 6).translate(0, 1.6, 0), 0x4a3524);
-  const crown1 = colorize(new THREE.IcosahedronGeometry(1.9, 1).scale(1, 1.15, 1).translate(0, 4.4, 0), 0x2f5a22);
-  const crown2 = colorize(new THREE.IcosahedronGeometry(1.35, 1).translate(0.7, 5.6, 0.3), 0x3a6a2a);
-  const crown3 = colorize(new THREE.IcosahedronGeometry(1.2, 1).translate(-0.8, 4.9, -0.5), 0x335f25);
-  const g = mergeGeometries([trunk, crown1, crown2, crown3]);
-  g.computeVertexNormals();
-  return g;
+// Породы деревьев: раскидистая липа, могучий дуб, белоствольная берёза, ель.
+// lo — упрощённая версия той же формы (для дали и для теней)
+function makeTreeGeometries(lo) {
+  const M = (parts) => { const g = mergeGeometries(parts); g.computeVertexNormals(); return g; };
+  const ico = (r) => new THREE.IcosahedronGeometry(r, lo ? 0 : 1);
+  const cyl = (a, b, h, n) => new THREE.CylinderGeometry(a, b, h, lo ? 4 : n);
+  const cone = (r, h) => new THREE.ConeGeometry(r, h, lo ? 5 : 8);
+  const broad = M([
+    colorize(cyl(0.14, 0.22, 3.2, 6).translate(0, 1.6, 0), 0x4a3524),
+    colorize(ico(1.9).scale(1, 1.15, 1).translate(0, 4.4, 0), 0x2f5a22),
+    colorize(ico(1.35).translate(0.7, 5.6, 0.3), 0x3a6a2a),
+    colorize(ico(1.2).translate(-0.8, 4.9, -0.5), 0x335f25),
+  ]);
+  // Дуб: толстый ствол с ветвями, широкая низкая крона из нескольких масс
+  const oak = M([
+    colorize(cyl(0.22, 0.38, 3.0, 7).translate(0, 1.5, 0), 0x3e2c1e),
+    colorize(cyl(0.08, 0.14, 2.2, 5).rotateZ(0.8).translate(0.7, 3.2, 0), 0x3e2c1e),
+    colorize(cyl(0.08, 0.14, 2.0, 5).rotateZ(-0.7).translate(-0.6, 3.1, 0.2), 0x3e2c1e),
+    colorize(ico(2.1).scale(1.35, 0.8, 1.2).translate(0, 4.5, 0), 0x2a4d1c),
+    colorize(ico(1.5).scale(1, 0.8, 1).translate(1.7, 4.2, 0.4), 0x31581f),
+    colorize(ico(1.4).scale(1, 0.8, 1).translate(-1.6, 4.3, -0.5), 0x2d521d),
+    colorize(ico(1.3).translate(0.2, 5.6, 0.6), 0x355e22),
+  ]);
+  // Берёза: тонкий белый ствол с тёмными отметинами, лёгкая вытянутая крона
+  const birchTrunk = [];
+  for (let k = 0; k < 6; k++) birchTrunk.push(colorize(cyl(0.1 - k * 0.008, 0.11 - k * 0.008, 0.9, 6).translate(0, 0.45 + k * 0.9, 0), k % 2 ? 0xe8e4da : 0xd8d2c4));
+  for (let k = 0; k < 5; k++) birchTrunk.push(colorize(new THREE.BoxGeometry(0.21, 0.05, 0.21).translate(0, 0.7 + k * 1.05, 0), 0x2a2622));
+  const birch = M([
+    ...birchTrunk,
+    colorize(ico(1.2).scale(0.9, 1.5, 0.9).translate(0, 5.6, 0), 0x6a9a3a),
+    colorize(ico(0.9).scale(1, 1.3, 1).translate(0.45, 4.7, 0.2), 0x7aa844),
+    colorize(ico(0.8).scale(1, 1.3, 1).translate(-0.4, 4.9, -0.3), 0x5f8f34),
+  ]);
+  // Ель: ярусы конусов, тёмная хвоя
+  const conifer = M([
+    colorize(cyl(0.1, 0.18, 2.0, 6).translate(0, 1.0, 0), 0x3a2a1c),
+    colorize(cone(1.6, 2.6).translate(0, 2.6, 0), 0x1f3d22),
+    colorize(cone(1.25, 2.3).translate(0, 3.9, 0), 0x234526),
+    colorize(cone(0.9, 2.0).translate(0, 5.1, 0), 0x264a28),
+    colorize(cone(0.5, 1.5).translate(0, 6.2, 0), 0x2a502c),
+  ]);
+  return { broad, oak, birch, conifer };
 }

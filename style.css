@@ -92,4 +92,48 @@ kbd {
   backdrop-filter: blur(4px);
 }
 #interact.show { opacity: 1; }
+
+/* Замедление времени */
+#slowmo-badge {
+  position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
+  padding: 4px 14px; border-radius: 14px; border: 1px solid rgba(140, 200, 255, 0.5);
+  color: #cfe8ff; font-size: 12px; letter-spacing: 3px; background: rgba(10, 20, 34, 0.45);
+  opacity: 0; transition: opacity 0.3s; pointer-events: none;
+}
+#slowmo-badge.show { opacity: 1; }
+
+/* Фоторежим */
+#photo-ui { position: fixed; left: 0; right: 0; bottom: 22px; text-align: center; color: #e8f0f4; pointer-events: none; z-index: 20; }
+#photo-ui.hidden { display: none; }
+#photo-ui.min .photo-keys { display: none; }
+#photo-filter { display: inline-block; margin-bottom: 10px; padding: 5px 16px; border-radius: 16px; background: rgba(10, 14, 20, 0.55); font-size: 14px; letter-spacing: 2px; }
+.photo-keys { font-size: 13px; line-height: 1.9; opacity: 0.85; text-shadow: 0 1px 3px rgba(0,0,0,0.8); padding: 0 16px; }
+.photo-keys kbd { background: rgba(255,255,255,0.18); border-radius: 4px; padding: 1px 6px; }
+#photo-flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 30; transition: opacity 0.35s; }
+#photo-flash.on { opacity: 0.85; transition: none; }
 #interact kbd { background: rgba(255,255,255,0.18); border-radius: 4px; padding: 1px 6px; margin-right: 4px; }
+
+/* Выбор режима */
+#modes { margin-top: 30px; display: flex; gap: 18px; justify-content: center; flex-wrap: wrap; }
+#modes.hidden, #pause-btns.hidden, #story-note.hidden { display: none; }
+.mode {
+  position: relative; width: 260px; padding: 22px 20px 20px; text-align: left; cursor: pointer;
+  color: #e8f4f0; background: rgba(14, 22, 30, 0.72); border: 1px solid rgba(63, 224, 176, 0.35); border-radius: 10px;
+  transition: transform 0.15s, border-color 0.15s, background 0.15s; font-family: inherit;
+}
+.mode:hover { transform: translateY(-3px); border-color: #3fe0b0; background: rgba(20, 40, 44, 0.85); }
+.mode-title { font-size: 22px; font-weight: 900; letter-spacing: 3px; text-transform: uppercase; color: #3fe0b0; }
+.mode-desc { margin-top: 10px; font-size: 13px; line-height: 1.45; opacity: 0.8; }
+.mode.locked .mode-title { color: #9aa6ae; }
+.mode.locked { border-color: rgba(154, 166, 174, 0.3); }
+.mode .badge {
+  position: absolute; top: 12px; right: 12px; padding: 3px 9px; font-size: 11px; font-weight: 800; letter-spacing: 1px;
+  color: #1a1408; background: #f2c14e; border-radius: 10px; text-transform: uppercase;
+}
+#story-note { margin-top: 18px; font-size: 14px; color: #f2c14e; }
+#pause-btns { display: flex; gap: 14px; justify-content: center; }
+#menu-btn {
+  margin-top: 32px; padding: 14px 30px; font-size: 15px; font-weight: 700; letter-spacing: 2px; cursor: pointer;
+  color: #cfe9e1; background: transparent; border: 1px solid rgba(63, 224, 176, 0.5); border-radius: 6px; text-transform: uppercase;
+}
+#menu-btn:hover { border-color: #3fe0b0; color: #fff; }

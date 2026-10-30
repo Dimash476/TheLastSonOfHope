@@ -28,6 +28,9 @@ export function createInputState() {
     cycleTime: false,
     cycleWeather: false,
     nextTrack: false,
+    interact: false, // E: действие рядом (мяч собаке, привет людям, помочь подняться)
+    photo: false,    // P: фоторежим
+    slowmo: false,   // V: замедление времени
   };
 }
 
@@ -51,6 +54,9 @@ export class KeyboardMouseSource {
       if (e.code === 'KeyT') state.cycleTime = true;
       if (e.code === 'KeyU') state.cycleWeather = true;
       if (e.code === 'KeyM') state.nextTrack = true;
+      if (e.code === 'KeyE' && !e.shiftKey) state.interact = true;
+      if (e.code === 'KeyP') state.photo = true;
+      if (e.code === 'KeyV') state.slowmo = true;
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
@@ -108,4 +114,7 @@ export function endFrame(state) {
   state.cycleTime = false;
   state.cycleWeather = false;
   state.nextTrack = false;
+  state.interact = false;
+  state.photo = false;
+  state.slowmo = false;
 }

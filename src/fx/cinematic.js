@@ -85,9 +85,10 @@ export function createGradePass() {
       uShadow: { value: new THREE.Vector3(-0.02, 0.03, 0.06) },
       uHigh: { value: new THREE.Vector3(0.05, 0.02, -0.03) },
       uSat: { value: 1.08 }, uContrast: { value: 0.18 }, uGrain: { value: 0.02 },
+      uFilter: { value: 0 }, uVig: { value: 0 }, uLetter: { value: 0 },
     },
     vertexShader: VERT,
-    fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime, uSat, uContrast, uGrain; uniform vec3 uShadow, uHigh; varying vec2 vUv;
+    fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime, uSat, uContrast, uGrain, uFilter, uVig, uLetter; uniform vec3 uShadow, uHigh; varying vec2 vUv;
       float h(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
       void main() {
         vec4 base = texture2D(tDiffuse, vUv);
@@ -98,6 +99,18 @@ export function createGradePass() {
         c += uShadow * (1.0 - l) * (1.0 - l) + uHigh * l * l * (1.0 - l) * 3.0;
         c = mix(vec3(l), c, uSat);
         c += (h(vUv * 1000.0 + fract(uTime) * 91.0) - 0.5) * uGrain; // зерно
+        // Фильтры фоторежима: 1 кино, 2 нуар, 3 тёплый закат, 4 винтаж, 5 холод
+        if (uFilter > 0.5) {
+          float L = dot(c, vec3(0.2126, 0.7152, 0.0722));
+          if (uFilter < 1.5) { c += vec3(0.03, 0.0, -0.03) * L - vec3(0.02, -0.01, -0.04) * (1.0 - L); c = mix(c, c * c * (3.0 - 2.0 * c), 0.3); }
+          else if (uFilter < 2.5) { c = vec3(smoothstep(0.04, 0.96, L)); c += (h(vUv * 700.0 + uTime) - 0.5) * 0.05; }
+          else if (uFilter < 3.5) { c *= vec3(1.12, 0.98, 0.8); c = mix(vec3(L), c, 1.15); }
+          else if (uFilter < 4.5) { c = mix(c, vec3(L) * vec3(1.08, 0.96, 0.78), 0.6); c = c * 0.86 + 0.08; }
+          else { c *= vec3(0.88, 1.0, 1.14); c = mix(vec3(L), c, 0.85); }
+        }
+        vec2 dv = vUv - 0.5;
+        c *= 1.0 - uVig * dot(dv, dv) * 2.4;
+        if (uLetter > 0.5 && abs(vUv.y - 0.5) > 0.4) c = vec3(0.0);
         gl_FragColor = vec4(c, base.a);
       }`,
   });

@@ -106,7 +106,12 @@ export class GameAudio {
     glue.threshold.value = -16; glue.ratio.value = 3.5; glue.attack.value = 0.006; glue.release.value = 0.22; glue.knee.value = 8;
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -2; limiter.ratio.value = 20; limiter.attack.value = 0.001; limiter.release.value = 0.08; limiter.knee.value = 0;
-    this.master.connect(drive).connect(low).connect(body).connect(presence).connect(glue).connect(limiter).connect(ctx.destination);
+    // Общий фильтр на выходе: в замедлении времени звук «под водой»
+    if (!this.muffle) {
+      this.muffle = ctx.createBiquadFilter(); this.muffle.type = 'lowpass'; this.muffle.frequency.value = 20000; this.muffle.Q.value = 0.7;
+      this.muffle.connect(ctx.destination);
+    }
+    this.master.connect(drive).connect(low).connect(body).connect(presence).connect(glue).connect(limiter).connect(this.muffle);
     this.outChain = [this.master, drive, low, body, presence, glue, limiter];
   }
 
@@ -145,7 +150,7 @@ export class GameAudio {
     this.ambBus.gain.value = 1;
     const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 55; hp.Q.value = 0.5;
     const soft = ctx.createBiquadFilter(); soft.type = 'lowpass'; soft.frequency.value = 5500;
-    this.ambBus.connect(hp).connect(soft).connect(ctx.destination);
+    this.ambBus.connect(hp).connect(soft).connect(this.muffle || ctx.destination);
 
     const loop = (buf) => { const s = ctx.createBufferSource(); s.buffer = buf; s.loop = true; s.start(0, Math.random() * 2); return s; };
     // Мягкий гул далёкого трафика
@@ -211,11 +216,16 @@ export class GameAudio {
   }
 
   // Взлёт стаи: частые мягкие хлопки крыльев
+  // Мягкие глухие взмахи (без щелчков), не чаще раза в 3 с и только если стая рядом
   flutter(k = 1, pos = null) {
     if (!this.ctx) return;
-    const n = 6 + Math.floor(k * 10), dest = this.out(pos);
+    const now = this.ctx.currentTime;
+    if (now - (this.lastFlutter || 0) < 3) return;
+    if (pos && this.listener && pos.distanceTo(this.listener) > 40) return;
+    this.lastFlutter = now;
+    const n = 3 + Math.floor(k * 3), dest = this.out(pos);
     for (let i = 0; i < n; i++) {
-      this.noiseBurst({ dur: 0.05 + Math.random() * 0.04, freq: 900 + Math.random() * 900, type: 'bandpass', q: 0.8, gain: 0.06 * k, attack: 0.004, delay: i * (0.03 + Math.random() * 0.05), dest });
+      this.noiseBurst({ dur: 0.14 + Math.random() * 0.06, freq: 650 + Math.random() * 250, type: 'lowpass', q: 0.5, gain: 0.03 * k, attack: 0.04, delay: i * (0.09 + Math.random() * 0.05), dest });
     }
   }
 
@@ -441,6 +451,13 @@ export class GameAudio {
     pan.pan.value = Math.max(-1, Math.min(1, k)) * Math.min(0.9, d / 20);
     pan.connect(this.buses[i]);
     return pan;
+  }
+
+  // Замедление времени: высокие частоты уходят, слышен низкий «гул» и удары
+  setMuffle(k) {
+    if (!this.ctx || !this.muffle) return;
+    this.muffle.frequency.setTargetAtTime(k > 0 ? 700 : 20000, this.ctx.currentTime, k > 0 ? 0.12 : 0.25);
+    this.tone({ dur: 0.7, from: k > 0 ? 240 : 60, to: k > 0 ? 55 : 220, gain: 0.12 });
   }
 
   // Пространство: в «каньонах» небоскрёбов эхо глубже, на открытом месте — суше

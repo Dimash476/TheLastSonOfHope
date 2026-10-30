@@ -123,12 +123,18 @@ export const coastX = (z) => {
   return lerp(QUAY_X, wild, smoothstep(PLANE_HALF, PLANE_HALF + 2500, Math.abs(z)));
 };
 
+// Равнины (0..1): широкие луга и поля между горными массивами
+export function plainK(x, z) {
+  const far = smoothstep(PLANE_HALF + 300, PLANE_HALF + 2200, Math.max(Math.abs(x), Math.abs(z)));
+  return far * smoothstep(0.6, 0.44, fbm(x * 0.00011 + 3.3, z * 0.00011 - 5.1, 3));
+}
+
 // Лес на холмах вокруг города (маска 0..1): нужна и рельефу (цвет), и деревьям
 export function forestMask(x, z, h) {
   const d = Math.hypot(x, z);
-  const ring = smoothstep(PLANE_HALF + 200, PLANE_HALF + 900, Math.max(Math.abs(x), Math.abs(z))) * (1 - smoothstep(7000, 11000, d));
+  const ring = smoothstep(PLANE_HALF + 200, PLANE_HALF + 900, Math.max(Math.abs(x), Math.abs(z))) * (1 - smoothstep(10000, 15000, d)) * (1 - 0.85 * plainK(x, z));
   const n = smoothstep(0.47, 0.56, fbm(x * 0.0009 + 13.1, z * 0.0009 - 7.7, 4));
-  return ring * n * (1 - smoothstep(700, 1100, h)) * smoothstep(2, 10, h);
+  return ring * n * (1 - smoothstep(900, 1400, h)) * smoothstep(2, 10, h);
 }
 
 const LAKES = [
@@ -151,8 +157,10 @@ export function terrainHeightRaw(x, z) {
 
   // Горы: растут с расстоянием от города
   const mountainMask = smoothstep(3200, 9000, Math.hypot(x * 0.9, z));
-  const hills = fbm(x * 0.0007, z * 0.0007, 4) * 70;
-  const mountains = ridged(x * 0.00018 + 7.1, z * 0.00018 - 3.3, 5) * 2600 * mountainMask;
+  // На равнинах горы и холмы сглаживаются в пологие луга; в остальных местах горы выше и острее
+  const pk = plainK(x, z);
+  const hills = fbm(x * 0.0007, z * 0.0007, 4) * 70 * (1 - 0.55 * pk);
+  const mountains = Math.pow(ridged(x * 0.00018 + 7.1, z * 0.00018 - 3.3, 5), 1.25) * 3300 * mountainMask * (1 - 0.94 * pk);
   let h = hills * smoothstep(PLANE_HALF, PLANE_HALF + 1500, dCity) + mountains;
 
   // Долина реки: на запад к горам и на восток к морю
