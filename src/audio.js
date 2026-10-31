@@ -404,7 +404,7 @@ export class GameAudio {
   async loadMusic() {
     try {
       const html = await (await fetch('music/')).text();
-      const files = [...html.matchAll(/href="([^"]+\.(?:mp3|ogg|m4a|wav))"/gi)].map((m) => 'music/' + m[1]);
+      const files = [...html.matchAll(/href="([^"]+\.(?:mp3|ogg|m4a|wav|flac|webm|opus|aac))"/gi)].map((m) => 'music/' + m[1]);
       this.tracks = [...new Set(files)];
     } catch { this.tracks = []; }
     if (this.tracks.length) this.playTrack(0);

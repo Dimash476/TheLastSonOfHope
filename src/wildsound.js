@@ -7,7 +7,7 @@ import { BIG_PARK, POND, RIVER_Z, RIVER_HALF_W, PLANE_HALF, HALF, DISTRICTS, BLO
 // собаки вдалеке в пригороде, колокола старого города (бьют часы), музыкальная
 // шкатулка карусели на пирсе. Без сирен и гудков.
 
-const ss = THREE.MathUtils.smoothstep;
+const ss = THREE.MathUtils.smoothstep, lerp = THREE.MathUtils.lerp;
 const midi = (n) => 440 * Math.pow(2, (n - 69) / 12);
 const _p = new THREE.Vector3();
 
@@ -311,7 +311,7 @@ export class WildSound {
     let list = [];
     try {
       const html = await (await fetch('music/party/')).text();
-      list = [...new Set([...html.matchAll(/href="([^"]+\.(?:mp3|ogg|m4a|wav|flac))"/gi)].map((m) => 'music/party/' + m[1]))];
+      list = [...new Set([...html.matchAll(/href="([^"]+\.(?:mp3|ogg|m4a|wav|flac|webm|opus|aac))"/gi)].map((m) => 'music/party/' + m[1]))];
     } catch { list = []; }
     const ctx = this.a.ctx;
     const el = new Audio();
@@ -326,7 +326,7 @@ export class WildSound {
     // Анализ басов — до громкости, чтобы ритм ловился на любом расстоянии
     const an = ctx.createAnalyser(); an.fftSize = 1024; an.smoothingTimeConstant = 0.2;
     src.connect(an);
-    this.track = { list, i: 0, el, lp, gain, pan, an, bins: new Uint8Array(an.frequencyBinCount), avg: 0, lastKick: 0, kicks: [], leftAt: -1e9, k: 0 };
+    this.track = { list, i: 0, el, lp, gain, pan, an, bins: new Uint8Array(an.frequencyBinCount), avg: 0, lastKick: 0, kicks: [], k: 0 };
     el.addEventListener('ended', () => { const T = this.track; if (T.list.length > 1) { T.i = (T.i + 1) % T.list.length; T.el.src = T.list[T.i]; T.el.play().catch(() => {}); } });
     if (list.length) el.src = list[0];
   }
@@ -337,21 +337,18 @@ export class WildSound {
     if (!T.list.length || !isl?.party) return;
     const ctx = this.a.ctx, t = ctx.currentTime, cam = camera.position;
     const party = isl.party;
-    // Зона тусовки: у сцены и танцпола — полная громкость, к ~400 м сходит на нет
+    // Музыка звучит на всём острове (и над ним, и у берега), громче всего — у сцены.
+    // Покинул остров — трек встаёт на паузу и ждёт; вернулся — играет с того же места
     const dx = party.x - cam.x, dz = party.z - cam.z, d = Math.hypot(dx, dz, Math.max(0, cam.y - 4));
-    const zone = 1 - ss(d, 70, 420);
-    const target = menu ? 0 : zone * (1 - env.W.rain * 0.4);
+    const s = islandSample(cam.x, cam.z);
+    const onIsle = s && s.sd > -150 && cam.y - Math.max(0, s.h) < 700 ? 1 : 0;
+    const zone = 1 - ss(d, 70, 700);
+    const target = menu ? 0 : onIsle * lerp(0.45, 1, zone) * (1 - env.W.rain * 0.3);
     T.k += (target - T.k) * Math.min(1, dt * (target > T.k ? 1.2 : 2.5));
-    if (T.k > 0.004) {
-      if (T.el.paused) {
-        // Вернулся спустя минуту и больше — трек начинается сначала
-        if (t - T.leftAt > 60) T.el.currentTime = 0;
-        T.el.play().catch(() => {});
-      }
-      T.leftAt = t;
-    } else if (!T.el.paused) T.el.pause();
-    T.gain.gain.setTargetAtTime(Math.pow(T.k, 1.4) * 0.9, t, 0.1);
-    T.lp.frequency.setTargetAtTime(700 + 17300 * Math.pow(zone, 2.2), t, 0.15);
+    if (T.k > 0.004) { if (T.el.paused) T.el.play().catch(() => {}); }
+    else if (!T.el.paused) T.el.pause();
+    T.gain.gain.setTargetAtTime(Math.pow(T.k, 1.4) * 0.65, t, 0.1);
+    T.lp.frequency.setTargetAtTime(2500 + 15500 * Math.pow(zone, 1.6), t, 0.15);
     // Направление на сцену относительно камеры (внутри танцпола — звук со всех сторон)
     const R = this.a.listenerRight, len = Math.hypot(dx, dz) || 1;
     const side = R ? (dx * R.x + dz * R.z) / len : 0;
