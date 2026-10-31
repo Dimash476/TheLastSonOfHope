@@ -45,7 +45,7 @@ export function installSunFog() {
     // Дымка светится в сторону солнца: широкое тёплое сияние + яркое ядро
     vec3 fDir = vFogDir / max(length(vFogDir), 1e-4);
     float sunDot = max(dot(fDir, fogSunDir), 0.0);
-    vec3 fogCol = fogColor + fogSunColor * (pow(sunDot, 6.0) * 0.6 + pow(sunDot, 40.0) * 1.2);
+    vec3 fogCol = fogColor + fogSunColor * (pow(sunDot, 6.0) * 0.5 + pow(sunDot, 40.0) * 0.7);
     gl_FragColor.rgb = mix( gl_FragColor.rgb, fogCol, fogFactor );
   #endif`;
 }
@@ -86,13 +86,23 @@ export function createGradePass() {
       uHigh: { value: new THREE.Vector3(0.05, 0.02, -0.03) },
       uSat: { value: 1.08 }, uContrast: { value: 0.18 }, uGrain: { value: 0.02 },
       uFilter: { value: 0 }, uVig: { value: 0 }, uLetter: { value: 0 },
+      uTexel: { value: new THREE.Vector2(1 / 1024, 1 / 768) }, uSharp: { value: 0.2 },
     },
     vertexShader: VERT,
-    fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime, uSat, uContrast, uGrain, uFilter, uVig, uLetter; uniform vec3 uShadow, uHigh; varying vec2 vUv;
+    fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime, uSat, uContrast, uGrain, uFilter, uVig, uLetter, uSharp; uniform vec2 uTexel; uniform vec3 uShadow, uHigh; varying vec2 vUv;
       float h(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
       void main() {
         vec4 base = texture2D(tDiffuse, vUv);
         vec3 c = clamp(base.rgb, 0.0, 1.0);
+        // Резкость: возвращает чёткость мелким деталям (особенно при сниженном разрешении).
+        // Сила ограничена локальным контрастом — без ореолов вокруг контуров
+        if (uSharp > 0.001) {
+          vec3 n = texture2D(tDiffuse, vUv + vec2(0.0, uTexel.y)).rgb, s = texture2D(tDiffuse, vUv - vec2(0.0, uTexel.y)).rgb;
+          vec3 e = texture2D(tDiffuse, vUv + vec2(uTexel.x, 0.0)).rgb, w = texture2D(tDiffuse, vUv - vec2(uTexel.x, 0.0)).rgb;
+          vec3 mn = min(c, min(min(n, s), min(e, w))), mx = max(c, max(max(n, s), max(e, w)));
+          vec3 avg = (n + s + e + w) * 0.25;
+          c = clamp(c + (c - avg) * uSharp * 1.6, mn, mx);
+        }
         c = mix(c, c * c * (3.0 - 2.0 * c), uContrast);          // мягкая S-кривая
         float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
         // Раздельное тонирование: тени и светлые тона (белое не трогаем — без пересвета)
@@ -118,13 +128,15 @@ export function createGradePass() {
 
 // Обновление по состоянию неба (вызывать каждый кадр)
 const _p = new THREE.Vector3();
-const _night = { s: new THREE.Vector3(-0.03, 0.0, 0.07), h: new THREE.Vector3(-0.02, 0.01, 0.05) };
-const _day = { s: new THREE.Vector3(-0.02, 0.025, 0.05), h: new THREE.Vector3(0.04, 0.02, -0.025) };
-const _gold = { s: new THREE.Vector3(-0.01, 0.0, 0.06), h: new THREE.Vector3(0.1, 0.035, -0.06) };
+// Тени — прохладные (бирюза / синева / лиловый в сумерках), свет — тёплый: киношный контраст тонов
+const _night = { s: new THREE.Vector3(-0.025, -0.005, 0.085), h: new THREE.Vector3(0.05, 0.02, -0.015) };
+const _day = { s: new THREE.Vector3(-0.03, 0.02, 0.06), h: new THREE.Vector3(0.05, 0.025, -0.03) };
+const _gold = { s: new THREE.Vector3(0.005, -0.01, 0.075), h: new THREE.Vector3(0.12, 0.04, -0.06) };
+const _tropic = { s: new THREE.Vector3(0.05, -0.03, 0.15), h: new THREE.Vector3(0.08, 0.01, 0.03) };
 export function updateCinematic({ env, camera, godRays, grade, dt, quality }) {
   const night = env.night, golden = env.golden, rain = env.W.rain;
   // Цвет рассеяния у солнца: золото на закате, мягкий белый днём, почти нет ночью
-  const sc = env.T.sun, k = (1 - night) * (1 - rain * 0.7) * (0.1 + golden * 1.0);
+  const sc = env.T.sun, k = (1 - night) * (1 - rain * 0.7) * (0.12 + golden * 0.95);
   SUN_FOG.dir.x = env.sunDir.x; SUN_FOG.dir.y = env.sunDir.y; SUN_FOG.dir.z = env.sunDir.z;
   SUN_FOG.color.x = sc.r * k; SUN_FOG.color.y = sc.g * k; SUN_FOG.color.z = sc.b * k;
 
@@ -136,7 +148,10 @@ export function updateCinematic({ env, camera, godRays, grade, dt, quality }) {
   const strength = vis * (1 - night) * (1 - rain) * (0.35 + golden * 0.65) * (1 - env.altitudeK);
   godRays.enabled = quality < 2 && strength > 0.01;
   godRays.uniforms.uSun.value.set(_p.x * 0.5 + 0.5, _p.y * 0.5 + 0.5);
-  godRays.uniforms.uStrength.value = strength * 1.4;
+  godRays.uniforms.uStrength.value = strength * (1.1 - golden * 0.25);
+  // «Адаптация глаза»: низкое солнце прямо в кадре — экспозиция плавно ниже, без ослепления
+  const glareT = vis * (1 - night) * (1 - rain) * (1 - THREE.MathUtils.smoothstep(env.sunDir.y, 0.05, 0.5)) * (1 - env.altitudeK);
+  env.glare = (env.glare || 0) + (glareT - (env.glare || 0)) * Math.min(1, dt * 2.5);
   godRays.uniforms.uColor.value.copy(sc).lerp(new THREE.Color(1, 1, 1), 0.3);
 
   // Цветокоррекция: смесь «день / золотой час / ночь»
@@ -144,6 +159,13 @@ export function updateCinematic({ env, camera, godRays, grade, dt, quality }) {
   u.uShadow.value.copy(_day.s).lerp(_gold.s, golden).lerp(_night.s, night);
   u.uHigh.value.copy(_day.h).lerp(_gold.h, golden).lerp(_night.h, night);
   u.uSat.value = 1.06 + golden * 0.08 - night * 0.12 - rain * 0.12;
-  u.uContrast.value = 0.16 + golden * 0.06;
+  // Тропики: лавандовые тени, персиково-золотой свет, сочнее цвет
+  const tk = env.tropicK || 0;
+  if (tk > 0) {
+    u.uShadow.value.lerp(_tropic.s, tk);
+    u.uHigh.value.lerp(_tropic.h, tk);
+    u.uSat.value += 0.14 * tk;
+  }
+  u.uContrast.value = 0.2 + golden * 0.06 + night * 0.04;
   u.uTime.value += dt;
 }

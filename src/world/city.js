@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { CITY, WORLD, DEBRIS } from '../config.js';
 import { mulberry32, clamp, lerp } from '../utils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { makeShapeGeometries, createShapeMaterial, addGeometricBlock, addMegaLandmark } from './landmarks.js';
+import { MEGA_SITES } from './layout.js';
 import { BLOCK, HALF, blockTypes, isBridgeRoad, RIVER_Z, RIVER_HALF_W, TOWNS, groundHeight, skylineAt, inOldTown, LANDMARK, QUAY_X, blockAt, BEACH, PIER, pierDeckY, beachHeight } from './layout.js';
 
 const PALETTE = [
@@ -27,6 +29,10 @@ const _c = new THREE.Color();
 const SMALL_ATTACH = new Set(['door', 'awning', 'cornice', 'fireescape', 'vent', 'ac', 'neonH']);
 const _v = new THREE.Vector3();
 const _q = new THREE.Quaternion();
+const _qs = new THREE.Quaternion();
+const _ps = new THREE.Vector3();
+const _ss = new THREE.Vector3();
+const UP_AXIS = new THREE.Vector3(0, 1, 0);
 const GLASS_COLOR = new THREE.Color(0xbcd6e8);
 const REBAR_COLOR = new THREE.Color(0x6b3a26);
 const SLAB_COLOR = new THREE.Color(0x8d8b86);
@@ -50,6 +56,7 @@ export class City {
     this.concrete = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0.05 });
     this.roofMat = new THREE.MeshStandardMaterial({ color: 0x6d6f73, roughness: 0.8, metalness: 0.2 });
     this.gableMat = new THREE.MeshStandardMaterial({ roughness: 0.75 });
+    this.shapeMat = createShapeMaterial(this.material.userData.uNight);
 
     const rnd = mulberry32(CITY.seed);
     this.generateMain(rnd);
@@ -66,6 +73,10 @@ export class City {
   // ================================================================ генерация
   generateMain(rnd) {
     const g = CITY.grid;
+    // Отдельный поток случайностей для геометрических кварталов
+    const rndShape = mulberry32(CITY.seed + 501);
+    // Гиганты на мега-площадях (кварталы MEGA ниже пропускаются)
+    MEGA_SITES.forEach((s, i) => addMegaLandmark(this, s, i, mulberry32(CITY.seed + 900 + i)));
     for (let i = 0; i < g; i++) for (let j = 0; j < g; j++) {
       const type = blockTypes[j * g + i];
       const bx = -HALF + i * CITY.block, bz = -HALF + j * CITY.block;
@@ -73,8 +84,13 @@ export class City {
       if (type === BLOCK.URBAN) {
         if (Math.abs(cx - LANDMARK.x) < 50 && Math.abs(cz - LANDMARK.z) < 50) this.addLandmark(cx, cz);
         else if (inOldTown(cx, cz)) this.fillOldTownBlock(bx, bz, rnd);
+        // Там, где нет высоток, — иногда квартал-площадь с необычной постройкой
+        else if (skylineAt(cx, cz) < 0.22 && rndShape() < 0.08) addGeometricBlock(this, bx, bz, rndShape);
         else this.fillUrbanBlock(bx, bz, rnd, 1);
-      } else if (type === BLOCK.SUBURB) this.fillSuburbBlock(bx, bz, rnd);
+      } else if (type === BLOCK.SUBURB) {
+        if (rndShape() < 0.045) addGeometricBlock(this, bx, bz, rndShape, true);
+        else this.fillSuburbBlock(bx, bz, rnd);
+      }
       else if (type === BLOCK.INDUSTRIAL) this.fillIndustrialBlock(bx, bz, rnd);
       else if (type === BLOCK.PORT) this.fillPortBlock(bx, bz, rnd);
       else if (type === BLOCK.STADIUM) this.addStadium(cx, cz);
@@ -350,7 +366,11 @@ export class City {
       if (!groups.has(key)) groups.set(key, { building: [], concrete: [], roofBox: [], gable: [], whole: [] });
       return groups.get(key);
     };
-    for (const s of this.segs) getGroup(s.x, s.z)[s.type].push(s);
+    for (const s of this.segs) {
+      const g = getGroup(s.x, s.z), key = s.type === 'shape' ? 'shape:' + s.shape : s.type;
+      (g[key] = g[key] || []).push(s);
+    }
+    const shapeGeos = makeShapeGeometries();
     for (const b of this.buildings) if (b.roof) getGroup(b.x, b.z)[b.roof.kind === 'box' ? 'roofBox' : 'gable'].push(b);
     for (const r of this.runs) getGroup(r.x, r.z).whole.push(r);
 
@@ -376,6 +396,13 @@ export class City {
         this.segMeshes = this.segMeshes || [];
         this.segMeshes.push(mesh);
       }
+      // Геометрическая архитектура: своя сетка на каждую форму
+      for (const key in g) {
+        if (!key.startsWith('shape:') || !g[key].length) continue;
+        const mesh = make(shapeGeos[key.slice(6)], this.shapeMat, g[key].length);
+        g[key].forEach((s, i) => { s.mesh = mesh; s.slot = i; this.writeSeg(s, true); });
+        mesh.computeBoundingSphere();
+      }
       if (g.whole.length) {
         const mesh = make(box, this.material, g.whole.length);
         g.whole.forEach((r, i) => { r.mesh = mesh; r.slot = i; this.writeRun(r); });
@@ -394,7 +421,11 @@ export class City {
     }
   }
 
-  segMatrix(s, out) { return out.makeScale(s.w, s.h, s.d).setPosition(s.x, s.y0, s.z); }
+  segMatrix(s, out) {
+    // Витые секции повёрнуты вокруг вертикали
+    if (s.rot) return out.compose(_ps.set(s.x, s.y0, s.z), _qs.setFromAxisAngle(UP_AXIS, s.rot), _ss.set(s.w, s.h, s.d));
+    return out.makeScale(s.w, s.h, s.d).setPosition(s.x, s.y0, s.z);
+  }
 
   writeRun(r) {
     r.mesh.setMatrixAt(r.slot, r.whole ? _m.makeScale(r.w, r.h, r.d).setPosition(r.x, r.y0, r.z) : _zero);
@@ -424,7 +455,7 @@ export class City {
     if (s.slot < 0) return;
     s.mesh.setMatrixAt(s.slot, s.alive ? this.segMatrix(s, _m) : _zero);
     const b = this.buildings[s.b];
-    _c.copy(b.color).multiplyScalar(0.55 + 0.45 * (s.hp / s.maxHp));
+    _c.copy(s.color || b.color).multiplyScalar(0.55 + 0.45 * (s.hp / s.maxHp));
     s.mesh.setColorAt(s.slot, _c);
     s.mesh.instanceMatrix.needsUpdate = true;
     s.mesh.instanceColor.needsUpdate = true;
@@ -460,7 +491,7 @@ export class City {
     const AD = [0xe63946, 0x2a9d8f, 0xf4a261, 0x457b9d, 0xffb703, 0x8338ec, 0x06d6a0];
     const AWNING = [0x7a2a2a, 0x2a5a4a, 0x2a3f6a, 0x8a6a2a, 0x5a2a5a, 0x3a3a3a, 0xa0522d];
     for (const b of this.buildings) {
-      if (b.kind !== 'building' || (b.roof && b.roof.kind === 'gable')) continue;
+      if (b.kind !== 'building' || b.shaped || (b.roof && b.roof.kind === 'gable')) continue;
       const top = this.segs[b.segs[b.segs.length - 1]];
       const roofY = top.y0 + top.h, H = roofY;
       // Красные заградительные огни на высотках, кранах и трубах (мигают)
@@ -573,7 +604,8 @@ export class City {
     for (const c of this.attachChunks) {
       const d = Math.hypot(c.x - camPos.x, c.z - camPos.z);
       // Мелкие детали фасадов (двери, маркизы, карнизы, лестницы) — только вблизи (дальше они меньше пикселя)
-      for (const m of c.meshes) m.visible = SMALL_ATTACH.has(m.name) ? d < 450 && camPos.y < 400 : d < far;
+      const near = this.smallAttachView ?? 600;
+      for (const m of c.meshes) m.visible = SMALL_ATTACH.has(m.name) ? d < near && camPos.y < 450 : d < far;
     }
   }
 
@@ -715,7 +747,7 @@ export class City {
 
   // Звуковой удар: окна вылетают со стороны пролёта
   shatterWindows(s, from, vel) {
-    if (s.glassBroken || s.type !== 'building') return;
+    if (s.glassBroken || (s.type !== 'building' && s.type !== 'shape')) return;
     s.glassBroken = true;
     const cp = this.closestPoint(s, from, new THREE.Vector3());
     const n = this.faceNormal(s, cp);
@@ -819,15 +851,21 @@ export class City {
     for (const s of segs) { s.alive = false; this.writeSeg(s); this.fx.effects.clearDecals?.(s.index); }
     if (b.roof) this.writeRoof(b);
 
-    const mesh = new THREE.InstancedMesh(this.segs[0].mesh.geometry, segs[0].type === 'building' ? this.material : this.concrete, segs.length);
-    segs.forEach((s, i) => {
-      mesh.setMatrixAt(i, this.segMatrix(s, _m));
-      _c.copy(b.color).multiplyScalar(0.55 + 0.45 * (s.hp / s.maxHp));
-      mesh.setColorAt(i, _c);
-    });
-    mesh.castShadow = mesh.receiveShadow = true;
-    mesh.frustumCulled = false;
+    // Падающий кусок рисуется теми же сетками, что и сами секции (коробка или формы):
+    // по одной на каждую сетку, с общими номерами секций (чужие — нулевые)
+    const mesh = new THREE.Group();
     mesh.matrixAutoUpdate = false;
+    for (const src of new Set(segs.map((s) => s.mesh))) {
+      const part = new THREE.InstancedMesh(src.geometry, src.material, segs.length);
+      segs.forEach((s, i) => {
+        part.setMatrixAt(i, s.mesh === src ? this.segMatrix(s, _m) : _zero);
+        _c.copy(s.color || b.color).multiplyScalar(0.55 + 0.45 * (s.hp / s.maxHp));
+        part.setColorAt(i, _c);
+      });
+      part.castShadow = part.receiveShadow = true;
+      part.frustumCulled = false;
+      mesh.add(part);
+    }
     this.scene.add(mesh);
 
     const base = segs[0];
@@ -892,8 +930,8 @@ export class City {
       // остальное продолжает падать и опрокидываться
       if (!topDown && baseY <= f.supportY && f.segs.length > 2 && f.supportY > groundHeight(f.b.x, f.b.z) + 1) {
         const s = f.segs.shift();
-        f.mesh.setMatrixAt(f.crushed++, _zero);
-        f.mesh.instanceMatrix.needsUpdate = true;
+        for (const part of f.mesh.children) { part.setMatrixAt(f.crushed, _zero); part.instanceMatrix.needsUpdate = true; }
+        f.crushed++;
         const p = new THREE.Vector3(f.b.x, f.supportY, f.b.z);
         this.shatter([s], xf, p, f.tilt, 15, f.vy);
         const stub = f.b.segs.map((si) => this.segs[si]).filter((u) => u.alive && u.y0 < f.supportY);
@@ -915,7 +953,7 @@ export class City {
         this.fx.audio?.crumble(Math.min(1, f.segs.length / 8), 'concrete', impactPoint);
         this.onImpact?.(impactPoint, 30 + f.height * 0.5, 40);
         this.scene.remove(f.mesh);
-        f.mesh.dispose();
+        for (const part of f.mesh.children) part.dispose();
         this.falling.splice(i, 1);
       }
     }
@@ -953,7 +991,7 @@ export class City {
   update(dt) { this.updateFalling(dt); }
 
   reset() {
-    for (const f of this.falling) { this.scene.remove(f.mesh); f.mesh.dispose(); }
+    for (const f of this.falling) { this.scene.remove(f.mesh); for (const part of f.mesh.children) part.dispose(); }
     this.falling.length = 0;
     for (const r of this.runs) { r.whole = true; this.writeRun(r); for (const sg of r.segs) sg.slot = -1; }
     for (const m of this.segMeshes) { m.count = m.userData.next = m.userData.base; m.computeBoundingSphere(); }

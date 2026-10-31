@@ -22,13 +22,21 @@ const POSE = {
     hipL: [-0.55, 0, 0.06], knL: [1.05, 0, 0], ankL: [0.6, 0, 0],
     hipR: [-0.08, 0, -0.05], knR: [0.22, 0, 0], ankR: [0.65, 0, 0],
   },
-  // Классический полёт: кулак вперёд, вторая рука прижата вдоль тела, ноги вместе, носки вытянуты
+  // Полёт: руки свободно вдоль тела, ноги вместе, носки вытянуты.
+  // На ускорениях обе руки уходят вперёд (см. animate, p.boost)
   fly: {
     spine: [-0.06, 0, 0], chest: [-0.08, 0, 0], neck: [-0.8, 0, 0],
-    shR: [-3.05, 0, 0.1], elR: [-0.04, 0, 0],
-    shL: [0.38, 0, 0.08], elL: [-0.18, 0, 0],
+    shR: [0.34, 0.12, -0.1], elR: [-0.22, 0, 0],
+    shL: [0.34, -0.12, 0.1], elL: [-0.22, 0, 0],
     hipL: [0.04, 0, 0.015], knL: [0.08, 0, 0], ankL: [1.05, 0, 0],
     hipR: [-0.04, 0, -0.015], knR: [0.32, 0, 0], ankR: [1.0, 0, 0],
+  },
+  // Падение с уступа: руки в стороны для равновесия, ноги готовятся к приземлению
+  fall: {
+    spine: [0.06, 0, 0], chest: [-0.04, 0, 0], neck: [0.12, 0, 0],
+    shL: [-0.55, 0, 0.85], shR: [-0.45, 0, -0.8], elL: [-0.45, 0, 0], elR: [-0.5, 0, 0],
+    hipL: [-0.55, 0, 0.1], knL: [0.85, 0, 0], ankL: [0.15, 0, 0],
+    hipR: [-0.2, 0, -0.08], knR: [0.5, 0, 0], ankR: [0.3, 0, 0],
   },
   // Стойка «руки на поясе» после нескольких секунд покоя
   hips: {
@@ -57,6 +65,8 @@ const POSE = {
     hipR: [-1.1, 0, -0.1], knR: [1.7, 0, 0], ankR: [0.4, 0, 0],
   },
 };
+
+const _pivot = new THREE.Vector3();
 
 export class HeroModel {
   constructor() {
@@ -105,8 +115,10 @@ export class HeroModel {
   }
 
   // gravity, wind — ускорения в локальных координатах модели; onGround — стоим ли на земле
-  updateCape(dt, gravity, wind, onGround = false) {
+  // frameRot — поворот тела за кадр (старая → новая система), для инерции ткани
+  updateCape(dt, gravity, wind, onGround = false, frameRot = null) {
     if (!this.cape) return;
+    if (frameRot) this.cape.applyFrameRotation(frameRot, _pivot.copy(this.group.position).negate());
     this.cape.floorY = onGround ? 0.03 : null;
     this.group.updateMatrixWorld(true);
     const back = new THREE.Vector3(0, 0, -1).applyQuaternion(this.rigQuat('chest'));
@@ -118,20 +130,27 @@ export class HeroModel {
     aL.x += 0.19; aR.x -= 0.19; // плащ шире плеч
     const c = this.cape.colliders;
     c.length = 0;
-    c.push({ c: this.bonePos('Spine2', new THREE.Vector3()), r: 0.2 });
+    // Тело с запасом на толщину ткани: спина, лопатки, поясница, ягодицы, шея
+    const sp2 = this.bonePos('Spine2', new THREE.Vector3()), hips = this.bonePos('Hips', new THREE.Vector3());
+    const sideV = new THREE.Vector3(1, 0, 0).applyQuaternion(this.rigQuat('chest'));
+    c.push({ c: sp2, r: 0.22 });
+    for (const s of [-1, 1]) c.push({ c: sp2.clone().addScaledVector(sideV, 0.1 * s).addScaledVector(back, 0.05).addScaledVector(up, 0.03), r: 0.15 });
+    c.push({ c: this.bonePos('Neck', new THREE.Vector3()), r: 0.1 });
+    const hipsBack = new THREE.Vector3(0, 0, -1).applyQuaternion(this.rigQuat('pelvis'));
+    for (const s of [-1, 1]) c.push({ c: hips.clone().add(new THREE.Vector3(0.09 * s, -0.09, 0)).addScaledVector(hipsBack, 0.06), r: 0.14 });
     // Дельты: ткань ложится на плечи, а не проваливается в них
     c.push({ c: this.bonePos('LeftArm', new THREE.Vector3()).addScaledVector(up, 0.02), r: 0.085 });
     c.push({ c: this.bonePos('RightArm', new THREE.Vector3()).addScaledVector(up, 0.02), r: 0.085 });
-    c.push({ c: this.bonePos('Spine', new THREE.Vector3()), r: 0.18 });
-    c.push({ c: this.bonePos('Hips', new THREE.Vector3()), r: 0.19 });
+    c.push({ c: this.bonePos('Spine', new THREE.Vector3()), r: 0.2 });
+    c.push({ c: hips, r: 0.21 });
     // Руки и ноги — капсулами вдоль костей: при согнутом колене голень не протыкает ткань
     const cap = this.cape.capsules;
     cap.length = 0;
     const seg = (a, b, r) => cap.push({ a: this.bonePos(a, new THREE.Vector3()), b: this.bonePos(b, new THREE.Vector3()), r });
     for (const s of ['Left', 'Right']) {
-      seg(s + 'UpLeg', s + 'Leg', 0.115);
-      seg(s + 'Leg', s + 'Foot', 0.085);
-      seg(s + 'Arm', s + 'ForeArm', 0.075);
+      seg(s + 'UpLeg', s + 'Leg', 0.13);
+      seg(s + 'Leg', s + 'Foot', 0.1);
+      seg(s + 'Arm', s + 'ForeArm', 0.085);
     }
     this.cape.update(dt, aL, aR, gravity, wind);
   }
@@ -270,11 +289,12 @@ export class HeroModel {
       for (const n in pose) { const a = acc[n], v = pose[n]; a[0] += v[0] * w; a[1] += v[1] * w; a[2] += v[2] * w; }
     };
 
-    const total = p.stand + p.hover + p.fly + p.slam + 1e-6;
+    const total = p.stand + p.hover + p.fly + p.slam + (p.fall || 0) + 1e-6;
     add(POSE.stand, p.stand / total);
     add(POSE.hover, p.hover / total);
     add(POSE.fly, p.fly / total);
     add(POSE.slam, p.slam / total);
+    add(POSE.fall, (p.fall || 0) / total);
     // Приземление на колено перекрывает стойку
     if (p.land > 0.01) for (const n in POSE.land) {
       const a = acc[n], v = POSE.land[n];
@@ -297,45 +317,71 @@ export class HeroModel {
       for (let i = 0; i < 3; i++) a[i] = lerp(a[i], v[i], p.brake);
     }
 
-    // Бег: корпус вперёд, руки работают согнутыми в локтях, плечи и таз крутятся навстречу
-    // друг другу, на спринте колени высоко; на малой скорости — спокойный уверенный шаг
+    // Походка по биомеханике человека. Фаза u (0..1) — цикл левой ноги, 0 — касание пяткой.
+    // Тазобедренный, коленный и голеностоп идут по реальным кривым шага / бега; стопа
+    // в опоре стоит ровно на земле; высота таза считается из длины ног (маятник в шаге,
+    // фаза полёта в беге); руки работают навстречу ногам, таз и плечи скручиваются.
     this.runBob = 0;
-    if (p.run > 0) {
-      const w = p.run * (p.stand / total), ph = p.runPhase, sp = p.sprint;
-      const walk = 1 - smoothstep(0.35, 0.85, p.run);
-      const sn = Math.sin(ph), cs = Math.cos(ph);
-      const amp = lerp(lerp(0.62, 0.4, walk), 0.82, sp);
-      const bias = -lerp(lerp(0.14, 0.02, walk), 0.36, sp);   // бедро чаще впереди, чем сзади
-      const kneeL = Math.max(0, Math.sin(ph + 1.75)), kneeR = Math.max(0, Math.sin(ph + 1.75 + Math.PI));
-      const kneeK = lerp(lerp(1.25, 0.55, walk), 1.95, sp);
-      acc.hipL[0] += (-sn * amp + bias - 0.25 * kneeL * sp) * w;
-      acc.hipR[0] += (sn * amp + bias - 0.25 * kneeR * sp) * w;
-      acc.knL[0] += (lerp(0.22, 0.06, walk) + kneeL * kneeK) * w;
-      acc.knR[0] += (lerp(0.22, 0.06, walk) + kneeR * kneeK) * w;
-      // Стопа: носок тянется при отталкивании, поднимается в махе
-      acc.ankL[0] += (0.3 * Math.max(0, -Math.sin(ph + 0.4)) - 0.2 * kneeL) * w;
-      acc.ankR[0] += (0.3 * Math.max(0, Math.sin(ph + 0.4)) - 0.2 * kneeR) * w;
-      // Руки — у корпуса, локти ~90°, сильнее сгибаются при выносе вперёд
-      const armA = lerp(lerp(0.8, 0.4, walk), 1.02, sp);
-      acc.shL[0] += sn * armA * w;
-      acc.shR[0] += -sn * armA * w;
-      acc.shL[2] += -0.1 * w;
-      acc.shR[2] += 0.1 * w;
-      acc.elL[0] += (lerp(lerp(-1.35, -0.35, walk), -1.6, sp) - 0.4 * Math.max(0, -sn) * (1 - walk)) * w;
-      acc.elR[0] += (lerp(lerp(-1.35, -0.35, walk), -1.6, sp) - 0.4 * Math.max(0, sn) * (1 - walk)) * w;
-      // Скручивание: таз за ногой, плечи навстречу; лёгкое покачивание таза
-      const tw = lerp(lerp(0.13, 0.08, walk), 0.2, sp);
-      acc.pelvis[1] += -sn * tw * w;
-      acc.spine[1] += sn * tw * 0.7 * w;
-      acc.chest[1] += sn * tw * 0.9 * w;
-      acc.pelvis[2] += cs * 0.045 * w;
-      acc.chest[2] += -cs * 0.03 * w;
-      // Наклон вперёд, голова держит горизонт
-      acc.spine[0] += lerp(lerp(0.1, 0.02, walk), 0.38, sp) * w;
-      acc.chest[0] += lerp(0.0, 0.1, sp) * w;
-      acc.neck[0] += -lerp(lerp(0.06, 0.0, walk), 0.36, sp) * w;
-      // Таз пружинит: ниже в момент касания, выше в полёте
-      this.runBob = (Math.abs(cs) - 0.55) * lerp(lerp(0.05, 0.025, walk), 0.08, sp) * w;
+    const gw = (p.gait || 0) * (p.stand / total);
+    if (gw > 0.001) {
+      const hs = p.hs || 0, uL = fract(p.runPhase / TAU), uR = fract(uL + 0.5);
+      const runK = smoothstep(2.4, 4.4, hs), sp = smoothstep(14, 45, hs);
+      const G = gaitParams(runK, sp);
+      const L = gaitLeg(uL, G), R = gaitLeg(uR, G);
+      acc.hipL[0] -= L.hip * gw; acc.knL[0] += L.knee * gw; acc.ankL[0] += L.ank * gw;
+      acc.hipR[0] -= R.hip * gw; acc.knR[0] += R.knee * gw; acc.ankR[0] += R.ank * gw;
+      // Ноги ставятся почти по одной линии, а не на ширине стойки
+      acc.hipL[2] -= 0.06 * gw; acc.hipR[2] += 0.06 * gw;
+      acc.ankL[2] += 0.06 * gw; acc.ankR[2] -= 0.06 * gw;
+      // Руки: маятник от плеча навстречу ногам; в беге локти ~90° и сильнее сгибаются впереди
+      const swingL = -Math.cos(TAU * (uL - G.hipPeak)), swingR = -swingL;   // >0 — рука впереди
+      const armA = lerp(0.24, lerp(0.62, 0.95, sp), runK);
+      const armOff = lerp(0.06, lerp(0.12, 0.2, sp), runK);
+      acc.shL[0] += (-swingL * armA + armOff) * gw;
+      acc.shR[0] += (-swingR * armA + armOff) * gw;
+      const elB = lerp(0.18, lerp(1.4, 1.6, sp), runK), elS = lerp(0.18, 0.3, runK);
+      acc.elL[0] -= (elB - 0.18 + Math.max(0, swingL) * elS) * gw;
+      acc.elR[0] -= (elB - 0.18 + Math.max(0, swingR) * elS) * gw;
+      // В беге кисти чуть заходят к центру корпуса
+      acc.shL[1] -= Math.max(0, swingL) * 0.18 * runK * gw; acc.shR[1] += Math.max(0, swingR) * 0.18 * runK * gw;
+      acc.shL[2] -= 0.08 * runK * gw; acc.shR[2] += 0.08 * runK * gw;
+      // Скручивание: таз вслед за выносимой ногой, плечи — навстречу, голова держит курс
+      const yaw = Math.cos(TAU * (uL - G.hipPeak)), tw = lerp(0.07, lerp(0.11, 0.17, sp), runK);
+      acc.pelvis[1] -= yaw * tw * gw;
+      acc.spine[1] += yaw * tw * 0.65 * gw;
+      acc.chest[1] += yaw * tw * 0.85 * gw;
+      acc.neck[1] -= yaw * tw * 0.45 * gw;
+      // Таз: над опорной ногой бедро выше, над маховой — чуть проседает
+      const roll = Math.sin(TAU * uL) * lerp(0.045, 0.03, runK);
+      acc.pelvis[2] += roll * gw;
+      acc.spine[2] -= roll * 0.8 * gw;
+      // Наклон корпуса растёт со скоростью, голова держит горизонт
+      const lean = lerp(0.03, lerp(0.1, 0.3, sp), runK);
+      acc.spine[0] += lean * gw;
+      acc.chest[0] += lerp(0, 0.06, sp) * gw;
+      acc.neck[0] -= lean * 0.75 * gw;
+      // Высота таза: опорная стопа на земле, в беге — полёт по дуге между шагами
+      this.runBob = gaitPelvis(uL, uR, L, R, G) * gw;
+    }
+    // Разгон / торможение и поворот: корпус наклоняется навстречу ускорению
+    if (p.leanF || p.leanS) {
+      const k = p.stand / total;
+      acc.spine[0] += (p.leanF || 0) * k;
+      acc.neck[0] -= (p.leanF || 0) * 0.6 * k;
+      acc.spine[2] -= (p.leanS || 0) * 0.6 * k;
+      acc.chest[2] -= (p.leanS || 0) * 0.4 * k;
+      acc.neck[2] += (p.leanS || 0) * 0.5 * k;
+    }
+    // Присед: толчок перед взлётом и амортизация после приземления
+    if (p.dip > 0.01) {
+      const d = p.dip * (p.stand / total);
+      acc.hipL[0] -= 0.75 * d; acc.hipR[0] -= 0.75 * d;
+      acc.knL[0] += 1.25 * d; acc.knR[0] += 1.25 * d;
+      acc.ankL[0] -= 0.5 * d; acc.ankR[0] -= 0.5 * d;
+      acc.spine[0] += 0.35 * d; acc.neck[0] -= 0.25 * d;
+      acc.shL[0] += 0.35 * d; acc.shR[0] += 0.35 * d;
+      acc.elL[0] -= 0.3 * d; acc.elR[0] -= 0.3 * d;
+      this.runBob -= 0.2 * d;
     }
 
     // Руки на поясе — уверенная поза героя в покое
@@ -347,7 +393,7 @@ export class HeroModel {
       acc.hipR[2] -= 0.04 * p.idle;
     }
     // Покой: дыхание, лёгкий перенос веса
-    const sway = Math.sin(this.t * 0.45) * p.stand * (1 - (p.run || 0));
+    const sway = Math.sin(this.t * 0.45) * p.stand * (1 - (p.gait || 0));
     acc.pelvis[2] += sway * 0.025;
     acc.spine[2] -= sway * 0.02;
 
@@ -368,13 +414,17 @@ export class HeroModel {
       const climb = p.climb || 0;
       acc.chest[0] -= Math.max(0, climb) * 0.12 * w;
       acc.knR[0] += Math.max(0, -climb) * 0.15 * w;
-      // Перегрузка на гиперскорости — обе руки вперёд
-      const hy = (p.hyper || 0) * w;
-      if (hy > 0.01) mixArm(acc, 'L', [-3.0, 0, -0.12], [-0.05, 0, 0], hy * 0.85);
+      // Ускорение (Shift, рывок, гипер) — обе руки вытянуты вперёд, кулаки рядом
+      const bk = Math.max(p.boost || 0, p.hyper || 0) * w;
+      if (bk > 0.01) {
+        mixArm(acc, 'L', [-3.0, 0, -0.11], [-0.05, 0, 0], bk);
+        mixArm(acc, 'R', [-3.0, 0, 0.11], [-0.05, 0, 0], bk);
+        acc.neck[0] -= 0.12 * bk;
+      }
     }
 
     // Голова смотрит туда, куда смотрит камера (на земле и в зависании)
-    const lw = (p.stand / total + p.hover / total) * (1 - 0.7 * (p.run || 0)) * (p.look ?? 1);
+    const lw = (p.stand / total + p.hover / total) * (1 - 0.7 * smoothstep(0, 6, p.hs || 0) * (p.gait || 0)) * (p.look ?? 1);
     acc.neck[1] += clamp(p.lookYaw || 0, -0.85, 0.85) * lw;
     acc.neck[0] += clamp(-(p.lookPitch || 0) * 0.5, -0.35, 0.4) * lw;
 
@@ -450,6 +500,56 @@ export class HeroModel {
     this.j.pelvis.position.y = 1.0 + (p.bob || 0) + this.runBob - 0.5 * Math.max(p.land || 0, (p.pet || 0) * 0.85);
     if (this.skinned) this.skinned.sync(this);
   }
+}
+
+// ---------------------------------------------------------------- походка
+const TAU = Math.PI * 2;
+const THIGH = 0.44, SHIN = 0.43, LEG = THIGH + SHIN, TOE = 0.17;
+const fract = (x) => x - Math.floor(x);
+// Периодический «колокол» вокруг фазы c шириной w
+function bell(u, c, w) { const d = fract(u - c + 0.5) - 0.5; return Math.exp(-(d * d) / (2 * w * w)); }
+
+// Параметры шага (runK 0 → ходьба, 1 → бег; sp — спринт)
+function gaitParams(runK, sp) {
+  const r = (walk, run, sprint) => lerp(walk, lerp(run, sprint, sp), runK);
+  return {
+    runK, sp,
+    hipC: r(0.1, 0.15, 0.2), hipA: r(0.34, 0.55, 0.75),           // бедро: центр и размах (сгибание вперёд > 0)
+    hipPeak: r(0.9, 0.84, 0.8),                                     // пик выноса бедра; в беге — раньше, потом «загребание» назад
+    kStance: r(0.2, 0.5, 0.35), kSwing: r(1.0, 1.55, 2.1),         // колено: опора и мах
+    kSwingAt: r(0.72, 0.64, 0.6), kBase: r(0.06, 0.12, 0.14),
+    stanceEnd: r(0.62, 0.38, 0.3),                                  // конец опоры (отрыв носка)
+    push: r(0.55, 0.7, 0.85),                                        // отталкивание носком
+    swingAnk: r(-0.08, 0.2, 0.3),                                    // стопа в махе (относительно голени)
+    flight: r(0, 0.035, 0.07),                                       // подлёт таза в беге
+  };
+}
+
+// Углы одной ноги в фазе u: hip — сгибание вперёд, knee — сгибание, ank — голеностоп (+ носок вниз)
+function gaitLeg(u, G) {
+  const hip = G.hipC + G.hipA * Math.cos(TAU * (u - G.hipPeak));
+  const knee = G.kBase + G.kStance * bell(u, 0.13, 0.07) + G.kSwing * bell(u, G.kSwingAt, 0.12);
+  // Стопа в опоре: пятка → ровно → подъём на носок; угол стопы к земле
+  const foot = -0.22 * bell(u, 0.0, 0.035) * (1 - G.runK * 0.8) + G.push * bell(u, G.stanceEnd - 0.03, 0.06);
+  const uu = u > 0.9 ? u - 1 : u;
+  const contact = smoothstep(-0.06, 0.0, uu) * (1 - smoothstep(G.stanceEnd - 0.02, G.stanceEnd + 0.07, uu));
+  // В опоре голеностоп держит стопу на земле; в махе — свободная стопа
+  const ankStance = foot + hip - knee;
+  const ank = lerp(G.swingAnk, ankStance, contact);
+  return { hip, knee, ank, foot, contact, u };
+}
+function legReach(l) {
+  return THIGH * Math.cos(l.hip) + SHIN * Math.cos(l.hip - l.knee) + TOE * Math.max(0, Math.sin(l.foot)) * l.contact;
+}
+// Смещение таза по высоте: в опоре — по вытянутости опорной ноги, в полёте — дуга
+function gaitPelvis(uL, uR, L, R, G) {
+  const se = G.stanceEnd;
+  const inL = uL < se, inR = uR < se;
+  if (inL || inR) return Math.max(inL ? legReach(L) : -9, inR ? legReach(R) : -9) - LEG;
+  const u = uL < 0.5 ? uL : uR;              // фаза после отрыва последней ноги
+  const s = clamp((u - se) / Math.max(0.05, 0.5 - se), 0, 1);
+  const y0 = legReach(gaitLeg(se, G)) - LEG, y1 = legReach(gaitLeg(0, G)) - LEG;
+  return lerp(y0, y1, s) + G.flight * 4 * s * (1 - s);
 }
 
 // Плавно ведёт плечо и локоть руки к заданной позе

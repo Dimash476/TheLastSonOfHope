@@ -123,7 +123,7 @@ export class Beach {
 
   // ---------------------------------------------------------------- предметы
   createDecor(rnd) {
-    const G = makeGeometries();
+    const G = makeBeachGeometries();
     const groups = {};
     const add = (type, x, z, rot, color = 0xffffff, scale = 1, y = null) => {
       // Под пирсом и рядом с ним песок свободен
@@ -234,7 +234,7 @@ export class Beach {
 
 // Материал: tint = 1 — часть берёт цвет экземпляра (полоски зонта, полотенце, купальник).
 // sway = высота над землёй для покачивания листьев пальм.
-function createTintMaterial(uTime) {
+export function createTintMaterial(uTime) {
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide });
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uTime;
@@ -258,7 +258,7 @@ function createTintMaterial(uTime) {
   return mat;
 }
 
-function makeGeometries() {
+export function makeBeachGeometries() {
   const part = (geo, color, tint = 0, swayFn = null) => {
     if (geo.index) geo = geo.toNonIndexed();
     if (geo.attributes.uv) geo.deleteAttribute('uv');

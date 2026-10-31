@@ -20,6 +20,7 @@ export const PLAYER = {
   spaceBrakeK: 2.2,      // + пропорционально скорости (1/с): с любой скорости — за ~2–3 с
   maxLatAccel: 980,      // предельная перегрузка в повороте, м/с² (~100 g)
 
+  walkSpeed: 1.8,        // спокойный шаг (CapsLock)
   runSpeed: 14,
   sprintSpeed: 45,
   groundAccel: 10,

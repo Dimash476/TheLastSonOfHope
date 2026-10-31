@@ -7,7 +7,7 @@ import { mulberry32, clamp, smoothstep, lerp } from '../utils.js';
 
 export const BLOCK = {
   URBAN: 0, PARK: 1, SUBURB: 2, RIVER: 3, EMPTY: 4,
-  BIGPARK: 5, INDUSTRIAL: 6, PORT: 7, STADIUM: 8, BEACH: 9,
+  BIGPARK: 5, INDUSTRIAL: 6, PORT: 7, STADIUM: 8, BEACH: 9, MEGA: 10,
 };
 
 export const HALF = CITY.grid * CITY.block * 0.5;          // 2800 м — край сетки
@@ -89,6 +89,41 @@ export function skylineAt(x, z) {
 }
 export const inOldTown = (x, z) => Math.hypot(x - DISTRICTS.oldtown.x, z - DISTRICTS.oldtown.z) < DISTRICTS.oldtown.r;
 
+// ---------------------------------------------------------------- мега-площади
+// Несколько мест, где квартал 3×3 (≈300 м с дорогами по краям) — одна огромная площадь без
+// внутренних дорог с гигантской постройкой. Только там, где нет высоток: вне делового
+// центра, старого города и реки, на городской или пригородной застройке.
+export const MEGA_SITES = (() => {
+  const g = CITY.grid, rnd = mulberry32(CITY.seed + 777), B = CITY.block;
+  const cands = [];
+  for (let i = 2; i < g - 2; i++) for (let j = 2; j < g - 2; j++) {
+    if (Math.abs(j - CITY.riverRow) < 3) continue;
+    let ok = true;
+    for (let a = -1; a <= 1 && ok; a++) for (let b = -1; b <= 1 && ok; b++) {
+      const t = blockTypes[(j + b) * g + (i + a)];
+      if (t !== BLOCK.URBAN && t !== BLOCK.SUBURB) ok = false;
+    }
+    if (!ok) continue;
+    const x = -HALF + (i + 0.5) * B, z = -HALF + (j + 0.5) * B;
+    if (skylineAt(x, z) > 0.3 || inOldTown(x, z) || Math.hypot(x - LANDMARK.x, z - LANDMARK.z) < 700) continue;
+    cands.push({ i, j, x, z, r: rnd() });
+  }
+  cands.sort((p, q) => p.r - q.r);
+  const sites = [];
+  for (const c of cands) {
+    if (sites.length >= 12) break;
+    if (sites.some((s) => Math.hypot(s.x - c.x, s.z - c.z) < 850)) continue;
+    sites.push({ i: c.i, j: c.j, x: c.x, z: c.z, half: B * 1.5 });
+  }
+  for (const s of sites) for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) blockTypes[(s.j + b) * g + (s.i + a)] = BLOCK.MEGA;
+  return sites;
+})();
+// Мега-площадь, в которую попадает точка (pad > 0 — отступ внутрь от краёв, например под тротуары)
+export function inMega(x, z, pad = 0) {
+  for (const s of MEGA_SITES) if (Math.abs(x - s.x) < s.half - pad && Math.abs(z - s.z) < s.half - pad) return s;
+  return null;
+}
+
 // Дороги вдоль оси Z (x = -HALF + k*block) пересекают реку. Мост — на каждой второй.
 export const isBridgeRoad = (k) => k % 2 === 0;
 
@@ -146,7 +181,96 @@ const ISLANDS = [
   { x: 5600, z: 1600, r: 520, h: 45 },
   { x: 7000, z: -2600, r: 850, h: 140 },
   { x: 4800, z: 4600, r: 420, h: 30 },
+  // Дальние вулканические островки — силуэты на фоне заката за райским островом
+  { x: 17500, z: -300, r: 950, h: 640 },
+  { x: 15600, z: 2600, r: 700, h: 380 },
+  { x: 14300, z: -2100, r: 520, h: 250 },
+  { x: 13700, z: 4300, r: 320, h: 95 },
 ];
+
+// ---------------------------------------------------------------- райский остров
+// Тропический остров в океане на востоке — прямо по курсу заката. Вулкан с зелёными
+// гребнями, широкий золотой пляж на восточном берегу (тусовка) и тихая бухта среди
+// чёрных лавовых скал (там никого нет). Свою детальную сетку рисует island.js,
+// а высоты отсюда нужны и сетке, и физике (по пляжу можно ходить).
+export const ISLE = { x: 9400, z: 400, rx: 1750, rz: 1050, rot: 0.3, size: 4400 };
+const isleC = Math.cos(ISLE.rot), isleS = Math.sin(ISLE.rot);
+export const isleToLocal = (x, z) => { const dx = x - ISLE.x, dz = z - ISLE.z; return [dx * isleC + dz * isleS, -dx * isleS + dz * isleC]; };
+export const isleToWorld = (u, v) => [ISLE.x + u * isleC - v * isleS, ISLE.z + u * isleS + v * isleC];
+// Точка берега эллипса под углом phi и наружная нормаль (в локальных координатах острова)
+function isleShore(phi, inset = 0) {
+  const u = ISLE.rx * Math.cos(phi), v = ISLE.rz * Math.sin(phi);
+  let nu = u / (ISLE.rx * ISLE.rx), nv = v / (ISLE.rz * ISLE.rz);
+  const l = Math.hypot(nu, nv); nu /= l; nv /= l;
+  return { u: u - nu * inset, v: v - nv * inset, nu, nv };
+}
+// Бухта пляжа-тусовки (смотрит на закат) и тихая бухта (в километре, за скалами)
+const partyShore = isleShore(0.22, 140), coveShore = isleShore(-0.78, 40);
+export const ISLE_BAYS = [
+  { ...partyShore, r: 400, cu: partyShore.u + partyShore.nu * 330, cv: partyShore.v + partyShore.nv * 330 },
+  { ...coveShore, r: 95, cu: coveShore.u + coveShore.nu * 60, cv: coveShore.v + coveShore.nv * 60 },
+];
+const coveT = [-ISLE_BAYS[1].nv, ISLE_BAYS[1].nu];
+// Лавовые скалы — мысы по краям тихой бухты и россыпь у берега
+export const ISLE_ROCKS = [
+  { u: ISLE_BAYS[1].u + coveT[0] * 105, v: ISLE_BAYS[1].v + coveT[1] * 105, r: 55, h: 16 },
+  { u: ISLE_BAYS[1].u - coveT[0] * 105, v: ISLE_BAYS[1].v - coveT[1] * 105, r: 60, h: 19 },
+  { u: ISLE_BAYS[1].u + coveT[0] * 140 + ISLE_BAYS[1].nu * 40, v: ISLE_BAYS[1].v + coveT[1] * 140 + ISLE_BAYS[1].nv * 40, r: 28, h: 9 },
+  { u: ISLE_BAYS[1].u - coveT[0] * 150 + ISLE_BAYS[1].nu * 45, v: ISLE_BAYS[1].v - coveT[1] * 150 + ISLE_BAYS[1].nv * 45, r: 30, h: 10 },
+];
+const ISLE_PEAK = { u: -0.38 * ISLE.rx, v: 0.12 * ISLE.rz, h: 980, r: 1400 };
+// Песок у воды и пляж: где начинается пляж (от уреза), его ширина
+const SAND_W = 115;
+const smin = (a, b, k) => { const h = Math.max(k - Math.abs(a - b), 0) / k; return Math.min(a, b) - h * h * k * 0.25; };
+
+// Подробные данные точки острова: высота, расстояние от берега (м, > 0 — суша), скалы
+export function islandSample(x, z) {
+  const [u, v] = isleToLocal(x, z);
+  if (Math.abs(u) > ISLE.size / 2 + 2 || Math.abs(v) > ISLE.size / 2 + 2) return null;
+  const ang = Math.atan2(v / ISLE.rz, u / ISLE.rx);
+  let e = Math.hypot(u / ISLE.rx, v / ISLE.rz);
+  // Неровный берег: шум по углу (непрерывен по кругу)
+  e *= 1 + (fbm(Math.cos(ang) * 1.8 + 3.1, Math.sin(ang) * 1.8 - 2.3, 3) - 0.5) * 0.2;
+  let sd = (1 - e) * 1250;
+  for (const B of ISLE_BAYS) sd = smin(sd, Math.hypot(u - B.cu, v - B.cv) - B.r, 70);
+  const wl = WORLD.waterLevel;
+  let h;
+  if (sd < 0) {
+    // Пологий шельф: бирюзовое мелководье на сотни метров, дальше — глубина
+    h = wl - 0.4 + sd * 0.032 - Math.max(0, -sd - 650) * 0.12;
+    h = Math.max(h, -70);
+  } else if (sd < SAND_W) {
+    h = wl + 0.25 + Math.pow(sd / SAND_W, 1.25) * 3.4;
+  } else {
+    const base = wl + 3.65 + (sd - SAND_W) * 0.035 + fbm(u * 0.004 + 7, v * 0.004 - 3, 3) * 22 * smoothstep(SAND_W, 420, sd);
+    // Пологий щитовой вулкан и второй, меньший пик; вершины неровные
+    const dp = Math.hypot(u - ISLE_PEAK.u, v - ISLE_PEAK.v);
+    const d2 = Math.hypot(u - 0.12 * ISLE.rx, v + 0.38 * ISLE.rz);
+    const shield = (d, r) => { const k = Math.max(0, 1 - d / r); return k * k * (3 - 2 * k); };
+    let hv = Math.max(ISLE_PEAK.h * Math.pow(shield(dp, ISLE_PEAK.r), 1.15), 520 * Math.pow(shield(d2, 760), 1.2));
+    hv *= 0.82 + 0.3 * fbm(u * 0.0025 + 4, v * 0.0025 - 1, 4);
+    // Радиальные гребни и глубокие зелёные ущелья, как на гавайских вулканах
+    const th = Math.atan2(v - ISLE_PEAK.v, u - ISLE_PEAK.u);
+    const rid = Math.pow(Math.abs(Math.sin(th * 13 + fbm(u * 0.002, v * 0.002, 3) * 5)), 0.45);
+    hv *= 0.58 + 0.42 * rid;
+    h = base + hv * smoothstep(80, 600, sd);
+  }
+  // Чёрные лавовые скалы
+  let rock = 0;
+  for (const R of ISLE_ROCKS) {
+    const d = Math.hypot(u - R.u, v - R.v) * (1 + 0.35 * (fbm(u * 0.03, v * 0.03, 2) - 0.5));
+    if (d < R.r) {
+      const k = 1 - (d / R.r) ** 2;
+      h = Math.max(h, wl - 2 + (R.h + 2) * Math.sqrt(k) * (0.75 + 0.5 * fbm(u * 0.06 + 2, v * 0.06, 2)));
+      rock = Math.max(rock, smoothstep(0, 0.5, k));
+    }
+  }
+  return { h, sd, rock, u, v };
+}
+export function islandHeight(x, z) {
+  const s = islandSample(x, z);
+  return s ? s.h : null;
+}
 
 // ---------------------------------------------------------------- рельеф (аналитический)
 // Используется для построения меша рельефа. Внутри плоской городской зоны не важен.
@@ -254,5 +378,8 @@ export function groundHeight(x, z) {
     if (x > QUAY_X) return SEA_BED;
     return inRiver(x, z) || inPond(x, z) ? WORLD.riverBed : 0;
   }
+  // Райский остров — точная высота (пляж, скалы, склоны вулкана)
+  const ih = islandHeight(x, z);
+  if (ih !== null) return ih;
   return sampleTerrain(x, z);
 }

@@ -53,7 +53,9 @@ export class HUD {
 
     this.fpsAcc += dt; this.fpsFrames++;
     if (this.fpsAcc > 0.5) {
-      this.el.fps.textContent = Math.round(this.fpsFrames / this.fpsAcc);
+      // Если включилось адаптивное качество — показываем ступень рядом с FPS
+      const ql = this.qualityLevel || 0;
+      this.el.fps.textContent = Math.round(this.fpsFrames / this.fpsAcc) + (ql > 0 ? ` · эконом ${ql}` : '');
       this.fpsAcc = 0; this.fpsFrames = 0;
     }
 

@@ -21,6 +21,7 @@ import { People } from './world/people.js';
 import { StreetLife } from './world/streetlife.js';
 import { AirLife } from './world/air.js';
 import { Beach } from './world/beach.js';
+import { Island } from './world/island.js';
 import { Pier } from './world/pier.js';
 import { Nature } from './world/nature.js';
 import { Animals } from './world/animals.js';
@@ -149,6 +150,7 @@ const trees = world.trees = new Trees(scene, world);
 const street = world.street = new StreetLife(scene, world);
 const air = world.air = new AirLife(scene, world);
 const beach = world.beach = new Beach(scene, world);
+const island = world.island = new Island(scene, world);
 const pier = world.pier = new Pier(scene, world);
 const nature = world.nature = new Nature(scene, world);
 const animals = world.animals = new Animals(scene, world);
@@ -213,6 +215,98 @@ window.addEventListener('resize', () => {
   composer.setSize(w, h);
 });
 
+// ---------------------------------------------------------------- адаптивное качество
+// Разрешение всегда полное — герой и даль остаются чёткими. Когда видеокарта не успевает
+// (FPS ниже ~54), по ступеням и временно упрощаем то, что глазу почти незаметно:
+//   1 — тени обновляются через кадр;
+//   2 — плюс дальние деревья и мелкие детали упрощаются ближе;
+//   3 — плюс тени раз в 3 кадра.
+// Как только появляется запас — ступень за ступенью обратно. Нагрузку меряем таймером
+// видеокарты (если браузер его даёт), иначе — по времени кадра. На паузе и в фоторежиме — максимум.
+const dyn = { level: 0, base: Math.min(window.devicePixelRatio, 1.25), acc: 0, frames: 0, gpu: 0, gpuN: 0, calm: 0, slow: 0, queries: [], active: null, frame: 0 };
+const _gl = renderer.getContext();
+const _timer = _gl.getExtension('EXT_disjoint_timer_query_webgl2');
+const LEVELS = [
+  { shadowEvery: 1, lod: 350, streetSmall: 480, facade: 600 },
+  { shadowEvery: 2, lod: 350, streetSmall: 480, facade: 600 },
+  { shadowEvery: 2, lod: 230, streetSmall: 380, facade: 450 },
+  { shadowEvery: 3, lod: 200, streetSmall: 340, facade: 420 },
+];
+function applyScale() {
+  renderer.setPixelRatio(dyn.base);
+  composer.setPixelRatio?.(dyn.base);
+  composer.setSize(window.innerWidth, window.innerHeight);
+  // Лёгкая резкость: мелкие детали чуть чётче
+  grade.uniforms.uTexel.value.set(1 / Math.max(1, Math.round(window.innerWidth * dyn.base)), 1 / Math.max(1, Math.round(window.innerHeight * dyn.base)));
+  grade.uniforms.uSharp.value = 0.25;
+}
+function applyLevel() {
+  const L = LEVELS[dyn.level];
+  trees.lodNear = L.lod;
+  street.smallView = L.streetSmall;
+  city.smallAttachView = L.facade;
+  hud.qualityLevel = dyn.level;
+}
+// Перед кадром: обновлять ли карту теней в этом кадре
+function shadowTick() {
+  const every = LEVELS[dyn.level].shadowEvery;
+  dyn.frame++;
+  renderer.shadowMap.autoUpdate = every === 1;
+  if (every > 1) renderer.shadowMap.needsUpdate = dyn.frame % every === 0;
+}
+function gpuBegin() {
+  if (!_timer || dyn.active) return;
+  dyn.active = _gl.createQuery();
+  _gl.beginQuery(_timer.TIME_ELAPSED_EXT, dyn.active);
+}
+function gpuEnd() {
+  if (!dyn.active) return;
+  _gl.endQuery(_timer.TIME_ELAPSED_EXT);
+  dyn.queries.push(dyn.active);
+  dyn.active = null;
+}
+function gpuPoll() {
+  while (dyn.queries.length && _gl.getQueryParameter(dyn.queries[0], _gl.QUERY_RESULT_AVAILABLE)) {
+    const q = dyn.queries.shift();
+    if (!_gl.getParameter(_timer.GPU_DISJOINT_EXT)) { dyn.gpu += _gl.getQueryParameter(q, _gl.QUERY_RESULT) / 1e6; dyn.gpuN++; }
+    _gl.deleteQuery(q);
+  }
+  if (dyn.queries.length > 8) { for (const q of dyn.queries) _gl.deleteQuery(q); dyn.queries.length = 0; }
+}
+function setLevel(l) {
+  l = THREE.MathUtils.clamp(l, 0, LEVELS.length - 1);
+  if (l === dyn.level) return;
+  dyn.level = l;
+  applyLevel();
+}
+function updateAdaptiveQuality(dt) {
+  if (_timer) gpuPoll();
+  if (paused || photo.on) {
+    setLevel(0);
+    dyn.acc = dyn.frames = 0;
+    return;
+  }
+  dyn.acc += dt; dyn.frames++;
+  if (dyn.acc < 0.5) return;
+  const frameMs = dyn.acc / dyn.frames * 1000;
+  const gpuMs = dyn.gpuN ? dyn.gpu / dyn.gpuN : 0;
+  dyn.acc = dyn.frames = dyn.gpu = dyn.gpuN = 0;
+  // Тормозим (две проверки подряд) и виновата видеокарта (если тормозит процессор,
+  // упрощение графики не поможет)
+  if (frameMs > 18.5 && (!gpuMs || gpuMs > 13)) {
+    dyn.calm = 0;
+    if (++dyn.slow >= 2) { dyn.slow = 0; setLevel(dyn.level + 1); }
+  } else {
+    dyn.slow = 0;
+    // Запас есть — возвращаем качество (с осторожностью: ступень назад стоит ~1–3 мс)
+    const room = gpuMs ? gpuMs < 11.5 : frameMs < 17.5;
+    dyn.calm = room ? dyn.calm + 1 : 0;
+    if (dyn.calm >= (gpuMs ? 3 : 8)) { dyn.calm = 0; setLevel(dyn.level - 1); }
+  }
+}
+window.addEventListener('resize', () => applyScale());
+applyScale();
+
 // Качество графики (G): для слабых видеокарт
 const QUALITY = [
   { name: 'КАЧЕСТВО: ВЫСОКОЕ', pr: 1.25, shadows: true, shadowMap: 2048, bloom: true },
@@ -222,9 +316,8 @@ const QUALITY = [
 let qualityIndex = 0;
 function applyQuality(i) {
   const q = QUALITY[i];
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, q.pr));
-  composer.setPixelRatio?.(Math.min(window.devicePixelRatio, q.pr));
-  composer.setSize(window.innerWidth, window.innerHeight);
+  dyn.base = Math.min(window.devicePixelRatio, q.pr);
+  applyScale();
   if (renderer.shadowMap.enabled !== q.shadows) {
     renderer.shadowMap.enabled = q.shadows;
     scene.traverse((o) => { if (o.material) o.material.needsUpdate = true; });
@@ -348,8 +441,13 @@ let hitstop = 0;
 
 function frame() {
   requestAnimationFrame(frame);
-  step(Math.min(clock.getDelta(), 0.05), !paused);
+  const dt = clock.getDelta();
+  step(Math.min(dt, 0.05), !paused);
+  shadowTick();
+  gpuBegin();
   composer.render();
+  gpuEnd();
+  updateAdaptiveQuality(Math.min(dt, 0.1));
 }
 
 // Один шаг симуляции (отдельно от рендера — удобно для тестов)
@@ -418,10 +516,11 @@ function step(dt, active) {
   trees.update(dt, camera.position);
   street.update(dt, camera.position);
   beach.update(dt);
+  island.update(paused || photo.on ? 0 : dt * slow.k, camera.position, env, player);
   pier.update(paused || photo.on ? 0 : dt * slow.k, env.night, camera.position);
   nature.update(dt, camera.position);
   // На высоком и среднем качестве (со свечением) картинка чуть темнее
-  renderer.toneMappingExposure = env.exposure * (1 - env.altitudeK * 0.25) * (bloom.enabled ? 0.88 : 1);
+  renderer.toneMappingExposure = env.exposure * (1 - env.altitudeK * 0.25) * (bloom.enabled ? 0.88 : 1) * (1 - 0.32 * (env.glare || 0));
   city.material.userData.uNight.value = env.night;
   props.setNight(env.night);
   traffic.setNight(env.night);
@@ -439,7 +538,10 @@ function step(dt, active) {
   impactPass.uniforms.uSpeed.value = THREE.MathUtils.smoothstep(player.vel.length(), 150, 3000) * (1 - env.altitudeK * 0.6);
   camRig.extraFov = effects.fovKick - effects.chargeK * 9;
   updateCinematic({ env, camera, godRays, grade, dt, quality: qualityIndex });
-  grade.uniforms.uVig.value = photo.on ? 0.35 : (1 - slow.k) * 0.6;
+  // Лёгкая виньетка всегда (киношный кадр), сильнее — в фоторежиме и замедлении
+  grade.uniforms.uVig.value = photo.on ? 0.35 : 0.16 + (1 - slow.k) * 0.5;
+  // Свечение: мягче днём, сильнее на закате и ночью — огни города «дышат»
+  bloom.strength = 0.26 + env.night * 0.26;
   audio.listener = camera.position;
   // Фон мегаполиса: громче в центре и у земли, тише в пригороде и с высотой, нет в космосе
   {
@@ -451,7 +553,7 @@ function step(dt, active) {
   }
   audio.listenerRight = _camRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
   soundscape.update({ dt, player, camera, people, traffic, city, env, paused });
-  wild.update({ dt: dt * slow.k, camera, env, world, paused: paused || photo.on });
+  wild.update({ dt: dt * slow.k, camera, env, world, paused: paused || photo.on, menu: paused, slow: slow.k });
   if (paused) air.mute();
   audio.update(player.vel.length(), paused, player.pos.y < 1500 ? env.W.rain : 0, env.altitudeK);
   endFrame(input);
@@ -463,9 +565,12 @@ frame();
 
 // Для отладки из консоли
 window.game = {
-  scene, camera, renderer, player, city, wild, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space,
+  scene, camera, renderer, player, city, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space,
   // Запуск без захвата мыши (для автотестов)
   unpause() { paused = false; overlay.classList.add('hidden'); hud.show(true); },
   // Прогнать n кадров симуляции с фиксированным шагом
   sim(n, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt, true); composer.render(); },
+  // Кадр с адаптивным качеством (frameDt — сколько «длился» кадр), состояние — в quality
+  quality: dyn,
+  frameQ(frameDt) { shadowTick(); gpuBegin(); composer.render(); gpuEnd(); updateAdaptiveQuality(frameDt); },
 };

@@ -57,6 +57,7 @@ export class KeyboardMouseSource {
       if (e.code === 'KeyE' && !e.shiftKey) state.interact = true;
       if (e.code === 'KeyP') state.photo = true;
       if (e.code === 'KeyV') state.slowmo = true;
+      if (e.code === 'CapsLock') state.walk = !state.walk;
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());

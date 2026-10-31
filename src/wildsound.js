@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BIG_PARK, POND, RIVER_Z, RIVER_HALF_W, PLANE_HALF, HALF, DISTRICTS, BLOCK, blockAt, forestMask, sampleTerrain } from './world/layout.js';
+import { BIG_PARK, POND, RIVER_Z, RIVER_HALF_W, PLANE_HALF, HALF, DISTRICTS, BLOCK, blockAt, forestMask, sampleTerrain, islandSample } from './world/layout.js';
 
 // Живые голоса мира поверх soundscape: всё синтезируется, без файлов.
 // Природа: листва на ветру, певчие птицы днём, совы и лягушки ночью, утки у воды,
@@ -19,6 +19,16 @@ const BOX_MELODY = [
   74, 0, 71, 0, 74, 0, 72, 0, 0, 0, 0, 0,
 ];
 const BOX_BASS = [48, 53, 55, 48]; // по такту
+
+// Пляжная вечеринка на острове: 104 удара в минуту, шестнадцатые; аккорды C – Am – F – G
+const PARTY_STEP = 60 / 104 / 4;
+const PARTY_BASS = [36, 33, 29, 31];
+const PARTY_PAN = [
+  [72, 0, 76, 0, 79, 0, 76, 74, 0, 72, 0, 74, 76, 0, 0, 0],
+  [69, 0, 72, 0, 76, 0, 74, 72, 0, 69, 0, 72, 74, 0, 72, 0],
+  [65, 0, 69, 0, 72, 0, 74, 72, 0, 69, 0, 72, 77, 0, 76, 0],
+  [67, 0, 71, 0, 74, 0, 79, 0, 76, 74, 0, 72, 71, 0, 67, 0],
+];
 
 export class WildSound {
   constructor(audio, soundscape) {
@@ -45,6 +55,19 @@ export class WildSound {
     }
     this.leafGain = ctx.createGain(); this.leafGain.gain.value = 0;
     src.connect(bp).connect(lp).connect(am).connect(this.leafGain).connect(a.ambBus);
+    // Прибой у острова: медленные накаты и шипение пены по песку
+    const surf = ctx.createBufferSource(); surf.buffer = a.brown; surf.loop = true; surf.start(0, Math.random() * 2);
+    const slp = ctx.createBiquadFilter(); slp.type = 'lowpass'; slp.frequency.value = 700;
+    const swell = ctx.createGain(); swell.gain.value = 0.55;
+    const sl = ctx.createOscillator(); sl.frequency.value = 0.11; sl.start();
+    const sd = ctx.createGain(); sd.gain.value = 0.45; sl.connect(sd).connect(swell.gain);
+    const hiss = ctx.createBufferSource(); hiss.buffer = a.noise; hiss.loop = true; hiss.start(0, Math.random() * 2);
+    const hbp = ctx.createBiquadFilter(); hbp.type = 'bandpass'; hbp.frequency.value = 2400; hbp.Q.value = 0.5;
+    const hg = ctx.createGain(); hg.gain.value = 0.12;
+    this.isleSurf = ctx.createGain(); this.isleSurf.gain.value = 0;
+    surf.connect(slp).connect(swell); hiss.connect(hbp).connect(hg).connect(swell);
+    swell.connect(this.isleSurf).connect(a.ambBus);
+    this.party = { at: 0, step: 0 };
   }
 
   // Событие с частотой «раз в ~rate секунд» (со случайным разбросом)
@@ -61,10 +84,11 @@ export class WildSound {
     return new THREE.Vector3(cam.x + Math.cos(ang) * r, cam.y + y0 + Math.random() * (y1 - y0), cam.z + Math.sin(ang) * r);
   }
 
-  update({ dt, camera, env, world, paused }) {
+  update({ dt, camera, env, world, paused, menu = paused, slow = 1 }) {
     const a = this.a;
     if (!a.ctx || !a.ambBus) return;
     if (!this.built) this.build();
+    this.updatePartyTrack(world, camera, env, menu, slow, dt);
     const ctx = a.ctx, t = ctx.currentTime, cam = camera.position;
     const r = Math.max(Math.abs(cam.x), Math.abs(cam.z));
     const outside = r > PLANE_HALF;
@@ -129,6 +153,20 @@ export class WildSound {
     if (this.lastHour !== null && hr !== this.lastHour && oldK > 0.05) this.toll(hr % 12 || 12, belfry);
     this.lastHour = hr;
     if (oldK > 0.3 && day > 0.3 && this.ev('chime', 150, dt)) this.carillon(belfry);
+
+    // ---- райский остров: прибой у берегов и музыка пляжной вечеринки
+    const isl = outside ? islandSample(cam.x, cam.z) : null;
+    const coastK = isl ? (1 - ss(Math.abs(isl.sd), 20, 280)) * (1 - ss(cam.y - Math.max(0, isl.h), 20, 260)) : 0;
+    this.isleSurf.gain.setTargetAtTime(coastK * 0.14 * (1 - rain * 0.3), t, 0.8);
+    const party = world.island?.party;
+    if (party) {
+      _p.set(party.x, cam.y < 60 ? 2 : 6, party.z);
+      const pk = (1 - ss(_p.distanceTo(cam), 40, 420)) * (1 - rain * 0.7);
+      if (pk > 0.01) {
+        if (!this.track?.list.length) this.partyMusic(t, _p.clone(), pk);
+        if (pk > 0.4 && this.ev('partyCheer', 26, dt)) this.s.cheer(0.45, _p.clone());
+      } else this.party.at = 0;
+    }
 
     // ---- шкатулка карусели
     const car = world.pier?.carousel;
@@ -260,6 +298,115 @@ export class WildSound {
       if (n) this.pluck(B.at, midi(n), 0.035 * k, dest);
       if (i % 12 === 0) this.pluck(B.at, midi(BOX_BASS[Math.floor(i / 12) % BOX_BASS.length]), 0.03 * k, dest);
       B.at += step;
+      B.step++;
+    }
+  }
+
+  // ---------------------------------------------------------------- свой трек тусовки
+  // Файлы из music/party/ играют на пляже вечеринки вместо синтезированной музыки.
+  // Звук «живёт» на сцене: у танцпола — в полную силу, дальше — тише и глуше,
+  // сбоку — смещается в нужное ухо. Пока звучит трек, своя музыка (M) уходит в тень.
+  // По басам трека ловятся удары — в такт им мигают прожекторы и двигаются танцоры.
+  async loadPartyTracks() {
+    let list = [];
+    try {
+      const html = await (await fetch('music/party/')).text();
+      list = [...new Set([...html.matchAll(/href="([^"]+\.(?:mp3|ogg|m4a|wav|flac))"/gi)].map((m) => 'music/party/' + m[1]))];
+    } catch { list = []; }
+    const ctx = this.a.ctx;
+    const el = new Audio();
+    el.preload = 'auto';
+    el.loop = list.length === 1;
+    el.preservesPitch = false;
+    const src = ctx.createMediaElementSource(el);
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 18000; lp.Q.value = 0.5;
+    const gain = ctx.createGain(); gain.gain.value = 0;
+    const pan = ctx.createStereoPanner();
+    src.connect(lp).connect(gain).connect(pan).connect(this.a.muffle || ctx.destination);
+    // Анализ басов — до громкости, чтобы ритм ловился на любом расстоянии
+    const an = ctx.createAnalyser(); an.fftSize = 1024; an.smoothingTimeConstant = 0.2;
+    src.connect(an);
+    this.track = { list, i: 0, el, lp, gain, pan, an, bins: new Uint8Array(an.frequencyBinCount), avg: 0, lastKick: 0, kicks: [], leftAt: -1e9, k: 0 };
+    el.addEventListener('ended', () => { const T = this.track; if (T.list.length > 1) { T.i = (T.i + 1) % T.list.length; T.el.src = T.list[T.i]; T.el.play().catch(() => {}); } });
+    if (list.length) el.src = list[0];
+  }
+
+  updatePartyTrack(world, camera, env, menu, slow, dt) {
+    if (!this.track) { if (!this.trackLoading) { this.trackLoading = true; this.loadPartyTracks(); } return; }
+    const T = this.track, isl = world.island;
+    if (!T.list.length || !isl?.party) return;
+    const ctx = this.a.ctx, t = ctx.currentTime, cam = camera.position;
+    const party = isl.party;
+    // Зона тусовки: у сцены и танцпола — полная громкость, к ~400 м сходит на нет
+    const dx = party.x - cam.x, dz = party.z - cam.z, d = Math.hypot(dx, dz, Math.max(0, cam.y - 4));
+    const zone = 1 - ss(d, 70, 420);
+    const target = menu ? 0 : zone * (1 - env.W.rain * 0.4);
+    T.k += (target - T.k) * Math.min(1, dt * (target > T.k ? 1.2 : 2.5));
+    if (T.k > 0.004) {
+      if (T.el.paused) {
+        // Вернулся спустя минуту и больше — трек начинается сначала
+        if (t - T.leftAt > 60) T.el.currentTime = 0;
+        T.el.play().catch(() => {});
+      }
+      T.leftAt = t;
+    } else if (!T.el.paused) T.el.pause();
+    T.gain.gain.setTargetAtTime(Math.pow(T.k, 1.4) * 0.9, t, 0.1);
+    T.lp.frequency.setTargetAtTime(700 + 17300 * Math.pow(zone, 2.2), t, 0.15);
+    // Направление на сцену относительно камеры (внутри танцпола — звук со всех сторон)
+    const R = this.a.listenerRight, len = Math.hypot(dx, dz) || 1;
+    const side = R ? (dx * R.x + dz * R.z) / len : 0;
+    T.pan.pan.setTargetAtTime(side * 0.7 * ss(d, 25, 140), t, 0.1);
+    // Замедление времени (V) тянет и музыку — ниже и медленнее
+    T.el.playbackRate = Math.max(0.5, Math.min(1, slow));
+    // Своя музыка (M) отходит на второй план
+    if (this.a.music) this.a.music.volume = 0.35 * (1 - 0.95 * T.k);
+    // Удары баса: всплеск энергии низов над средним уровнем
+    let kick = false;
+    if (!T.el.paused) {
+      T.an.getByteFrequencyData(T.bins);
+      const binHz = ctx.sampleRate / T.an.fftSize;
+      let e = 0, n = 0;
+      for (let i = 1; i * binHz < 150; i++) { e += T.bins[i]; n++; }
+      e /= Math.max(1, n) * 255;
+      T.avg += (e - T.avg) * Math.min(1, dt * 1.5);
+      if (e > T.avg * 1.18 + 0.04 && t - T.lastKick > 0.28) {
+        kick = true;
+        const iv = t - T.lastKick;
+        if (iv < 1.2) { T.kicks.push(iv); if (T.kicks.length > 12) T.kicks.shift(); }
+        T.lastKick = t;
+      }
+      T.pulse = Math.max((T.pulse || 0) * Math.exp(-dt * 7), kick ? 1 : 0);
+    }
+    // Темп: медиана интервалов между ударами (60–180 ударов в минуту)
+    let bpm = null;
+    if (T.kicks.length >= 4) {
+      const s = [...T.kicks].sort((x, y) => x - y), iv = s[s.length >> 1];
+      bpm = 60 / iv;
+      while (bpm < 80) bpm *= 2;
+      while (bpm > 180) bpm /= 2;
+    }
+    isl.music = T.el.paused ? null : { bpm, pulse: T.pulse || 0, kick };
+  }
+
+  // Пляжная музыка: бочка «четыре в пол», шейкер, хлопок, бас и мелодия стальных барабанов
+  partyMusic(t, pos, k) {
+    const B = this.party;
+    if (!B.at || B.at < t - 0.5) B.at = t + 0.05;
+    const dest = this.a.out(pos);
+    while (B.at < t + 0.25) {
+      const st = B.step % 16, bar = Math.floor(B.step / 16) % 4, t0 = B.at;
+      if (st % 4 === 0) this.note(t0, 120, 42, 0.28, 0.16 * k, dest, 'sine', 0.004);
+      this.a.noiseBurst({ dur: 0.04, freq: 7000, type: 'bandpass', q: 1.2, gain: (st % 2 ? 0.035 : 0.018) * k, attack: 0.002, delay: t0 - t, dest });
+      if (st === 4 || st === 12) this.a.noiseBurst({ dur: 0.09, freq: 1700, type: 'bandpass', q: 0.8, gain: 0.05 * k, attack: 0.002, delay: t0 - t, dest });
+      if ([0, 3, 6, 8, 11, 14].includes(st)) { const f = midi(PARTY_BASS[bar] + (st === 6 || st === 14 ? 12 : 0)); this.note(t0, f, f, 0.22, 0.07 * k, dest, 'triangle', 0.006); }
+      const n = PARTY_PAN[bar][st];
+      if (n) {
+        const f = midi(n);
+        this.note(t0, f, f, 0.45, 0.05 * k, dest, 'sine', 0.003);
+        this.note(t0, f * 2.0, f * 2.0, 0.22, 0.02 * k, dest, 'sine', 0.003);
+        this.note(t0, f * 3.96, f * 3.96, 0.12, 0.012 * k, dest, 'sine', 0.003);
+      }
+      B.at += PARTY_STEP;
       B.step++;
     }
   }

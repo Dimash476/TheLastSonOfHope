@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CITY } from '../config.js';
-import { HALF, RIVER_Z, RIVER_HALF_W, BIG_PARK } from './layout.js';
+import { HALF, RIVER_Z, RIVER_HALF_W, BIG_PARK, inMega } from './layout.js';
 
 const CELL = 60;
 const CHUNK = 200;
@@ -33,7 +33,7 @@ export class Props {
     const bulb = new THREE.BoxGeometry(0.4, 0.1, 0.6).translate(0, 7.62, 1.6);
     const mat = new THREE.MeshStandardMaterial({ color: 0x4a4e54, roughness: 0.5, metalness: 0.7 });
     const lim = CITY.urbanHalf;
-    const inPark = (x, z) => x > BIG_PARK.minX + 12 && x < BIG_PARK.maxX - 12 && z > BIG_PARK.minZ + 12 && z < BIG_PARK.maxZ - 12;
+    const inPark = (x, z) => (x > BIG_PARK.minX + 12 && x < BIG_PARK.maxX - 12 && z > BIG_PARK.minZ + 12 && z < BIG_PARK.maxZ - 12) || !!inMega(x, z, 12);
     const groups = new Map();
     const offset = CITY.road / 2 + 0.8;
     for (let k = 0; k <= CITY.grid; k++) {

@@ -4,6 +4,9 @@ import { HeroModel } from './model.js';
 import { clamp, damp, lerp, smoothstep } from '../utils.js';
 import { EyeLaser } from './laser.js';
 
+const _qI = new THREE.Quaternion();
+const CAPE_INERTIA = 0.6;  // доля поворота тела, которую плащ «не замечает» (инерция ткани)
+
 const UP = new THREE.Vector3(0, 1, 0);
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
@@ -48,6 +51,10 @@ export class Player {
     this.roll = 0;
     this.boomT = 0;
     this.landT = 0;      // «супергеройское» приземление на колено
+    this.falling = false; // сошёл с уступа — падает под силой тяжести, пока не встанет на землю
+    this.takeoffT = 0;   // присед перед взлётом
+    this.dipT = 0; this.dipK = 0;   // амортизация ногами после приземления
+    this.boosting = false;
     this.slowmo = 0;     // замедление времени (читает главный цикл)
     this.throwT = -1;    // бросок мяча: время с начала замаха (-1 — не бросаем)
     this.stepIdx = 0;
@@ -70,6 +77,7 @@ export class Player {
     else this.pos.set(0, 0, 0);
     this.vel.set(0, 0, 0);
     this.grounded = true;
+    this.falling = false;
     this.slamming = false;
     this.charge = 0;
     this.punchT = -1;
@@ -93,6 +101,7 @@ export class Player {
     // ------------------------------------------------ способности
     if (input.slam && !this.grounded && !this.slamming) {
       this.slamming = true;
+      this.falling = false;
       this.vel.set(camFlat.x * 25, -P.slamSpeed, camFlat.z * 25);
       W.audio?.whoosh(1);
     }
@@ -190,24 +199,46 @@ export class Player {
       const wish = new THREE.Vector3().addScaledVector(camFlat, input.moveZ).addScaledVector(right, input.moveX);
       if (wish.lengthSq() > 1) wish.normalize();
       // Пока поднимается с колена — стоит на месте
-      const top = this.landT > 0.25 || this.petting ? 0 : input.boost ? P.sprintSpeed : P.runSpeed;
-      this.vel.x = damp(this.vel.x, wish.x * top, P.groundAccel, dt);
-      this.vel.z = damp(this.vel.z, wish.z * top, P.groundAccel, dt);
+      const top = this.landT > 0.25 || this.petting ? 0 : input.boost ? P.sprintSpeed : input.walk ? P.walkSpeed : P.runSpeed;
+      // Человек разгоняется быстрее, чем тормозит с бега; шаг набирается мягко
+      const hs0 = Math.hypot(this.vel.x, this.vel.z);
+      const accel = top < hs0 ? P.groundAccel * 0.75 : top <= P.walkSpeed + 0.1 ? 5 : P.groundAccel;
+      this.vel.x = damp(this.vel.x, wish.x * top, accel, dt);
+      this.vel.z = damp(this.vel.z, wish.z * top, accel, dt);
       this.vel.y = 0;
-      if (input.moveY > 0) {
-        // Взлёт
-        this.grounded = false;
-        this.vel.y = 28;
-        W.dust.burst(this.pos.clone().setY(this.groundY + 0.5), 14, { size: [2, 5], speed: 14, life: [0.8, 1.6], flat: true });
-        W.audio?.whoosh(0.4);
+      // Взлёт: короткий присед и толчок ногами (с разбега — почти сразу)
+      if (input.moveY > 0 && this.takeoffT <= 0) this.takeoffT = hs0 > 8 ? 0.07 : 0.16;
+      if (this.takeoffT > 0) {
+        this.takeoffT -= dt;
+        if (this.takeoffT <= 0) {
+          this.takeoffT = 0;
+          this.grounded = false;
+          this.falling = false;
+          this.vel.y = 28;
+          W.dust.burst(this.pos.clone().setY(this.groundY + 0.5), 14, { size: [2, 5], speed: 14, life: [0.8, 1.6], flat: true });
+          W.audio?.whoosh(0.4);
+        }
       }
+    } else if (this.falling) {
+      // Шагнул с уступа: свободное падение, в воздухе можно чуть подправить направление.
+      // Пробел или ускорение — герой подхватывает себя и летит дальше
+      if (input.moveY > 0 || input.boost || this.dashT > 0) this.falling = false;
+      else {
+        const wish = new THREE.Vector3().addScaledVector(camFlat, input.moveZ).addScaledVector(right, input.moveX);
+        if (wish.lengthSq() > 1) wish.normalize();
+        const hs = Math.hypot(this.vel.x, this.vel.z), top = Math.max(hs, P.runSpeed);
+        this.vel.x = damp(this.vel.x, wish.x * top, wish.lengthSq() > 0.01 ? 1.2 : 0.3, dt);
+        this.vel.z = damp(this.vel.z, wish.z * top, wish.lengthSq() > 0.01 ? 1.2 : 0.3, dt);
+        this.vel.y = Math.max(this.vel.y - 9.81 * 1.6 * dt, -P.slamSpeed * 0.5);
+      }
+      if (!this.falling) this.fly(dt, input, camDir, right);
     } else {
       this.fly(dt, input, camDir, right);
     }
 
     // Обычный спуск у самой земли плавно гасится — герой встаёт мягко.
     // Резкое падение (с ускорением, рывок, удар о землю) — без смягчения.
-    if (!this.grounded && !this.slamming && this.dashT <= 0 && !input.boost) {
+    if (!this.grounded && !this.slamming && !this.falling && this.dashT <= 0 && !input.boost) {
       const h = this.pos.y - this.groundY, limit = -Math.max(5, h * 2.2);
       if (h < 14 && this.vel.y < limit) this.vel.y = damp(this.vel.y, limit, 10, dt);
     }
@@ -271,7 +302,18 @@ export class Player {
       const g = new THREE.Vector3(0, -14, 0).applyQuaternion(inv);
       const sp = this.vel.length();
       const wind = sp > 0.5 ? this.vel.clone().multiplyScalar(-Math.min(75, sp * 0.8) / sp).applyQuaternion(inv) : new THREE.Vector3();
-      this.model.updateCape(dt, g, wind, this.grounded);
+      // Инерция: при торможении и разгоне ткань «отстаёт». Сила меньше гравитации —
+      // плащ подаётся вперёд, но не перелетает через голову
+      if (this.prevVel && dt > 1e-4) {
+        const acc = this.vel.clone().sub(this.prevVel).divideScalar(dt).clampLength(0, 10);
+        wind.addScaledVector(acc.applyQuaternion(inv), -1);
+      }
+      this.prevVel = (this.prevVel || new THREE.Vector3()).copy(this.vel);
+      // Поворот тела за кадр: ткань почти не поворачивается вместе с ним (инерция)
+      const frameRot = this.prevRootQ ? inv.clone().multiply(this.prevRootQ) : null;
+      if (frameRot) frameRot.slerp(_qI, 1 - CAPE_INERTIA);
+      this.prevRootQ = (this.prevRootQ || new THREE.Quaternion()).copy(this.root.quaternion);
+      this.model.updateCape(dt, g, wind, this.grounded, frameRot);
     }
     this.updateHeld();
 
@@ -301,6 +343,7 @@ export class Player {
     // Плотность воздуха падает с высотой (в космосе почти ноль)
     const rho = Math.exp(-Math.max(0, this.pos.y) / 8000);
     this.braking = false;
+    this.boosting = false;
     this.latAccel.set(0, 0, 0);
 
     if (wl < 0.01) {
@@ -314,6 +357,7 @@ export class Player {
     }
     wish.normalize();
     const boosting = input.boost && input.moveZ > 0;
+    this.boosting = boosting;
     const spaceK = smoothstep(SPACE.atmosphere, SPACE.spaceAlt, this.pos.y);
     // Уровни ускорения: Shift → Shift+E (гипер) → Shift+Q (третий) → Shift+F (четвёртый)
     const hyper = !boosting ? 1 : input.warp ? P.warpMul : input.ultra ? P.ultraMul : input.hyper ? P.hyperMul : 1;
@@ -471,15 +515,25 @@ export class Player {
       if (impact > 150 && steep && !this.lastDiveImpact) this.groundImpact(this.pos.clone(), Math.min(0.9, impact / 400));
       this.lastDiveImpact = impact > 150;
       if (this.vel.y < 0) this.vel.y = 0;
-      if (!this.grounded && input.moveY <= 0 && Math.hypot(this.vel.x, this.vel.z) < 25) {
+      if (!this.grounded && input.moveY <= 0 && (this.falling || Math.hypot(this.vel.x, this.vel.z) < 25)) {
         this.grounded = true;
+        this.falling = false;
+        // Ноги пружинят: чем сильнее удар, тем глубже присед
+        if (impact > 1.5 && impact <= 45) { this.dipK = Math.min(1, 0.2 + impact / 22); this.dipT = 0.12 + 0.2 * this.dipK; }
         if (impact > 8) W.dust.burst(this.pos.clone().setY(this.groundY + 0.3), Math.min(10, 3 + Math.round(impact / 5)), { size: [1.5, 3.5], speed: 4 + impact * 0.12, life: [0.5, 1.2], flat: true });
         // Эффектная посадка на колено — только после быстрого падения
         if (impact > 45) this.heroLanding(Math.min(1, (impact - 45) / 110));
       }
     } else if (this.grounded && this.pos.y > this.groundY + 0.05) {
-      // Здание под нами разрушено или сошли с края крыши — просто зависаем
-      this.grounded = false;
+      // Склон или ступенька вниз — нога просто встаёт ниже. Уступ выше — падаем
+      // (вместе с горизонтальной скоростью), а не повисаем в воздухе
+      const gap = this.pos.y - this.groundY;
+      if (gap > 0.45 + Math.hypot(this.vel.x, this.vel.z) * dt * 1.7) {
+        this.grounded = false;
+        this.falling = true;
+        this.takeoffT = 0;
+        this.vel.y = Math.min(this.vel.y, 0);
+      }
     }
     if (this.grounded) this.pos.y = this.groundY;
   }
@@ -677,7 +731,7 @@ export class Player {
     let targetFacing;
     if (this.petting) targetFacing = new THREE.Vector3(this.petting.pos.x - this.pos.x, 0, this.petting.pos.z - this.pos.z).normalize();
     else if (acting) targetFacing = camFlat;
-    else if (this.grounded) targetFacing = hv.lengthSq() > 1 ? hv.clone().normalize() : this.facing;
+    else if (this.grounded || this.falling) targetFacing = hv.lengthSq() > 1 ? hv.clone().normalize() : this.facing;
     else targetFacing = speed > 5 && hv.lengthSq() > 4 ? hv.clone().normalize() : camFlat;
     this.facing.lerp(targetFacing, 1 - Math.exp(-12 * dt)).setY(0).normalize();
 
@@ -686,7 +740,7 @@ export class Player {
     // Поза полёта: голова вперёд по скорости, лицом к земле
     let flyK = 0;
     let flyQ = upright;
-    if (!this.grounded && !acting && !this.slamming && speed > 5) {
+    if (!this.grounded && !acting && !this.slamming && !this.falling && speed > 5) {
       flyK = smoothstep(12, 55, speed);
       const y = this.vel.clone().divideScalar(speed);
       const z = new THREE.Vector3(0, -1, 0).addScaledVector(y, y.y); // -UP минус проекция на y
@@ -701,7 +755,7 @@ export class Player {
       flyQ.multiply(new THREE.Quaternion().setFromAxisAngle(UP, this.roll));
       // Воздушное торможение: корпус выпрямляется навстречу потоку
       if (this.braking) flyK *= 0.3;
-    } else if (!this.grounded && !acting && !this.slamming) {
+    } else if (!this.grounded && !acting && !this.slamming && !this.falling) {
       // Лёгкий наклон в сторону движения при медленном полёте
       const local = hv.clone().applyQuaternion(upright.clone().invert());
       const lean = new THREE.Quaternion().setFromEuler(new THREE.Euler(local.z * 0.04, 0, -local.x * 0.04));
@@ -710,7 +764,7 @@ export class Player {
     }
     _q.copy(upright).slerp(flyQ, flyK);
     this.quat.slerp(_q, 1 - Math.exp(-10 * dt));
-    this.flyK = !this.grounded && speed > 5 && !acting ? smoothstep(12, 55, speed) * (this.braking ? 0.3 : 1) : 0;
+    this.flyK = !this.grounded && !this.falling && speed > 5 && !acting ? smoothstep(12, 55, speed) * (this.braking ? 0.3 : 1) : 0;
 
     this.root.position.copy(this.pos).addScaledVector(UP, 1.0);
     this.root.quaternion.copy(this.quat);
@@ -720,21 +774,41 @@ export class Player {
     const a = this.anim;
     const air = this.grounded ? 0 : 1;
     const slam = this.slamming ? 1 : 0;
+    const fall = this.falling ? 1 : 0;
     a.stand = damp(a.stand, 1 - air, 12, dt);
     a.fly = damp(a.fly, air * (1 - slam) * this.flyK, 8, dt);
-    a.hover = damp(a.hover, air * (1 - slam) * (1 - this.flyK), 8, dt);
+    a.hover = damp(a.hover, air * (1 - slam) * (1 - fall) * (1 - this.flyK), 8, dt);
+    a.fall = damp(a.fall || 0, fall, 7, dt);
     a.slam = damp(a.slam, slam, 14, dt);
 
     const hs = Math.hypot(this.vel.x, this.vel.z);
     a.run = this.grounded ? clamp(hs / P.runSpeed, 0, 1) : 0;
     a.sprint = smoothstep(P.runSpeed, P.sprintSpeed, hs);
-    a.runPhase += dt * Math.min(24, 3 + hs * 0.55);
-    // Тяжёлые шаги: стук, пыль, лёгкий толчок камеры на спринте (касание — нога впереди)
-    const step = Math.floor((a.runPhase - Math.PI / 2) / Math.PI);
-    if (this.grounded && hs > 3 && step !== this.stepIdx) {
+    a.hs = hs;
+    a.gait = damp(a.gait || 0, this.grounded ? smoothstep(0.15, 1.1, hs) : 0, 10, dt);
+    // Частота шагов как у человека: шаг ~1 цикл/с, бег ~1.8, спринт ~2.4 (ноги не «мельтешат»)
+    a.runPhase += dt * Math.PI * 2 * (0.75 + 0.95 * (1 - Math.exp(-hs / 7)) + 0.015 * Math.min(hs, 60));
+    // Наклон корпуса от разгона/торможения и в повороте (внутрь виража)
+    if (dt > 1e-4) {
+      const ax = (this.vel.x - (this.gPrevX ?? this.vel.x)) / dt, az = (this.vel.z - (this.gPrevZ ?? this.vel.z)) / dt;
+      const g = this.grounded ? 1 : 0;
+      const fwd = ax * this.facing.x + az * this.facing.z, side = ax * this.facing.z - az * this.facing.x;
+      a.leanF = damp(a.leanF || 0, g * clamp(fwd * 0.012, -0.22, 0.2), 6, dt);
+      a.leanS = damp(a.leanS || 0, g * clamp(side * 0.008, -0.3, 0.3), 6, dt);
+    }
+    this.gPrevX = this.vel.x; this.gPrevZ = this.vel.z;
+    // Присед: перед взлётом и амортизация после приземления
+    this.dipT = Math.max(0, this.dipT - dt);
+    const crouch = this.takeoffT > 0 ? 0.8 : this.dipT > 0 ? this.dipK : 0;
+    a.dip = damp(a.dip || 0, crouch, crouch > (a.dip || 0) ? 26 : 7, dt);
+    // Ускорение (Shift, рывок, гипер) — обе руки вперёд
+    a.boost = damp(a.boost || 0, !this.grounded && !this.slamming && (this.boosting || this.dashT > 0) ? 1 : 0, 6, dt);
+    // Шаги: стук, пыль, лёгкий толчок камеры на спринте (касание пяткой — фаза 0 и π)
+    const step = Math.floor(a.runPhase / Math.PI);
+    if (this.grounded && hs > 1 && step !== this.stepIdx) {
       const k = Math.min(1, hs / P.sprintSpeed);
-      this.world.audio?.footstep(0.4 + 0.8 * k);
-      this.world.dust.burst(this.pos.clone().setY(this.groundY + 0.15), Math.ceil(1 + 3 * k), { size: [0.6, 1.6 + 2 * k], speed: 1.5 + 4 * k, life: [0.4, 1.0], flat: true });
+      this.world.audio?.footstep(0.25 + 0.95 * k);
+      if (hs > 5) this.world.dust.burst(this.pos.clone().setY(this.groundY + 0.15), Math.ceil(1 + 3 * k), { size: [0.6, 1.6 + 2 * k], speed: 1.5 + 4 * k, life: [0.4, 1.0], flat: true });
       if (k > 0.6) { this.world.effects.shake(0.05 * k); this.world.effects.fovKick = Math.max(this.world.effects.fovKick, 0.8 * k); }
     }
     this.stepIdx = step;

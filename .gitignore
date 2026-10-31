@@ -10,6 +10,9 @@
 # --- Своя музыка: обычно это чужие песни, выкладывать их нельзя ---
 music/*
 !music/README.txt
+!music/party/
+music/party/*
+!music/party/README.txt
 
 # --- Записи городского фона: класть только CC0, по умолчанию не публикуем ---
 assets/audio/*

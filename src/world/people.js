@@ -143,7 +143,7 @@ export class People {
       const a = Math.random() * Math.PI * 2, r = 25 + Math.random() * Math.random() * (TRAFFIC.radius * 0.5);
       const x = focus.x + Math.cos(a) * r, z = focus.z + Math.sin(a) * r;
       const t = blockAt(x, z);
-      if (t === BLOCK.EMPTY || t === BLOCK.RIVER) continue;
+      if (t === BLOCK.EMPTY || t === BLOCK.RIVER || t === BLOCK.MEGA) continue;
       p.block = [Math.floor((x + HALF) / CITY.block), Math.floor((z + HALF) / CITY.block)];
       p.s = Math.random() * PERIM;
       p.dirSign = Math.random() < 0.5 ? 1 : -1;
@@ -609,7 +609,7 @@ export class People {
 
 // Материал людей: атрибут tint решает, какие части берут цвет экземпляра
 // (одежда, кожа, волосы), а какие остаются своего цвета (кисти, обувь)
-function createPeopleMaterial() {
+export function createPeopleMaterial() {
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 });
   mat.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
@@ -624,7 +624,7 @@ function createPeopleMaterial() {
 }
 
 // Человек из частей. Точки вращения: ноги — в бедре, руки — в плече, голова — в основании шеи.
-function makePersonGeometry() {
+export function makePersonGeometry() {
   const part = (geo, color, tint) => {
     if (geo.index) geo = geo.toNonIndexed();
     const c = new THREE.Color(color), n = geo.attributes.position.count;

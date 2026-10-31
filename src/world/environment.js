@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { CITY, WORLD, SPACE } from '../config.js';
 import { mulberry32, smoothstep, lerp } from '../utils.js';
-import { HALF, PLANE_HALF, RIVER_Z, RIVER_HALF_W, TOWNS, blockTypes, TERRAIN_RES, terrainHeights, coastX, forestMask, QUAY_X, SEA_BED, BIG_PARK, POND, STADIUM, BEACH, plainK } from './layout.js';
+import { HALF, PLANE_HALF, RIVER_Z, RIVER_HALF_W, TOWNS, blockTypes, TERRAIN_RES, terrainHeights, coastX, forestMask, QUAY_X, SEA_BED, BIG_PARK, POND, STADIUM, BEACH, plainK, MEGA_SITES, ISLE, isleToWorld, islandSample } from './layout.js';
 
 // Небо, солнце, туман, земля с дорогами, рельеф, вода, облака.
 export class Environment {
@@ -22,11 +22,23 @@ export class Environment {
     // Прозрачность неба: на высоте и ночью сквозь него видны космос и звёзды
     u.uOpacity = { value: 1 };
     u.uSkyGain = { value: 1 };
+    u.uTwilight = { value: 0 };   // сила сумеречного свечения (солнце чуть за горизонтом)
     sky.material.transparent = true;
     sky.material.depthWrite = false;
     sky.material.fragmentShader = sky.material.fragmentShader
-      .replace('void main() {', 'uniform float uOpacity; uniform float uSkyGain;\nvoid main() {')
-      .replace(/gl_FragColor = vec4\(\s*retColor,\s*1\.0\s*\);/, 'gl_FragColor = vec4( retColor * uSkyGain, uOpacity );');
+      .replace('void main() {', 'uniform float uOpacity; uniform float uSkyGain; uniform float uTwilight;\nvoid main() {')
+      .replace(/gl_FragColor = vec4\(\s*retColor,\s*1\.0\s*\);/, `
+        // Фиолетовый час: у горизонта со стороны заката — розово-оранжевая полоса, переходящая
+        // в лиловую; выше — глубокий фиолетовый. Модель неба сама этого почти не даёт.
+        vec3 twDir = normalize( vWorldPosition - cameraPosition );
+        vec2 hs = normalize( vSunDirection.xz + 1e-5 ), hd = normalize( twDir.xz + 1e-5 );
+        float toward = max( dot( hs, hd ), 0.0 );
+        float up = max( twDir.y, 0.0 );
+        vec3 band = mix( vec3( 0.42, 0.16, 0.42 ), vec3( 1.0, 0.42, 0.26 ), pow( toward, 4.0 ) ) * exp( -up * 7.0 );
+        vec3 zenith = vec3( 0.13, 0.07, 0.3 ) * ( 0.35 + 0.65 * smoothstep( 0.0, 0.7, up ) );
+        vec3 tw = ( band * ( 0.55 + 0.45 * toward ) + zenith ) * uTwilight;
+        float twA = clamp( dot( tw, vec3( 0.33 ) ) * 6.0, 0.0, 1.0 );
+        gl_FragColor = vec4( retColor * uSkyGain + tw, max( uOpacity, twA ) );`);
     this.sunDir = new THREE.Vector3();
     this.lightDir = new THREE.Vector3();
     scene.add(sky);
@@ -48,7 +60,7 @@ export class Environment {
     sun.shadow.normalBias = 0.25;
     scene.add(sun, sun.target);
 
-    this.hour = 10.5;                    // время суток, ч
+    this.hour = 17.0;                    // время суток, ч (старт — на подходе к закату)
     this.timeScale = 24 / (20 * 60);    // сутки за 20 минут
     this.envDirty = true;
     this.envElev = 999; this.envAz = 999;
@@ -84,6 +96,8 @@ export class Environment {
 
     // ---------- Облака ----------
     this.clouds = this.createClouds();
+    this.deck = this.createCloudDeck();
+    scene.add(this.deck);
     scene.add(this.clouds);
 
     this.rain = this.createRain();
@@ -97,41 +111,48 @@ export class Environment {
   // Сутки идут сами (~20 минут на круг). Опорные точки плавно смешиваются:
   // ночь → синий час → рассвет → утро → день → золотой час → закат → сумерки → ночь.
   static KEYS = [
-    { h: 0, elev: -30, sun: 0x8aa4ff, sunI: 0.35, hemi: 0.1, fog: 0x0c121c, exposure: 0.85, night: 1 },
-    { h: 4.6, elev: -16, sun: 0x8aa4ff, sunI: 0.35, hemi: 0.1, fog: 0x0e1420, exposure: 0.85, night: 1 },
-    { h: 5.4, elev: -8, sun: 0x7f8fd0, sunI: 0.4, hemi: 0.14, fog: 0x1e2840, exposure: 0.82, night: 0.85 },
+    { h: 0, elev: -30, sun: 0x9db4ff, sunI: 0.42, hemi: 0.1, fog: 0x0d1020, exposure: 0.85, night: 1 },
+    { h: 4.6, elev: -16, sun: 0x9db4ff, sunI: 0.42, hemi: 0.1, fog: 0x0f1224, exposure: 0.85, night: 1 },
+    { h: 5.4, elev: -8, sun: 0x8a8ce0, sunI: 0.42, hemi: 0.14, fog: 0x22264a, exposure: 0.82, night: 0.85 },
     { h: 5.9, elev: -3.5, sun: 0xb08cc0, sunI: 0.7, hemi: 0.17, fog: 0x4a4560, exposure: 0.76, night: 0.6 },
     { h: 6.4, elev: 0.5, sun: 0xff8a5a, sunI: 1.5, hemi: 0.2, fog: 0xb08a84, exposure: 0.66, night: 0.35 },
     { h: 7.0, elev: 5, sun: 0xffa870, sunI: 2.3, hemi: 0.25, fog: 0xc0a090, exposure: 0.6, night: 0.15 },
     { h: 8.0, elev: 14, sun: 0xffd2a4, sunI: 3.0, hemi: 0.3, fog: 0xbcb4ac, exposure: 0.55, night: 0.05 },
-    { h: 10, elev: 38, sun: 0xfff0dc, sunI: 3.6, hemi: 0.3, fog: 0xa7b6c8, exposure: 0.5, night: 0 },
-    { h: 13, elev: 52, sun: 0xfff4e6, sunI: 3.8, hemi: 0.3, fog: 0x9fb3c8, exposure: 0.5, night: 0 },
-    { h: 16.4, elev: 28, sun: 0xffe8c4, sunI: 3.5, hemi: 0.29, fog: 0xb0b4bc, exposure: 0.52, night: 0 },
+    { h: 10, elev: 38, sun: 0xffe9cf, sunI: 3.6, hemi: 0.3, fog: 0xa7b6c8, exposure: 0.5, night: 0 },
+    { h: 13, elev: 52, sun: 0xfff0dd, sunI: 3.8, hemi: 0.3, fog: 0x9fb3c8, exposure: 0.5, night: 0 },
+    { h: 16.4, elev: 28, sun: 0xffdcb0, sunI: 3.5, hemi: 0.29, fog: 0xb0b4bc, exposure: 0.52, night: 0 },
     // Долгий закат: солнце медленно опускается в океан, небо — от золота к розовому и фиолетовому
-    { h: 17.4, elev: 16, sun: 0xffe0b0, sunI: 3.3, hemi: 0.28, fog: 0xc0b6a8, exposure: 0.53, night: 0 },
-    { h: 18.2, elev: 9, sun: 0xffb878, sunI: 3.0, hemi: 0.25, fog: 0xd0aa88, exposure: 0.56, night: 0.05 },
+    { h: 17.4, elev: 16, sun: 0xffcf96, sunI: 3.3, hemi: 0.27, fog: 0xc8b4a0, exposure: 0.53, night: 0 },
+    { h: 18.2, elev: 9, sun: 0xffb070, sunI: 3.0, hemi: 0.24, fog: 0xd8a888, exposure: 0.56, night: 0.05 },
     { h: 18.9, elev: 4.5, sun: 0xff9a58, sunI: 2.6, hemi: 0.23, fog: 0xd09478, exposure: 0.58, night: 0.15 },
     { h: 19.5, elev: 1.5, sun: 0xff7a40, sunI: 2.2, hemi: 0.21, fog: 0xc07a68, exposure: 0.6, night: 0.3 },
-    { h: 20.0, elev: -1.5, sun: 0xe0605a, sunI: 1.4, hemi: 0.19, fog: 0x8a5a68, exposure: 0.66, night: 0.45 },
-    { h: 20.5, elev: -4.5, sun: 0x9070c0, sunI: 0.8, hemi: 0.16, fog: 0x463c5a, exposure: 0.74, night: 0.65 },
-    { h: 21.2, elev: -9, sun: 0x7f8fd0, sunI: 0.45, hemi: 0.12, fog: 0x1e2438, exposure: 0.82, night: 0.88 },
-    { h: 22, elev: -16, sun: 0x8aa4ff, sunI: 0.35, hemi: 0.1, fog: 0x0c121c, exposure: 0.85, night: 1 },
-    { h: 24, elev: -30, sun: 0x8aa4ff, sunI: 0.35, hemi: 0.1, fog: 0x0c121c, exposure: 0.85, night: 1 },
+    { h: 20.0, elev: -1.5, sun: 0xe85a6a, sunI: 1.4, hemi: 0.19, fog: 0x8e5670, exposure: 0.66, night: 0.45 },
+    { h: 20.5, elev: -4.5, sun: 0x9a6ccc, sunI: 0.8, hemi: 0.2, fog: 0x4e3a68, exposure: 0.74, night: 0.65 },
+    { h: 21.2, elev: -9, sun: 0x8a8ce0, sunI: 0.5, hemi: 0.15, fog: 0x2a2852, exposure: 0.82, night: 0.88 },
+    { h: 22, elev: -16, sun: 0x9db4ff, sunI: 0.42, hemi: 0.1, fog: 0x0d1020, exposure: 0.85, night: 1 },
+    { h: 24, elev: -30, sun: 0x9db4ff, sunI: 0.42, hemi: 0.1, fog: 0x0d1020, exposure: 0.85, night: 1 },
   ];
   // Клавиша T перескакивает к следующему из этих моментов
-  static LABELS = [{ h: 7.2, name: 'УТРО' }, { h: 13, name: 'ДЕНЬ' }, { h: 18.4, name: 'ЗАКАТ' }, { h: 23, name: 'НОЧЬ' }];
+  // СУМЕРКИ — фиолетовый час: солнце уже за горизонтом, небо лиловое, зажигаются огни
+  // ТРОПИКИ — особый романтический закат: персиковое, розовое, золотое и лавандовое небо,
+  // тёплая дымка, светящиеся облака; включается только клавишей T (по часам не наступает)
+  static LABELS = [{ h: 7.2, name: 'УТРО' }, { h: 13, name: 'ДЕНЬ' }, { h: 18.4, name: 'ЗАКАТ' }, { h: 19.72, name: 'ТРОПИКИ', tropic: true, from: 99 }, { h: 20.7, name: 'СУМЕРКИ', from: 20.2 }, { h: 23, name: 'НОЧЬ', from: 21.6 }];
 
   static WEATHERS = [
-    { name: 'ЯСНО', fog: 0.65, clouds: 110, cloudLight: 1, sunMul: 1, turbidity: 2.2, wet: 0, rain: 0 },
-    { name: 'ОБЛАЧНО', fog: 1.8, clouds: 260, cloudLight: 0.85, sunMul: 0.55, turbidity: 9, wet: 0, rain: 0 },
-    { name: 'ДОЖДЬ', fog: 3.2, clouds: 260, cloudLight: 0.55, sunMul: 0.3, turbidity: 13, wet: 1, rain: 0.7 },
-    { name: 'ГРОЗА', fog: 3.8, clouds: 260, cloudLight: 0.38, sunMul: 0.18, turbidity: 16, wet: 1, rain: 1, storm: true },
+    { name: 'ЯСНО', fog: 0.65, clouds: 120, cloudLight: 1, sunMul: 1, turbidity: 2.2, wet: 0, rain: 0, deck: 0 },
+    // Облачно: сплошная пелена с разрывами, но солнце пробивается и наполняет облака светом
+    { name: 'ОБЛАЧНО', fog: 1.25, clouds: 420, cloudLight: 1.0, sunMul: 0.78, turbidity: 6, wet: 0, rain: 0, glow: 1, deck: 0.6 },
+    { name: 'ДОЖДЬ', fog: 3.2, clouds: 640, cloudLight: 0.55, sunMul: 0.3, turbidity: 13, wet: 1, rain: 0.7, deck: 0.8 },
+    { name: 'ГРОЗА', fog: 3.8, clouds: 640, cloudLight: 0.38, sunMul: 0.18, turbidity: 16, wet: 1, rain: 1, storm: true, deck: 0.9 },
   ];
 
   cycleTime() {
     const L = Environment.LABELS;
-    const next = L.find((l) => l.h > this.hour + 0.05) || L[0];
+    // После «Тропиков» — следующий по времени режим (у них тот же час, что и закат)
+    const next = (this.tropic ? L.find((l) => l.h > this.hour + 0.05 && !l.tropic) : L.find((l) => l.h > this.hour + 0.05)) || L[0];
     this.hour = next.h;
+    this.tropic = !!next.tropic;
+    if (this.tropic) this.weatherIndex = 0;   // тропический закат — ясный, с лёгкими облаками
     this.envDirty = true;
     this.applyAtmosphere();
     return next.name;
@@ -155,8 +176,18 @@ export class Environment {
   applyAtmosphere() {
     const W = Environment.WEATHERS[this.weatherIndex];
     const T = this.sampleTime(this.hour);
-    const label = [...Environment.LABELS].reverse().find((l) => this.hour >= l.h - 1.5) || Environment.LABELS[3];
-    T.name = this.hour < 5.7 ? 'НОЧЬ' : label.name;
+    const L = Environment.LABELS;
+    const label = [...L].reverse().find((l) => this.hour >= (l.from ?? l.h - 1.5)) || L[L.length - 1];
+    T.name = this.tropic ? 'ТРОПИКИ' : this.hour < 5.7 ? 'НОЧЬ' : label.name;
+    // Тропический закат: тёплые персиковые тона, розовый рассеянный свет, лавандовое небо.
+    // Пока солнце не ушло глубоко за горизонт; к ночи плавно уступает обычной палитре
+    const tk = this.tropicK = this.tropic ? smoothstep(-13, 2, T.elev) : 0;
+    if (tk > 0) {
+      // Солнце касается океана: глубокий оранжево-алый; дымка — пурпурно-розовая
+      T.sun.lerp(new THREE.Color(0xff6a62), 0.6 * tk);
+      T.fog.lerp(new THREE.Color(0xa86a90), 0.75 * tk);
+      T.exposure *= 1 + 0.08 * tk;
+    }
     T.moonLight = T.elev < -3;
     this.T = T; this.W = W;
     // Золотой час: низкое солнце над горизонтом
@@ -167,6 +198,17 @@ export class Environment {
     u.mieCoefficient.value = 0.0025 + W.rain * 0.003 + golden * 0.002;
     // Днём небо чуть приглушаем — глубже и синее, без пересвета
     u.uSkyGain.value = lerp(lerp(0.62, 0.95, golden), 1, T.night);
+    // Сумеречное свечение: сильнее всего при солнце на 2–6° ниже горизонта, к ночи гаснет
+    u.uTwilight.value = smoothstep(1.5, -2.5, T.elev) * smoothstep(-15, -6, T.elev) * (1 - W.rain * 0.8) * 0.9;
+    if (tk > 0) {
+      u.turbidity.value = lerp(u.turbidity.value, 6.0, tk);
+      u.rayleigh.value = lerp(u.rayleigh.value, 4.4, tk);
+      u.mieCoefficient.value = lerp(u.mieCoefficient.value, 0.004, tk);
+      u.mieDirectionalG.value = lerp(0.82, 0.9, tk);
+      u.uSkyGain.value = lerp(u.uSkyGain.value, 0.9, tk);
+      // Фиолетовый час уже начинается: лиловый зенит, пурпурно-оранжевая полоса у горизонта
+      u.uTwilight.value = Math.max(u.uTwilight.value, 0.85 * tk);
+    } else u.mieDirectionalG.value = 0.82;
     // Солнце идёт с востока (6 ч) через юг (12 ч) на запад (18 ч)
     this.setSun(T.elev, this.sunAz());
     // Ночью тени отбрасывает луна
@@ -176,16 +218,23 @@ export class Environment {
     this.sun.color.copy(T.sun);
     this.baseSunI = T.sunI * W.sunMul;
     this.baseHemi = T.hemi * (0.7 + 0.3 * W.sunMul);
-    this.hemi.color.set(0xcfe3ff).lerp(new THREE.Color(0x334466), T.night).lerp(new THREE.Color(0xffd2b0), golden * 0.35);
-    this.hemi.groundColor.set(0x4a4436).lerp(new THREE.Color(0x1a1820), T.night);
+    // Тропики: солнце уже в океане — песок светится отражённым лиловым небом, а не прямым светом
+    if (tk > 0) { this.baseSunI *= 1 - 0.5 * tk; this.baseHemi *= 1 + 1.3 * tk; }
+    // Киношная пара: прохладный рассеянный свет неба (тени) и тёплое солнце; на закате небо розовеет
+    this.hemi.color.set(0xb9d2ff).lerp(new THREE.Color(0x3a4277), T.night).lerp(new THREE.Color(0xffc4a8), golden * 0.5).lerp(new THREE.Color(0xc890d8), 0.55 * tk);
+    this.hemi.groundColor.set(0x55473a).lerp(new THREE.Color(0x1c1824), T.night).lerp(new THREE.Color(0x6a4060), 0.35 * tk);
     this.baseFog = T.fog.clone().lerp(new THREE.Color(T.night > 0.5 ? 0x0a0e14 : 0x4e555e), W.rain * 0.8);
-    this.fogMul = W.fog * (1 + golden * 0.35);
+    this.fogMul = W.fog * (1 + golden * 0.35) * (1 + 0.05 * tk);
     this.night = T.night;
     this.exposure = T.exposure * (1 - 0.4 * W.rain);
-    this.clouds.count = W.clouds;
+    this.clouds.count = tk > 0 ? Math.max(W.clouds, 160) : W.clouds;
     // Облака на закате подсвечены розово-золотым, ночью — тёмные
     this.cloudUniforms.uLight.value.setRGB(1, 0.99, 0.97).multiplyScalar(W.cloudLight * lerp(1, 0.12, T.night))
-      .lerp(T.sun.clone().multiplyScalar(W.cloudLight * 1.1), 0.3 + golden * 0.55);
+      .lerp(T.sun.clone().multiplyScalar(W.cloudLight * 1.1), 0.3 + golden * 0.55)
+      .lerp(new THREE.Color(1.0, 0.5, 0.62).multiplyScalar(1.6), 0.8 * tk);
+    // Свет солнца сквозь облака: тонкие края и всё, что между нами и солнцем, наполняется светом
+    const sunUp = smoothstep(-0.04, 0.08, this.sunDir.y) * (1 - W.rain * 0.85);
+    this.cloudUniforms.uSunCol.value.copy(T.sun).multiplyScalar(sunUp * (0.7 + 0.5 * (W.glow || 0) + 0.6 * tk));
     this.groundMat.userData.uWet.value = W.wet;
     this.rain.visible = W.rain > 0;
   }
@@ -198,7 +247,8 @@ export class Environment {
     // В золотой час и сумерках время течёт медленнее — закатом можно насладиться
     const e0 = this.T ? this.T.elev : 30;
     const slow = smoothstep(18, 10, e0) * smoothstep(-11, -5, e0);
-    this.hour = (this.hour + dt * this.timeScale * (1 - 0.72 * slow)) % 24;
+    // В «Тропиках» закат длится ещё дольше — мгновение растягивается
+    this.hour = (this.hour + dt * this.timeScale * (1 - 0.72 * slow) * (this.tropic ? 0.3 : 1)) % 24;
     this.applyAtmosphere();
     const e = this.T.elev, az = this.sunAz();
     if (this.envDirty || Math.abs(e - this.envElev) > 3 || Math.abs(az - this.envAz) > 10) {
@@ -288,6 +338,7 @@ export class Environment {
         uStadium: { value: new THREE.Vector2(STADIUM.x, STADIUM.z) },
         uBeach: { value: new THREE.Vector3(BEACH.x0, BEACH.minZ, BEACH.maxZ) },
         uTowns: { value: TOWNS.map((t) => new THREE.Vector3(t.x, t.z, t.grid * CITY.block * 0.5)) },
+        uMega: { value: (MEGA_SITES.length ? MEGA_SITES : [{ x: 1e6, z: 1e6, half: 1 }]).map((s) => new THREE.Vector3(s.x, s.z, s.half)) },
         uWet: mat.userData.uWet,
       });
       shader.vertexShader = shader.vertexShader
@@ -304,6 +355,7 @@ export class Environment {
           uniform vec3 uPond;
           uniform vec3 uBeach;
           uniform vec3 uTowns[${TOWNS.length}];
+          uniform vec3 uMega[${Math.max(1, MEGA_SITES.length)}];
           float h21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
           float vnoise(vec2 p) {
             vec2 i = floor(p), f = fract(p);
@@ -348,6 +400,13 @@ export class Environment {
             // Центральный парк — без дорог внутри, только по периметру
             float inPark = step(uPark.x + uWalk, p.x) * step(p.x, uPark.z - uWalk) * step(uPark.y + uWalk, p.y) * step(p.y, uPark.w - uWalk);
             roads *= 1.0 - inPark;
+            // Мега-площади: внутри нет дорог, только по периметру
+            float inMegaP = 0.0; vec2 megaC = vec2(0.0); float megaH = 1.0;
+            for (int i = 0; i < ${Math.max(1, MEGA_SITES.length)}; i++) {
+              vec2 q = abs(p - uMega[i].xy);
+              if (q.x < uMega[i].z - uWalk && q.y < uMega[i].z - uWalk) { inMegaP = 1.0; megaC = uMega[i].xy; megaH = uMega[i].z - uWalk; }
+            }
+            roads *= 1.0 - inMegaP;
 
             vec3 col = lot;
             if (type > 0.5 && type < 1.5) {                                            // парк: площадь, кольцо, аллеи
@@ -373,7 +432,7 @@ export class Environment {
               vec2 sl = abs(fract(p / vec2(14.0, 15.5)) - 0.5);
               col = mix(col, vec3(0.75, 0.62, 0.2), step(0.48, max(sl.x, sl.y)) * 0.7);
             }
-            if (type > 7.5) {                                                          // стадион: поле с разметкой
+            if (type > 7.5 && type < 8.5) {                                            // стадион: поле с разметкой
               vec2 q = p - uStadium;
               col = vec3(0.36, 0.35, 0.33);
               float field = step(abs(q.x), 30.0) * step(abs(q.y), 21.0);
@@ -433,6 +492,20 @@ export class Environment {
               path = min(path, abs(pondD - uPond.z - 9.0));
               col = mix(col, vec3(0.52, 0.47, 0.38), 1.0 - smoothstep(1.6, 2.2, path));
               col = mix(col, vec3(0.58, 0.52, 0.4), 1.0 - smoothstep(uPond.z + 1.0, uPond.z + 4.0, pondD));
+            }
+            // Мега-площадь: светлый гранит, концентрические кольца, лучи от центра, газон по краю
+            if (inMegaP > 0.5) {
+              vec2 q = p - megaC;
+              float r = length(q), ang = atan(q.y, q.x);
+              vec2 tl = abs(fract(p / 3.0) - 0.5);
+              col = vec3(0.58, 0.56, 0.52) * (0.9 + 0.1 * vnoise(p * 0.15)) * (1.0 - step(0.47, max(tl.x, tl.y)) * 0.1);
+              float ring = 1.0 - smoothstep(0.6, 1.0, abs(fract(r / 24.0) - 0.5) * 24.0);
+              float spoke = (1.0 - smoothstep(0.5, 0.9, abs(fract(ang / 6.2832 * 32.0) - 0.5) * r * 6.2832 / 32.0)) * step(20.0, r);
+              col = mix(col, vec3(0.34, 0.33, 0.32), max(ring, spoke) * 0.75);
+              float edge = max(abs(q.x), abs(q.y));
+              vec3 lawn = mix(vec3(0.13, 0.22, 0.08), vec3(0.22, 0.31, 0.12), vnoise(p * 0.05));
+              col = mix(col, lawn, smoothstep(megaH - 16.0, megaH - 15.0, edge));
+              col = mix(col, vec3(0.6, 0.58, 0.54), smoothstep(megaH - 3.0, megaH - 2.5, edge));
             }
             float n = vnoise(p * 0.08) * 0.6 + vnoise(p * 0.6) * 0.4;
             col *= 0.82 + 0.3 * n;
@@ -581,19 +654,66 @@ export class Environment {
     return g;
   }
 
+  // Карта глубин у райского острова (для бирюзовой лагуны и прибоя): 0 — урез, 1 — 40 м и глубже
+  makeIsleDepth() {
+    const N = 256, data = new Uint8Array(N * N);
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const [x, z] = isleToWorld((i / (N - 1) - 0.5) * ISLE.size, (j / (N - 1) - 0.5) * ISLE.size);
+      const s = islandSample(x, z);
+      const depth = s ? Math.max(0, WORLD.waterLevel - s.h) : 40;
+      data[j * N + i] = Math.min(255, Math.round(depth / 40 * 255));
+    }
+    const tex = new THREE.DataTexture(data, N, N, THREE.RedFormat, THREE.UnsignedByteType);
+    tex.magFilter = tex.minFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
   createWater() {
     const geo = new THREE.PlaneGeometry(WORLD.terrainSize, WORLD.terrainSize, 1, 1).rotateX(-Math.PI / 2);
     const mat = new THREE.MeshStandardMaterial({ color: 0x0f2a36, roughness: 0.035, metalness: 0.15, transparent: true, opacity: 0.92 });
     mat.userData.uTime = { value: 0 };
+    const isleTex = this.makeIsleDepth();
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = mat.userData.uTime;
+      shader.uniforms.uIsleTex = { value: isleTex };
+      shader.uniforms.uIsle = { value: new THREE.Vector4(ISLE.x, ISLE.z, ISLE.size, 0) };
+      shader.uniforms.uIsleRot = { value: new THREE.Vector2(Math.cos(ISLE.rot), Math.sin(ISLE.rot)) };
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vWaterPos;')
         .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWaterPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
           varying vec3 vWaterPos;
-          uniform float uTime;`)
+          uniform float uTime;
+          uniform sampler2D uIsleTex;
+          uniform vec4 uIsle;
+          uniform vec2 uIsleRot;
+          float isleFoam = 0.0;`)
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          {
+            // Лагуна у райского острова: бирюза на мелководье, лазурь глубже, сквозь воду — песок;
+            // полосы пены идут по линиям равной глубины и бегут к берегу
+            vec2 dq = vWaterPos.xz - uIsle.xy;
+            vec2 il = vec2(dq.x * uIsleRot.x + dq.y * uIsleRot.y, -dq.x * uIsleRot.y + dq.y * uIsleRot.x) / uIsle.z + 0.5;
+            if (il.x > 0.0 && il.y > 0.0 && il.x < 1.0 && il.y < 1.0) {
+              float depth = texture2D(uIsleTex, il).r * 40.0;
+              float edgeFade = smoothstep(0.0, 0.08, min(min(il.x, il.y), min(1.0 - il.x, 1.0 - il.y)));
+              float shallow = (1.0 - smoothstep(0.3, 16.0, depth)) * edgeFade;
+              float lagoon = (1.0 - smoothstep(8.0, 38.0, depth)) * edgeFade;
+              vec3 turq = vec3(0.07, 0.62, 0.6), azure = vec3(0.02, 0.3, 0.46);
+              diffuseColor.rgb = mix(diffuseColor.rgb, mix(azure, turq, shallow), lagoon);
+              diffuseColor.a *= mix(1.0, 0.42, shallow);
+              float n = 0.5 + 0.5 * sin(vWaterPos.x * 0.21 + vWaterPos.z * 0.13) * sin(vWaterPos.x * 0.07 - vWaterPos.z * 0.17 + uTime * 0.3);
+              float lines = smoothstep(0.86, 0.97, sin(depth * 1.7 + uTime * 1.25)) * (1.0 - smoothstep(1.2, 4.0, depth)) * smoothstep(0.15, 0.5, depth);
+              float shore = 1.0 - smoothstep(0.05, 0.45, depth);
+              isleFoam = max(lines * (0.45 + 0.55 * n), shore * (0.55 + 0.45 * n)) * edgeFade;
+              diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.96, 0.97, 0.96), isleFoam);
+              diffuseColor.a = mix(diffuseColor.a, 0.95, isleFoam);
+            }
+          }`)
+        .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+          roughnessFactor = mix(roughnessFactor, 0.7, isleFoam);`)
         .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
           {
             // Волны: сумма синусоид по мировым координатам → возмущение нормали
@@ -635,21 +755,25 @@ export class Environment {
     const tex = new THREE.CanvasTexture(c);
     tex.colorSpace = THREE.SRGBColorSpace;
 
-    const count = 260;
+    const count = 640;
     const geo = new THREE.PlaneGeometry(1, 1);
     this.cloudUniforms = {
       uMap: { value: tex },
       uFogColor: { value: this.fogColor },
       uFogDensity: { value: WORLD.fogDensity * 0.6 },
       uLight: { value: new THREE.Color(1, 0.99, 0.97) },
+      uSunDir: { value: this.sunDir },
+      uSunCol: { value: new THREE.Color(0, 0, 0) },
     };
     const mat = new THREE.ShaderMaterial({
       uniforms: this.cloudUniforms,
       vertexShader: /* glsl */`
         varying vec2 vUv;
         varying float vDist;
+        varying vec3 vCW;
         void main() {
           vUv = uv;
+          vCW = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
           vec4 center = modelViewMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
           float s = length(instanceMatrix[0].xyz);
           center.xy += position.xy * s;
@@ -658,16 +782,23 @@ export class Environment {
         }`,
       fragmentShader: /* glsl */`
         uniform sampler2D uMap;
-        uniform vec3 uFogColor, uLight;
+        uniform vec3 uFogColor, uLight, uSunDir, uSunCol;
         uniform float uFogDensity;
         varying vec2 vUv;
         varying float vDist;
+        varying vec3 vCW;
         void main() {
           vec4 t = texture2D(uMap, vUv);
           float fog = 1.0 - exp(-pow(uFogDensity * vDist, 2.0));
           float near = smoothstep(20.0, 160.0, vDist);
           // Низ облака темнее — ощущение объёма
           vec3 col = uLight * mix(0.72, 1.0, smoothstep(0.2, 0.8, vUv.y));
+          // Солнце сквозь облака: рассеяние вперёд (облака между нами и солнцем светятся),
+          // тонкие края горят ярче — серебристая кайма
+          vec3 V = normalize(vCW - cameraPosition);
+          float fwd = pow(max(dot(V, uSunDir), 0.0), 6.0);
+          float thin = 1.0 - smoothstep(0.12, 0.7, t.a);
+          col += uSunCol * (fwd * (0.5 + 1.8 * thin) + thin * 0.22 + smoothstep(0.4, 1.0, vUv.y) * 0.12);
           col = mix(col, uFogColor, fog * 0.8);
           gl_FragColor = vec4(col, t.a * near * (1.0 - fog * 0.6));
           #include <colorspace_fragment>
@@ -680,13 +811,28 @@ export class Environment {
     const rnd2 = mulberry32(99);
     const m = new THREE.Matrix4();
     let i = 0;
-    while (i < count) {
-      const cx = (rnd2() - 0.5) * 16000, cz = (rnd2() - 0.5) * 16000, cy = 900 + rnd2() * 700;
+    // Первые ~160 — отдельные кучевые облака (ясно); остальные — гряды для облачной погоды:
+    // они заполняют промежутки и сливаются в сплошные полосы с просветами
+    const X0 = -9000, X1 = 17000, Z0 = -12000, Z1 = 12000;
+    while (i < 160) {
+      const cx = X0 + rnd2() * (X1 - X0), cz = Z0 + rnd2() * (Z1 - Z0), cy = 900 + rnd2() * 700;
       const n = 4 + Math.floor(rnd2() * 6);
-      for (let k = 0; k < n && i < count; k++, i++) {
+      for (let k = 0; k < n && i < 160; k++, i++) {
         const sc = 200 + rnd2() * 300;
         m.makeScale(sc, sc, sc);
         m.setPosition(cx + (rnd2() - 0.5) * 450, cy + (rnd2() - 0.5) * 80, cz + (rnd2() - 0.5) * 450);
+        mesh.setMatrixAt(i, m);
+      }
+    }
+    while (i < count) {
+      // Гряда: вытянутая полоса из крупных плоских «клубов» вдоль ветра, с разрывами
+      const cx = X0 + rnd2() * (X1 - X0), cz = Z0 + rnd2() * (Z1 - Z0), cy = 1000 + rnd2() * 500;
+      const ang = 0.6 + (rnd2() - 0.5) * 0.5, len = 1800 + rnd2() * 2600, n = 14 + Math.floor(rnd2() * 14);
+      for (let k = 0; k < n && i < count; k++, i++) {
+        const t = (k / n - 0.5) * len, side = (rnd2() - 0.5) * 700;
+        const sc = 380 + rnd2() * 420;
+        m.makeScale(sc, sc * 0.75, sc);
+        m.setPosition(cx + Math.cos(ang) * t - Math.sin(ang) * side, cy + (rnd2() - 0.5) * 120, cz + Math.sin(ang) * t + Math.cos(ang) * side);
         mesh.setMatrixAt(i, m);
       }
     }
@@ -695,8 +841,65 @@ export class Environment {
     return mesh;
   }
 
+  // ---------------------------------------------------------------- облачная пелена
+  // Сплошной слой облаков на ~1.6 км: шум задаёт разрывы, ветер медленно несёт их.
+  // Тонкие места просвечивают, со стороны солнца облака наполняются тёплым светом,
+  // края горят серебром; снизу — серо-голубые днища, сверху — белые вершины
+  createCloudDeck() {
+    this.deckUniforms = {
+      uTime: { value: 0 }, uCover: { value: 0 }, uSunDir: { value: this.sunDir },
+      uSunCol: this.cloudUniforms.uSunCol, uLight: this.cloudUniforms.uLight, uFogColor: this.cloudUniforms.uFogColor,
+      uDark: { value: 0 },
+    };
+    const mat = new THREE.ShaderMaterial({
+      uniforms: this.deckUniforms,
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      vertexShader: `varying vec3 vW;
+        void main() { vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+      fragmentShader: `uniform float uTime, uCover, uDark;
+        uniform vec3 uSunDir, uSunCol, uLight, uFogColor;
+        varying vec3 vW;
+        float h2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float vn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(h2(i), h2(i + vec2(1, 0)), f.x), mix(h2(i + vec2(0, 1)), h2(i + vec2(1, 1)), f.x), f.y); }
+        float fbm(vec2 p) { float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { s += vn(p) * a; p = p * 2.03 + 11.7; a *= 0.5; } return s; }
+        void main() {
+          vec2 p = vW.xz * 0.00042 + vec2(uTime * 0.006, uTime * 0.0035);
+          float d = fbm(p) * 0.75 + fbm(p * 3.1 + 5.0) * 0.25;
+          d = clamp((d - 0.47) * 2.4 + 0.5, 0.0, 1.0);     // контрастнее: чёткие массы и ясные разрывы
+          float cov = 1.0 - uCover;
+          float a = smoothstep(cov - 0.06, cov + 0.1, d);
+          float thick = smoothstep(cov, cov + 0.42, d);
+          vec3 V = normalize(vW - cameraPosition);
+          float below = step(0.0, V.y);
+          float fwd = pow(max(dot(V, uSunDir), 0.0), 7.0);
+          float edge = a * (1.0 - a) * 4.0;
+          // Снизу: тёмные днища, светлее там, где облако тонкое; сверху — освещённые вершины
+          vec3 col = uLight * mix(mix(0.95, 0.5, thick), mix(0.85, 1.15, 1.0 - thick), 1.0 - below);
+          col = mix(col, col * vec3(0.55, 0.58, 0.66), uDark * thick);
+          col += uSunCol * (fwd * (0.35 + 1.9 * (1.0 - thick)) + edge * 0.45 + fwd * edge * 1.2);
+          float dist = length(vW.xz - cameraPosition.xz);
+          float fade = 1.0 - smoothstep(9000.0, 26000.0, dist);
+          col = mix(col, uFogColor, smoothstep(4000.0, 24000.0, dist) * 0.7);
+          gl_FragColor = vec4(col, a * fade * 0.96);
+          #include <colorspace_fragment>
+        }`,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(60000, 60000, 1, 1).rotateX(-Math.PI / 2), mat);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 9;
+    mesh.visible = false;
+    return mesh;
+  }
+
   update(dt, focus, camera, active = true) {
     this.time += dt;
+    // Пелена облаков следует за камерой по горизонтали (узор — в мировых координатах)
+    this.deckUniforms.uTime.value = this.time;
+    this.deckUniforms.uCover.value += ((this.W.deck || 0) - this.deckUniforms.uCover.value) * Math.min(1, dt * 0.8);
+    this.deckUniforms.uDark.value = this.W.rain;
+    this.deck.position.set(camera.position.x, 1650, camera.position.z);
+    this.deck.visible = this.deckUniforms.uCover.value > 0.02 && camera.position.y < 12000;
     if (active) this.stepTime(dt);
     this.water.material.userData.uTime.value = this.time;
     this.sun.position.copy(focus).addScaledVector(this.lightDir, 600);

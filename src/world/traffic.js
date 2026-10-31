@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CITY, TRAFFIC, DEBRIS } from '../config.js';
-import { HALF, isBridgeRoad, BIG_PARK, BEACH } from './layout.js';
+import { HALF, isBridgeRoad, BIG_PARK, BEACH, inMega } from './layout.js';
 import { VEHICLE_TYPES, createVehicleMaterial } from './vehicles.js';
 import { createGlowPoolMaterial } from './props.js';
 
@@ -67,6 +67,8 @@ export class Traffic {
     // Внутри центрального парка дорог нет
     const mx = -HALF + (k + k2) * CITY.block / 2, mz = -HALF + (l + l2) * CITY.block / 2;
     if (mx > BIG_PARK.minX && mx < BIG_PARK.maxX && mz > BIG_PARK.minZ && mz < BIG_PARK.maxZ) return false;
+    // ...и внутри мега-площадей (дороги по периметру остаются)
+    if (inMega(mx, mz, 1)) return false;
     // По пляжу машины не ездят
     if (mx > BEACH.x0 && mz > BEACH.minZ && mz < BEACH.maxZ) return false;
     return true;

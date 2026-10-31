@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CITY } from '../config.js';
 import { mulberry32 } from '../utils.js';
-import { HALF, RIVER_Z, RIVER_HALF_W, BIG_PARK, BLOCK, blockAt } from './layout.js';
+import { HALF, RIVER_Z, RIVER_HALF_W, BIG_PARK, BLOCK, blockAt, inMega } from './layout.js';
 import { VEHICLE_TYPES, createVehicleMaterial } from './vehicles.js';
 
 // Уличная жизнь: светофоры на перекрёстках, скамейки, урны, гидранты, остановки
@@ -14,7 +14,7 @@ const VIEW = 600;
 // Мелочь (урны, скамейки, знаки, велосипеды, столики) вдали меньше пикселя — рисуем ближе,
 // а тени от неё — только рядом (дальше они всё равно не различимы)
 const SMALL = new Set(['bin', 'hydrant', 'bench', 'signRound', 'signBlue', 'bikes', 'cafe']);
-const SMALL_VIEW = 380;
+const SMALL_VIEW = 480;
 const SHADOW_NEAR = 130;
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
@@ -44,7 +44,7 @@ export class StreetLife {
       if (!this.cells.has(ck)) this.cells.set(ck, []);
       this.cells.get(ck).push(it);
     };
-    const inPark = (x, z) => x > BIG_PARK.minX + 12 && x < BIG_PARK.maxX - 12 && z > BIG_PARK.minZ + 12 && z < BIG_PARK.maxZ - 12;
+    const inPark = (x, z) => (x > BIG_PARK.minX + 12 && x < BIG_PARK.maxX - 12 && z > BIG_PARK.minZ + 12 && z < BIG_PARK.maxZ - 12) || !!inMega(x, z, 12);
     const onBridge = (z) => Math.abs(z - RIVER_Z) < RIVER_HALF_W + 4;
     const lim = CITY.urbanHalf;
     const rnd = mulberry32(CITY.seed + 51);
@@ -180,7 +180,7 @@ export class StreetLife {
       const d = Math.hypot(c.x - camPos.x, c.z - camPos.z), v = camPos.y < 900 && d < VIEW;
       const dn = Math.max(0, d - CHUNK * 0.71);   // до ближайшего края участка
       for (const m of c.meshes) {
-        m.visible = v && (!m.userData.small || d < SMALL_VIEW + camPos.y);
+        m.visible = v && (!m.userData.small || d < (this.smallView ?? SMALL_VIEW) + camPos.y);
         m.castShadow = m.userData.shadow && (!m.userData.small || dn < SHADOW_NEAR);
       }
     }

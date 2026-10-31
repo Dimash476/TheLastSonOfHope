@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CITY } from '../config.js';
 import { mulberry32 } from '../utils.js';
-import { HALF, BLOCK, blockTypes, BIG_PARK, POND, PLANE_HALF, forestMask, groundHeight, fbm, parkPathDist, bigParkPaths, bigParkPathDist, PARK_RING } from './layout.js';
+import { HALF, BLOCK, blockTypes, BIG_PARK, POND, PLANE_HALF, forestMask, groundHeight, fbm, parkPathDist, bigParkPaths, bigParkPathDist, PARK_RING, MEGA_SITES } from './layout.js';
 
 const CELL = 60;
 const CHUNK = 500;      // крупные участки — меньше вызовов отрисовки
@@ -10,7 +10,7 @@ const VIEW = 900;      // дальше деревья не рисуем
 const FOREST_CHUNK = 1200;
 const FOREST_VIEW = 1900; // лес на холмах виден дальше
 const FOREST_R = 9000;
-const LOD_NEAR = 230;    // ближе — подробные деревья, дальше — упрощённые (на глаз не отличить)
+const LOD_NEAR = 350;    // ближе — подробные деревья, дальше — упрощённые (на глаз не отличить)
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _v = new THREE.Vector3();
@@ -72,6 +72,11 @@ export class Trees {
           add(bx + inset, bz + t); add(bx + B - inset, bz + t);
         }
       }
+    }
+    // Мега-площади: аллея по газону вдоль края
+    for (const s of MEGA_SITES) {
+      const r = s.half - 12 - 8;
+      for (let t = -r; t <= r; t += 14) for (const [x, z] of [[t, -r], [t, r], [-r, t], [r, t]]) add(s.x + x, s.z + z, 0, 1.15);
     }
     // Центральный парк: густые рощи, поляны и берег пруда без деревьев
     const P = BIG_PARK;
@@ -218,7 +223,7 @@ export class Trees {
       const vis = camPos.y < 2500 && Math.hypot(c.x - camPos.x, c.z - camPos.z) < c.view + camPos.y;
       // Расстояние до ближайшей точки участка (а не до центра)
       const dx = Math.max(c.b.min.x - camPos.x, 0, camPos.x - c.b.max.x), dz = Math.max(c.b.min.z - camPos.z, 0, camPos.z - c.b.max.z);
-      const near = Math.hypot(dx, dz, Math.max(0, camPos.y - c.b.max.y)) < LOD_NEAR;
+      const near = Math.hypot(dx, dz, Math.max(0, camPos.y - c.b.max.y)) < (this.lodNear ?? LOD_NEAR);
       c.m.visible = vis && near;
       c.lo.visible = vis && !near;
       c.sh.visible = vis;

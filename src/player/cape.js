@@ -8,8 +8,13 @@ import * as THREE from 'three';
 
 const W = 17, H = 30;     // точек по ширине и длине
 const LENGTH = 2.05;      // длина от плеч, м (почти до земли)
-const FLARE = 5.0;        // во сколько раз низ шире верха (расширяется в основном к подолу)
-const SPREAD = 14;        // м/с²: подол мягко раскрывается в стороны — плащ не схлопывается в «трубу»
+const FLARE = 4.4;        // во сколько раз низ шире верха (расширяется в основном к подолу)
+// «Память ширины»: каждая колонка мягко тянется к своему месту поперёк плаща —
+// края не перекрещиваются, подол не скручивается, складки остаются живыми
+const LATERAL_K = 6;      // 1/с²
+const LATERAL_W = 0.72;   // доля полной ширины подола, к которой тянется ткань (остальное — складки)
+
+const _tmp = new THREE.Vector3();
 
 export class Cape {
   constructor(parent) {
@@ -17,6 +22,7 @@ export class Cape {
     const n = W * H;
     this.pos = new Float32Array(n * 3);
     this.prev = new Float32Array(n * 3);
+    this.restLat = new Float32Array(n);   // место колонки поперёк плаща (от середины)
     this.t = 0;
     this.floorY = null;   // высота земли в локальных координатах (когда стоим)
 
@@ -94,6 +100,7 @@ export class Cape {
       const v = y / (H - 1), t = x / (W - 1);
       const flare = 1 + (FLARE - 1) * Math.pow(v, 1.35);
       const a = new THREE.Vector3().lerpVectors(this.anchorL, this.anchorR, t);
+      this.restLat[i / 3] = (a.x - mid.x) * flare;
       this.pos[i] = this.prev[i] = mid.x + (a.x - mid.x) * flare;
       this.pos[i + 1] = this.prev[i + 1] = a.y - v * LENGTH;
       // Чуть выгнут назад — будто лежит на спине
@@ -107,6 +114,20 @@ export class Cape {
       this.cr[k] = Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
     this.initialized = true;
+  }
+
+  // Тело повернулось на q (старая система → новая): ткань остаётся в мире, т.е. в локальных
+  // координатах поворачивается обратно. pivot — точка вращения тела в этих координатах.
+  applyFrameRotation(q, pivot) {
+    if (!this.initialized) return;
+    const P = this.pos, Q = this.prev, v = _tmp;
+    for (let k = W; k < W * H; k++) {
+      const i = k * 3;
+      for (const A of [P, Q]) {
+        v.set(A[i] - pivot.x, A[i + 1] - pivot.y, A[i + 2] - pivot.z).applyQuaternion(q);
+        A[i] = v.x + pivot.x; A[i + 1] = v.y + pivot.y; A[i + 2] = v.z + pivot.z;
+      }
+    }
   }
 
   // anchorL/R — точки крепления на плечах (локально); gravity, wind — ускорения в локальных координатах
@@ -123,6 +144,15 @@ export class Cape {
     const side = new THREE.Vector3(1, 0, 0).addScaledVector(wDir, -wDir.x).normalize();
     const lift = new THREE.Vector3().crossVectors(wDir, side).normalize();
     const flutterK = Math.min(1, windLen / 35);
+    const midX = (anchorL.x + anchorR.x) / 2;
+    // Плащ всегда за спиной: если ткань оказалась впереди плоскости плеч (резкий разворот),
+    // её мягко уводит назад — она огибает бока, а не застревает на груди
+    const backZ = (anchorL.z + anchorR.z) / 2 - 0.02;
+    // ...и не задирается выше плеч, пока нет сильного потока
+    const topY = (anchorL.y + anchorR.y) / 2 + 0.06, upK = 1 - flutterK;
+    const latK = LATERAL_K * (1 - 0.75 * flutterK);
+    // Без потока воздух гасит раскачку сильнее — ткань успокаивается, а не хлещет
+    const damp = 0.988 - 0.008 * (1 - flutterK);
 
     for (let s = 0; s < steps; s++) {
       this.t += h;
@@ -136,10 +166,12 @@ export class Cape {
         const freq = 6 + windLen * 0.015;
         const wave = Math.sin(t * freq - v * 9 + u * 2.5) + 0.55 * Math.sin(t * freq * 1.7 - v * 15 - u * 4.0);
         const amp = (flutterK * (4 + Math.min(windLen, 200) * 0.06) + breeze * 0.6) * (0.25 + v);
-        const fx = gravity.x + wind.x + side.x * wave * amp * 0.5 + lift.x * wave * amp + breeze * u * 0.8 + u * SPREAD * Math.pow(v, 0.7) * (1 - flutterK * 0.7);
-        const fy = gravity.y + wind.y + side.y * wave * amp * 0.5 + lift.y * wave * amp;
-        const fz = gravity.z + wind.z + side.z * wave * amp * 0.5 + lift.z * wave * amp - breeze * 1.2;
-        const damp = 0.99;
+        const lat = (midX + this.restLat[k] * LATERAL_W - P[i]) * latK * (0.3 + 0.7 * v);
+        const fx = gravity.x + wind.x + side.x * wave * amp * 0.5 + lift.x * wave * amp + lat;
+        const over = P[i + 1] - topY;
+        const fy = gravity.y + wind.y + side.y * wave * amp * 0.5 + lift.y * wave * amp - (over > 0 ? (over * 60 + 8) * upK : 0);
+        const ahead = P[i + 2] - backZ;
+        const fz = gravity.z + wind.z + side.z * wave * amp * 0.5 + lift.z * wave * amp - breeze * 1.2 - (ahead > 0 ? ahead * 80 + 6 : 0);
         let vx = (P[i] - Q[i]) * damp, vy = (P[i + 1] - Q[i + 1]) * damp, vz = (P[i + 2] - Q[i + 2]) * damp;
         Q[i] = P[i]; Q[i + 1] = P[i + 1]; Q[i + 2] = P[i + 2];
         P[i] += vx + fx * h * h;
@@ -153,7 +185,7 @@ export class Cape {
         P[i + 1] = Q[i + 1] = anchorL.y + (anchorR.y - anchorL.y) * tt;
         P[i + 2] = Q[i + 2] = anchorL.z + (anchorR.z - anchorL.z) * tt;
       }
-      this.solve(4);
+      this.solve(6);
       this.collide();
     }
     // Самовосстановление: если ткань «сломалась» (NaN), начинаем заново
