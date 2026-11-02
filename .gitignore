@@ -1,48 +1,42 @@
-# ============================================================
-# Что НЕ публикуем на GitHub
-# ============================================================
-
-# --- Локальные настройки (ИИ-помощник, предпросмотр, редакторы) ---
 .claude/
-.vscode/
 .idea/
+.vscode/
 
-# --- Своя музыка: обычно это чужие песни, выкладывать их нельзя ---
 music/*
-!music/README.txt
+!music/.gitkeep
 !music/party/
 music/party/*
-!music/party/README.txt
-
-# --- Записи городского фона: класть только CC0, по умолчанию не публикуем ---
+!music/party/.gitkeep
 assets/audio/*
-!assets/audio/README.txt
+!assets/audio/.gitkeep
+*.mp3
+*.ogg
+*.m4a
+*.wav
+*.flac
+*.webm
+*.opus
+*.aac
 
-# --- Скачанные архивы (распакованная модель лежит в assets/models/hero) ---
 *.zip
 *.rar
 *.7z
 
-# --- Секреты и переменные окружения (на будущее, например для MediaPipe-скрипта) ---
 .env
 .env.*
 *.key
 *.pem
 
-# --- Python ---
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 
-# --- Node (если появится сборка) ---
 node_modules/
 
-# --- Системный мусор Windows / macOS ---
+*.log
+*.tmp
+
 Thumbs.db
 desktop.ini
 .DS_Store
-
-# --- Логи и временные файлы ---
-*.log
-*.tmp

@@ -95,6 +95,22 @@ export const inOldTown = (x, z) => Math.hypot(x - DISTRICTS.oldtown.x, z - DISTR
 // центра, старого города и реки, на городской или пригородной застройке.
 export const MEGA_SITES = (() => {
   const g = CITY.grid, rnd = mulberry32(CITY.seed + 777), B = CITY.block;
+  const free = (i, j, n) => {
+    for (let a = -n; a <= n; a++) for (let b = -n; b <= n; b++) {
+      const t = blockTypes[(j + b) * g + (i + a)];
+      if (t !== BLOCK.URBAN && t !== BLOCK.SUBURB) return false;
+    }
+    return true;
+  };
+  // Гигантская сфера: площадь 5×5 кварталов примерно в километре от главного небоскрёба
+  let giant = null, giantScore = Infinity;
+  for (let i = 3; i < g - 3; i++) for (let j = 3; j < g - 3; j++) {
+    if (Math.abs(j - CITY.riverRow) < 4 || !free(i, j, 2)) continue;
+    const x = -HALF + (i + 0.5) * B, z = -HALF + (j + 0.5) * B;
+    if (inOldTown(x, z)) continue;
+    const score = Math.abs(Math.hypot(x - LANDMARK.x, z - LANDMARK.z) - 1100);
+    if (score < giantScore) { giantScore = score; giant = { i, j, x, z, half: B * 2.5, giant: true, n: 2 }; }
+  }
   const cands = [];
   for (let i = 2; i < g - 2; i++) for (let j = 2; j < g - 2; j++) {
     if (Math.abs(j - CITY.riverRow) < 3) continue;
@@ -109,13 +125,13 @@ export const MEGA_SITES = (() => {
     cands.push({ i, j, x, z, r: rnd() });
   }
   cands.sort((p, q) => p.r - q.r);
-  const sites = [];
+  const sites = giant ? [giant] : [];
   for (const c of cands) {
     if (sites.length >= 12) break;
     if (sites.some((s) => Math.hypot(s.x - c.x, s.z - c.z) < 850)) continue;
-    sites.push({ i: c.i, j: c.j, x: c.x, z: c.z, half: B * 1.5 });
+    sites.push({ i: c.i, j: c.j, x: c.x, z: c.z, half: B * 1.5, n: 1 });
   }
-  for (const s of sites) for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) blockTypes[(s.j + b) * g + (s.i + a)] = BLOCK.MEGA;
+  for (const s of sites) for (let a = -s.n; a <= s.n; a++) for (let b = -s.n; b <= s.n; b++) blockTypes[(s.j + b) * g + (s.i + a)] = BLOCK.MEGA;
   return sites;
 })();
 // Мега-площадь, в которую попадает точка (pad > 0 — отступ внутрь от краёв, например под тротуары)

@@ -101,6 +101,14 @@ kbd {
   opacity: 0; transition: opacity 0.3s; pointer-events: none;
 }
 #slowmo-badge.show { opacity: 1; }
+/* Управление с камеры */
+#ctrl-badge {
+  position: absolute; top: 18px; right: 24px; display: none;
+  padding: 5px 14px; border-radius: 14px; font-size: 12px; letter-spacing: 2px;
+  color: #ffd9a8; background: rgba(34, 20, 10, 0.55); border: 1px solid rgba(255, 170, 90, 0.5);
+}
+#ctrl-badge.show { display: block; }
+#ctrl-badge.live { color: #c8ffd8; background: rgba(10, 30, 18, 0.55); border-color: rgba(110, 230, 150, 0.55); }
 
 /* Фоторежим */
 #photo-ui { position: fixed; left: 0; right: 0; bottom: 22px; text-align: center; color: #e8f0f4; pointer-events: none; z-index: 20; }
@@ -137,3 +145,52 @@ kbd {
   color: #cfe9e1; background: transparent; border: 1px solid rgba(63, 224, 176, 0.5); border-radius: 6px; text-transform: uppercase;
 }
 #menu-btn:hover { border-color: #3fe0b0; color: #fff; }
+
+/* ---------- Битва с боссом ---------- */
+.mode.boss { border-color: rgba(255, 140, 60, 0.45); }
+.mode.boss .mode-title { color: #ff9a4a; }
+.mode.boss:hover { border-color: #ff9a4a; background: rgba(44, 26, 16, 0.85); }
+
+#boss-ui { position: absolute; top: 46px; left: 50%; transform: translateX(-50%); width: min(620px, 80vw); text-align: center; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8); }
+#boss-name { font-size: 18px; font-weight: 900; letter-spacing: 6px; color: #ffb070; }
+#boss-phase { margin-left: 10px; font-size: 11px; letter-spacing: 3px; color: #f2d2b0; opacity: 0.8; font-weight: 700; }
+#boss-bar { position: relative; height: 12px; margin-top: 6px; border-radius: 3px; background: rgba(20, 10, 6, 0.7); border: 1px solid rgba(255, 160, 90, 0.5); overflow: hidden; }
+#boss-fill, #boss-lag, #hero-fill, #hero-lag, #city-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 100%; }
+#boss-fill { background: linear-gradient(90deg, #c2381c, #ff8a30 70%, #ffc060); transition: width 0.1s; }
+#boss-lag { background: rgba(255, 240, 220, 0.75); }
+#boss-bar i { position: absolute; top: 0; bottom: 0; width: 2px; background: rgba(0, 0, 0, 0.6); }
+#boss-ui.stagger #boss-bar { box-shadow: 0 0 14px rgba(255, 200, 120, 0.9); border-color: #ffd090; }
+#city-wrap { display: flex; align-items: center; gap: 10px; justify-content: center; margin-top: 8px; }
+#city-bar { position: relative; width: 220px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
+#city-fill { background: #3fe0b0; transition: width 0.3s, background 0.3s; }
+#city-fill.low { background: #ff5a3c; }
+#city-value { font-size: 12px; font-variant-numeric: tabular-nums; opacity: 0.85; min-width: 36px; text-align: left; }
+
+#hero-ui { position: absolute; left: 24px; top: 112px; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.7); }
+.hero-head { font-size: 13px; font-weight: 800; letter-spacing: 2px; }
+.hero-head .heart { color: #ff5a6a; font-size: 16px; }
+#hero-value { margin-left: 6px; font-variant-numeric: tabular-nums; opacity: 0.85; font-weight: 700; }
+#hero-bar { position: relative; width: 280px; height: 14px; margin-top: 6px; border-radius: 4px; background: rgba(0, 0, 0, 0.45); border: 1px solid rgba(255, 255, 255, 0.25); overflow: hidden; }
+#hero-fill { background: linear-gradient(90deg, #d8364a, #ff6a5a); }
+#hero-lag { background: rgba(255, 230, 210, 0.8); }
+#hero-ui.low #hero-fill { background: #ff2a2a; }
+#hero-ui.low #hero-bar { box-shadow: 0 0 12px rgba(255, 40, 40, 0.8); }
+
+#boss-marker { position: absolute; left: 0; top: 0; margin: -10px 0 0 -40px; width: 80px; text-align: center; font-size: 12px; font-weight: 700; color: #ffb070; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9); }
+#boss-marker .pin { width: 12px; height: 12px; margin: 0 auto 3px; transform: rotate(45deg); border: 2px solid #ff9a4a; background: rgba(255, 120, 40, 0.35); }
+#boss-marker.edge .pin { background: #ff9a4a; }
+
+#hurt-flash { position: absolute; inset: 0; opacity: 0; pointer-events: none; background: radial-gradient(ellipse at center, rgba(255, 0, 0, 0) 45%, rgba(200, 20, 10, 0.55) 100%); }
+
+#battle-end { margin-top: 30px; }
+#end-title { font-size: 40px; font-weight: 900; letter-spacing: 6px; color: #3fe0b0; }
+#battle-end.lose #end-title { color: #ff6a4a; }
+#end-sub { margin-top: 10px; font-size: 14px; opacity: 0.8; }
+.end-btns { display: flex; gap: 14px; justify-content: center; margin-top: 26px; }
+.end-btns button {
+  padding: 13px 34px; font-size: 15px; font-weight: 800; letter-spacing: 2px; cursor: pointer; text-transform: uppercase; border-radius: 6px; font-family: inherit;
+}
+#end-retry { color: #08251e; background: #3fe0b0; border: 0; box-shadow: 0 5px 0 #14806a; }
+#end-retry:hover { background: #7af0cc; }
+#end-menu { color: #cfe9e1; background: transparent; border: 1px solid rgba(63, 224, 176, 0.5); }
+#end-menu:hover { border-color: #3fe0b0; color: #fff; }

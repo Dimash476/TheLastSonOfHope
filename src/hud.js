@@ -15,10 +15,10 @@ export class HUD {
   show(v) { this.el.hud.classList.toggle('hidden', !v); }
   toggleHelp() { this.el.help.classList.toggle('hidden'); }
 
-  toast(text) {
+  toast(text, t = 1.6) {
     this.el.toast.textContent = text;
     this.el.toast.classList.add('show');
-    this.toastTimer = 1.6;
+    this.toastTimer = t;
   }
 
   update(dt, player, city) {

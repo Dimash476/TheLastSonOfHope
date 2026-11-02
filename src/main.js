@@ -5,7 +5,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 
-import { createInputState, KeyboardMouseSource, endFrame } from './input.js';
+import { createInputState, KeyboardMouseSource, HandSource, endFrame } from './input.js';
 import { Environment } from './world/environment.js';
 import { City } from './world/city.js';
 import { Debris } from './world/debris.js';
@@ -33,6 +33,7 @@ import { Space } from './world/space.js';
 import { Trees } from './world/trees.js';
 import { Soundscape } from './soundscape.js';
 import { WildSound } from './wildsound.js';
+import { BossBattle } from './boss/battle.js';
 import { installSunFog, createGodRaysPass, createGradePass, updateCinematic } from './fx/cinematic.js';
 
 // Туман со светом солнца — до создания и компиляции материалов
@@ -162,6 +163,7 @@ city.onImpact = (p, r, f) => world.impact(p, r, f);
 debris.onImpact = (p, r, f) => world.impact(p, r, f);
 const player = new Player(scene, world);
 const camRig = new ThirdPersonCamera(camera);
+const battle = new BossBattle(scene, world, player, hud, camera);
 
 city.onDestroyed = () => {
   if (city.destroyed % 25 === 0) hud.toast(`${city.destroyed} ЗДАНИЙ`);
@@ -170,41 +172,76 @@ city.onDestroyed = () => {
 // ---------------------------------------------------------------- ввод и пауза
 const input = createInputState();
 const kbm = new KeyboardMouseSource(renderer.domElement, input);
+// Управление с камеры: Ctrl запускает GameTracking/Moves.py (через server.py), повторный Ctrl — останавливает
+const hands = new HandSource(input);
+const ctrlBadge = document.getElementById('ctrl-badge');
+let ctrlText = '';
+function setControl(cam, quiet) {
+  hands.setEnabled(cam);
+  ctrlBadge.classList.toggle('show', cam);
+  ctrlText = '';
+  if (!quiet) hud.toast(cam ? 'УПРАВЛЕНИЕ: КАМЕРА' : 'УПРАВЛЕНИЕ: ПК');
+}
+function updateCtrlBadge() {
+  if (!hands.enabled) return;
+  const t = hands.status();
+  if (t !== ctrlText) { ctrlText = t; ctrlBadge.textContent = t; ctrlBadge.classList.toggle('live', hands.live); }
+}
+
 
 const overlay = document.getElementById('overlay');
 const playBtn = document.getElementById('play-btn');
 const $ = (id) => document.getElementById(id);
 $('loading').classList.add('hidden');
 
-// Главное меню: выбор режима. Пока доступен симулятор; сюжет — в разработке.
+// Главное меню: выбор режима. Симулятор и битва с боссом; сюжет — в разработке.
 let paused = true;
-let mode = null;            // 'sim' (потом — 'story')
-const showMenu = (main) => {
-  $('modes').classList.toggle('hidden', !main);
-  $('pause-btns').classList.toggle('hidden', main);
-  if (!main) $('story-note').classList.add('hidden');
+let mode = null;            // 'sim' | 'boss' (потом — 'story')
+// Экран: main — выбор режима, pause — пауза, end — итог битвы
+const showMenu = (which) => {
+  $('modes').classList.toggle('hidden', which !== 'main');
+  $('pause-btns').classList.toggle('hidden', which !== 'pause');
+  $('battle-end').classList.toggle('hidden', which !== 'end');
+  if (which !== 'main') $('story-note').classList.add('hidden');
 };
-showMenu(true);
+showMenu('main');
 function startPlaying() {
   audio.init();
   kbm.requestLock();
 }
-$('mode-sim').addEventListener('click', () => { mode = 'sim'; startPlaying(); });
+// Битва всегда начинается в целом городе; из битвы в симулятор — тоже с чистого листа
+function startMode(m) {
+  if (m === 'boss') { resetWorld(true); battle.start(); }
+  else if (battle.active) { battle.stop(); resetWorld(true); }
+  mode = m;
+  startPlaying();
+}
+$('mode-sim').addEventListener('click', () => startMode('sim'));
+$('mode-boss').addEventListener('click', () => startMode('boss'));
 $('mode-story').addEventListener('click', () => { $('story-note').classList.remove('hidden'); });
 playBtn.addEventListener('click', startPlaying);
+$('end-retry').addEventListener('click', () => startMode('boss'));
+$('end-menu').addEventListener('click', () => { battle.stop(); resetWorld(true); mode = null; showMenu('main'); });
+battle.onEnd = (win, title, sub) => {
+  $('end-title').textContent = title;
+  $('end-sub').textContent = sub;
+  $('battle-end').classList.toggle('lose', !win);
+  document.exitPointerLock();
+  showMenu('end');
+};
 $('menu-btn').addEventListener('click', () => {
-  showMenu(true);
+  showMenu('main');
   // В меню — без фоторежима и замедления
   if (photo.on) setPhoto(false);
   if (slow.on) { slow.on = false; audio.setMuffle?.(0); slowBadge.classList.remove('show'); }
 });
-renderer.domElement.addEventListener('click', () => { if (paused && mode) startPlaying(); });
+renderer.domElement.addEventListener('click', () => { if (paused && mode && !battle.ended) startPlaying(); });
 document.addEventListener('pointerlockchange', () => {
   paused = !kbm.locked;
   overlay.classList.toggle('hidden', !paused);
   hud.show(!paused && !photo.on);
   // На паузе — «Продолжить» и «Главное меню»
-  if (paused && mode) showMenu(false);
+  if (paused && mode) showMenu(battle.ended ? 'end' : 'pause');
 });
 
 window.addEventListener('resize', () => {
@@ -413,7 +450,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyG' && !paused) { qualityIndex = (qualityIndex + 1) % QUALITY.length; hud.toast(applyQuality(qualityIndex)); }
 });
 
-function resetWorld() {
+function resetWorld(quiet = false) {
   city.reset();
   debris.clear();
   glass.clear();
@@ -431,7 +468,7 @@ function resetWorld() {
   beach.reset();
   nature.reset();
   player.spawn();
-  hud.toast('ГОРОД ВОССТАНОВЛЕН');
+  if (!quiet) hud.toast('ГОРОД ВОССТАНОВЛЕН');
 }
 
 // ---------------------------------------------------------------- цикл
@@ -462,12 +499,15 @@ function step(dt, active) {
     updatePhotoCamera(dt);
   } else if (active) {
     kbm.update();
+    if (input.toggleControl) setControl(!hands.enabled);
+    hands.update(dt, player, camRig.sensitivity);
+    updateCtrlBadge();
     if (input.slowmo) {
       slow.on = !slow.on;
       audio.setMuffle?.(slow.on ? 1 : 0);
       slowBadge.classList.toggle('show', slow.on);
     }
-    if (input.reset) resetWorld();
+    if (input.reset && mode !== 'boss') resetWorld();
     if (input.toggleHelp) hud.toggleHelp();
     if (input.cycleTime && env.cycleTime) hud.toast(env.cycleTime());
     if (input.cycleWeather && env.cycleWeather) hud.toast(env.cycleWeather());
@@ -488,6 +528,7 @@ function step(dt, active) {
     gdt *= slow.k;
 
     player.update(pdt, input, camRig);
+    if (mode === 'boss') battle.update(gdt, dt);
     city.update(gdt);
     debris.update(gdt);
     glass.update(gdt);
@@ -565,9 +606,11 @@ frame();
 
 // Для отладки из консоли
 window.game = {
-  scene, camera, renderer, player, city, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space,
+  scene, camera, renderer, player, city, battle, hands, setControl, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space,
   // Запуск без захвата мыши (для автотестов)
   unpause() { paused = false; overlay.classList.add('hidden'); hud.show(true); },
+  // Начать режим без захвата мыши (для автотестов)
+  mode(m) { if (m === 'boss') { resetWorld(true); battle.start(); } else if (battle.active) { battle.stop(); resetWorld(true); } mode = m; },
   // Прогнать n кадров симуляции с фиксированным шагом
   sim(n, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt, true); composer.render(); },
   // Кадр с адаптивным качеством (frameDt — сколько «длился» кадр), состояние — в quality

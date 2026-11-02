@@ -313,7 +313,8 @@ const MEGA_KINDS = ['orb', 'crownTower', 'tent', 'pyramid', 'pagoda', 'hyper', '
 export function addMegaLandmark(city, site, index, rnd) {
   const { x, z } = site, L = (site.half - 12) * 2;           // ширина площади без тротуаров
   const order = MEGA_KINDS.map((k, i) => [k, Math.sin(i * 12.9898 + 4.1) * 43758.5 % 1]).sort((p, q) => p[1] - q[1]).map((p) => p[0]);
-  const kind = order[index % order.length];
+  // Площадь 5×5 — под гигантскую сферу, остальные — по очереди
+  const kind = site.giant ? 'megaOrb' : order[index % order.length];
   const fixed = () => 0.5;
   const pick = (a) => a[Math.floor(rnd() * a.length)];
   const shaped = (bx, bz, color) => { const b = city.newBuilding({ kind: 'building', x: bx, z: bz, color, glass: true }); b.shaped = true; return b; };
@@ -326,7 +327,11 @@ export function addMegaLandmark(city, site, index, rnd) {
   // Стилобат — широкое каменное основание
   const base = (w, h = 4) => city.addBuilding({ x, z, w, d: w, h, color: 0xd9d3c7, glass: false, type: 'concrete', roof: null }, fixed);
 
-  if (kind === 'orb') {
+  if (kind === 'megaOrb') {
+    // Огромная стеклянная сфера ~450 м на широком стилобате — видна из любой точки города
+    base(L * 0.97, 6);
+    addGiant(city, shaped(x, z, 0x6f9cc4), 'orb', x, z, L * 0.94, 6);
+  } else if (kind === 'orb') {
     base(L * 0.82, 5);
     addGiant(city, shaped(x, z, pick([0x5aa6b8, 0x4f73b0, SILVER])), 'orb', x, z, L * 0.74, 5);
   } else if (kind === 'crownTower') {

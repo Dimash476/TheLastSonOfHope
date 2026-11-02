@@ -97,6 +97,9 @@ export class EyeLaser {
       const along = _v2.dot(dir);
       if (along > 1 && along < dist && _v2.addScaledVector(dir, -along).lengthSq() < 16) { dist = along; heli = true; car = null; seg = null; ground = false; }
     }
+    // Босс
+    const B = W.boss?.rayHit(origin, dir, dist);
+    if (B) return { dist: B.dist, seg: null, ground: false, car: null, heli: false, boss: true };
     return { dist, seg, ground, car, heli };
   }
 
@@ -179,7 +182,8 @@ export class EyeLaser {
     if (res.seg) {
       if (this.accSeg !== res.seg) { this.accSeg = res.seg; this.acc = 0; }
       this.acc += DPS * dmg * dt;
-    } else if (res.car) W.traffic.damageCar(res.car, CAR_DPS * dmg * dt);
+    } else if (res.boss) W.boss.takeHit(DPS * 0.5 * dmg * dt, p, dir, 'laser', W.boss.rayHit(this.hit.clone().addScaledVector(dir, -3), dir, 6)?.cap);
+    else if (res.car) W.traffic.damageCar(res.car, CAR_DPS * dmg * dt);
     else if (res.heli && P > 0.5) W.air.crashHeli(dir.clone().multiplyScalar(15));
 
     this.tick -= dt;

@@ -56,6 +56,7 @@ export class Player {
     this.dipT = 0; this.dipK = 0;   // амортизация ногами после приземления
     this.boosting = false;
     this.slowmo = 0;     // замедление времени (читает главный цикл)
+    this.knockT = 0;     // отброшен ударом босса: управление ненадолго потеряно
     this.throwT = -1;    // бросок мяча: время с начала замаха (-1 — не бросаем)
     this.stepIdx = 0;
 
@@ -97,6 +98,19 @@ export class Player {
     flat.normalize();
     const camFlat = flat.clone();
     const right = new THREE.Vector3(-camFlat.z, 0, camFlat.x);
+
+    // В кулаке Колосса: двигаться нельзя — только вырываться (ЛКМ / пробел / рывок)
+    if (this.captured) {
+      const space = input.moveY > 0;
+      if (input.punch || input.dash || (space && !this.capSpace)) this.captured.struggle();
+      this.capSpace = space;
+      this.vel.set(0, 0, 0);
+      this.charge = 0; this.slamming = false; this.grounded = false; this.falling = false; this.dashT = 0;
+      this.laser.update(dt, false, camDir, this);
+      this.updateOrientation(dt, camDir, camFlat);
+      this.updateAnimation(dt, camDir);
+      return;
+    }
 
     // ------------------------------------------------ способности
     if (input.slam && !this.grounded && !this.slamming) {
@@ -193,6 +207,11 @@ export class Player {
       this.ghostT -= dt;
       if (this.ghostT <= 0) { W.effects.ghost(this.root); this.ghostT = 0.035; }
       if (this.dashT <= 0) this.vel.copy(this.dashDir).multiplyScalar(this.grounded ? P.runSpeed : P.flySpeed);
+    } else if (this.knockT > 0) {
+      // Отброшен ударом: летит по инерции, кувыркаясь; управление вернётся через миг
+      this.knockT -= dt;
+      this.vel.y -= 9.81 * 2 * dt;
+      this.vel.multiplyScalar(Math.exp(-1.1 * dt));
     } else if (this.slamming) {
       // ввод игнорируется — летим вниз
     } else if (this.grounded) {
@@ -360,7 +379,9 @@ export class Player {
     this.boosting = boosting;
     const spaceK = smoothstep(SPACE.atmosphere, SPACE.spaceAlt, this.pos.y);
     // Уровни ускорения: Shift → Shift+E (гипер) → Shift+Q (третий) → Shift+F (четвёртый)
-    const hyper = !boosting ? 1 : input.warp ? P.warpMul : input.ultra ? P.ultraMul : input.hyper ? P.hyperMul : 1;
+    // С камеры уровень плавный: 40^k (k от правой руки)
+    const hyper = !boosting ? 1 : input.boostK != null ? Math.pow(P.warpMul, input.boostK)
+      : input.warp ? P.warpMul : input.ultra ? P.ultraMul : input.hyper ? P.hyperMul : 1;
     const target = boosting ? lerp(P.boostSpeed, P.spaceBoostSpeed, spaceK) * hyper : P.flySpeed * wl;
 
     if (speed < 90 && !boosting) {
@@ -574,6 +595,7 @@ export class Player {
     if (W.props?.hit(hitC, 2.4, vel, 60)) material = material || 'metal';
     if (W.trees?.hit(hitC, 2.4, vel)) material = material || 'concrete';
     if (W.people?.hit(hitC, 2.4, aim.clone().multiplyScalar(14))) material = material || 'body';
+    if (W.boss?.hit(hitC, 2.4, P.punchDamage, aim, 'punch')) material = material || 'concrete';
     for (const b of hits) {
       W.city.closestPoint(b, hitC, _cp);
       W.city.damage(b, P.punchDamage, _cp.clone(), aim, P.punchForce);
@@ -598,6 +620,7 @@ export class Player {
     add('car', W.traffic, W.traffic?.findGrabbable(c, P.grabRange));
     add('person', W.people, W.people?.findGrabbable(c, P.grabRange));
     add('debris', W.debris, W.debris.findGrabbable(c, P.grabRange));
+    add('boss', W.boss, W.boss?.findGrabbable(c, P.grabRange + 16));
     if (!opts.length) return;
     opts.sort((a, b) => a.dist - b.dist);
     const o = opts[0];
@@ -612,6 +635,7 @@ export class Player {
     if (!h) return;
     this.held = null;
     const vel = dir.clone().multiplyScalar(h.kind === 'person' ? 22 : P.throwSpeed).add(this.vel);
+    if (h.kind === 'boss') vel.y = Math.max(vel.y, 20);
     if (h.kind === 'debris') h.sys.throwPiece(h.ref, vel);
     else h.sys.throwObj(h.ref, vel);
     W.effects.shockwave(this.center.clone().addScaledVector(dir, 2), { type: 'disc', dir: dir.clone(), radius: 5, life: 0.25, opacity: 0.5 });
@@ -678,6 +702,7 @@ export class Player {
     const center = chest.clone().addScaledVector(aim, 3 + c * 4);
     const radius = lerp(P.heavyBaseRadius, P.heavyMaxRadius, c);
     W.city.damageRadius(center, radius, P.heavyDamage * (0.25 + 0.75 * c), 40 + 90 * c, aim);
+    W.boss?.hit(center, 3 + radius * 0.35, P.heavyDamage * (0.25 + 0.75 * c), aim, 'heavy');
     W.debris.explode(center, radius * 1.5, 30 + 60 * c);
     W.effects.shockwave(center, { type: 'sphere', radius: radius * 1.3, life: 0.5 + c * 0.4, opacity: 0.4 });
     W.effects.shockwave(center, { type: 'disc', dir: aim, radius: radius * 1.8, life: 0.6 + c * 0.4, opacity: 0.8 });

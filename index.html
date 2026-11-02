@@ -51,12 +51,26 @@
       <kbd>P</kbd> фоторежим · <kbd>V</kbd> замедление времени<br />
       Райский остров — в океане на востоке, лети к закату<br />
       <kbd>T</kbd> время суток · <kbd>U</kbd> погода · <kbd>M</kbd> своя музыка · <kbd>N</kbd> музыка игры<br />
+      <kbd>Ctrl</kbd> управление: ПК / камера (жесты с веб-камеры)<br />
       <kbd>G</kbd> качество графики · <kbd>K</kbd> восстановить · <kbd>Esc</kbd> пауза
     </div>
+
+    <!-- Битва с боссом -->
+    <div id="boss-ui" class="hidden">
+      <div id="boss-name">КОЛОСС <span id="boss-phase">ФАЗА 1</span></div>
+      <div id="boss-bar"><div id="boss-lag"></div><div id="boss-fill"></div><i style="left:33.33%"></i><i style="left:66.67%"></i></div>
+    </div>
+    <div id="hero-ui" class="hidden">
+      <div class="hero-head"><span class="heart">♥</span> ЗДОРОВЬЕ <span id="hero-value">100 / 100</span></div>
+      <div id="hero-bar"><div id="hero-lag"></div><div id="hero-fill"></div></div>
+    </div>
+    <div id="boss-marker" class="hidden"><div class="pin"></div><span id="boss-marker-d"></span></div>
+    <div id="hurt-flash"></div>
 
     <div id="toast"></div>
     <div id="interact"></div>
     <div id="slowmo-badge">ЗАМЕДЛЕНИЕ</div>
+    <div id="ctrl-badge"></div>
   </div>
 
   <!-- Фоторежим -->
@@ -81,6 +95,10 @@
           <div class="mode-title">Симулятор</div>
           <div class="mode-desc">Свободная игра в живом городе: полёт до Луны, сила, скорость и разрушения — без правил и заданий.</div>
         </button>
+        <button class="mode boss" id="mode-boss">
+          <div class="mode-title">Битва</div>
+          <div class="mode-desc">С неба падает Колосс — каменный великан с магмой внутри. Останови его, пока он не стёр город.</div>
+        </button>
         <button class="mode locked" id="mode-story">
           <span class="badge">Скоро</span>
           <div class="mode-title">Сюжет</div>
@@ -88,6 +106,12 @@
         </button>
       </div>
       <div id="story-note" class="hidden">Сюжетная часть сейчас в разработке. А пока — свободный полёт в симуляторе!</div>
+      <!-- Итог битвы -->
+      <div id="battle-end" class="hidden">
+        <div id="end-title"></div>
+        <div id="end-sub"></div>
+        <div class="end-btns"><button id="end-retry">Ещё раз</button><button id="end-menu">Главное меню</button></div>
+      </div>
       <!-- Пауза -->
       <div id="pause-btns" class="hidden">
         <button id="play-btn">Продолжить</button>
