@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { CITY, WORLD, SPACE } from '../config.js';
 import { mulberry32, smoothstep, lerp } from '../utils.js';
-import { HALF, PLANE_HALF, RIVER_Z, RIVER_HALF_W, TOWNS, blockTypes, TERRAIN_RES, terrainHeights, coastX, forestMask, QUAY_X, SEA_BED, BIG_PARK, POND, STADIUM, BEACH, plainK, MEGA_SITES, ISLE, isleToWorld, islandSample } from './layout.js';
+import { HALF, PLANE_HALF, RIVER_Z, RIVER_HALF_W, TOWNS, blockTypes, TERRAIN_RES, terrainHeights, coastX, forestMask, QUAY_X, SEA_BED, BIG_PARK, POND, STADIUM, BEACH, plainK, MEGA_SITES, ISLE, isleToWorld, islandSample, DISTRICTS } from './layout.js';
 
 // Небо, солнце, туман, земля с дорогами, рельеф, вода, облака.
 export class Environment {
@@ -339,6 +339,8 @@ export class Environment {
         uBeach: { value: new THREE.Vector3(BEACH.x0, BEACH.minZ, BEACH.maxZ) },
         uTowns: { value: TOWNS.map((t) => new THREE.Vector3(t.x, t.z, t.grid * CITY.block * 0.5)) },
         uMega: { value: (MEGA_SITES.length ? MEGA_SITES : [{ x: 1e6, z: 1e6, half: 1 }]).map((s) => new THREE.Vector3(s.x, s.z, s.half)) },
+        uSleeper: { value: new THREE.Vector3(DISTRICTS.sleeper.x, DISTRICTS.sleeper.z, DISTRICTS.sleeper.r) },
+        uCampus: { value: new THREE.Vector3(DISTRICTS.campus.x, DISTRICTS.campus.z, DISTRICTS.campus.r) },
         uWet: mat.userData.uWet,
       });
       shader.vertexShader = shader.vertexShader
@@ -354,6 +356,7 @@ export class Environment {
           uniform vec4 uPark;
           uniform vec3 uPond;
           uniform vec3 uBeach;
+          uniform vec3 uSleeper, uCampus;
           uniform vec3 uTowns[${TOWNS.length}];
           uniform vec3 uMega[${Math.max(1, MEGA_SITES.length)}];
           float h21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -441,6 +444,33 @@ export class Environment {
               lines = max(lines, step(abs(q.x), 0.12) * step(abs(q.y), 19.5));
               lines = max(lines, step(abs(length(q) - 6.0), 0.12));
               col = mix(col, mix(turf, vec3(0.9), lines), field);
+            }
+            if (type < 0.5 && inMain > 0.5) {
+              // Район квартала — по его центру (как и при застройке)
+              vec2 bcen = (floor((p + uHalf) / uBlock) + 0.5) * uBlock - uHalf;
+              vec2 lq = lp - uBlock * 0.5;
+              if (length(bcen - uSleeper.xy) < uSleeper.z) {
+                // Двор спального района: газон, дорожка-кольцо, выходы к улицам, детская площадка
+                col = mix(vec3(0.15, 0.25, 0.09), vec3(0.23, 0.32, 0.13), vnoise(p * 0.07) * 0.7 + vnoise(p * 0.5) * 0.3);
+                float path = min(abs(max(abs(lq.x), abs(lq.y)) - 19.0), max(abs(lq.y), 19.0 - abs(lq.x)));
+                col = mix(col, vec3(0.36, 0.36, 0.35), 1.0 - smoothstep(1.0, 1.4, path));
+                vec2 pg = abs(lq) - vec2(8.0, 5.5);
+                float pgD = max(pg.x, pg.y);
+                col = mix(col, vec3(0.70, 0.64, 0.50), 1.0 - step(1.2, pgD));                  // песок
+                vec3 rubber = mix(vec3(0.55, 0.24, 0.19), vec3(0.20, 0.42, 0.52), step(0.0, lq.x));
+                col = mix(col, rubber, 1.0 - step(0.0, pgD));                                   // резиновое покрытие
+              } else if (length(bcen - uCampus.xy) < uCampus.z) {
+                // Кампус: газон-«квадрат» с полосами стрижки, дорожки крест-накрест и кольцо;
+                // в центре кампуса — мощёная площадь у башни и библиотеки
+                col = mix(vec3(0.16, 0.28, 0.10), vec3(0.21, 0.34, 0.13), step(0.5, fract(lq.x / 5.0)));
+                float path = min(abs(abs(lq.x) - abs(lq.y)) * 0.7071, abs(length(lq) - 9.0));
+                vec3 stone = vec3(0.60, 0.55, 0.45);
+                col = mix(col, stone, 1.0 - smoothstep(1.1, 1.5, path));
+                col = mix(col, stone * 0.95, 1.0 - smoothstep(6.5, 7.0, length(lq)));
+                vec2 tl = abs(fract(p / 1.4) - 0.5);
+                vec3 plaza = stone * (0.92 + 0.08 * vnoise(p * 0.3)) * (1.0 - step(0.46, max(tl.x, tl.y)) * 0.12);
+                col = mix(col, plaza, step(length(bcen - uCampus.xy), 1.0));
+              }
             }
             col = mix(col, walk, step(minD, uWalk));
             float isRoad = step(minD, uRoad);

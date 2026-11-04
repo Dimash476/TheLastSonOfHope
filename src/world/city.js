@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { CITY, WORLD, DEBRIS } from '../config.js';
 import { mulberry32, clamp, lerp } from '../utils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { makeShapeGeometries, createShapeMaterial, addGeometricBlock, addMegaLandmark } from './landmarks.js';
-import { MEGA_SITES } from './layout.js';
+import { makeShapeGeometries, createShapeMaterial, addGeometricBlock, addMegaLandmark, addTvTower } from './landmarks.js';
+import { MEGA_SITES, DISTRICTS, inSleeper, inCampus } from './layout.js';
 import { BLOCK, HALF, blockTypes, isBridgeRoad, RIVER_Z, RIVER_HALF_W, TOWNS, groundHeight, skylineAt, inOldTown, LANDMARK, QUAY_X, blockAt, BEACH, PIER, pierDeckY, beachHeight } from './layout.js';
 
 const PALETTE = [
@@ -19,14 +19,20 @@ const ROOF_PALETTE = [0x7a3b2e, 0x5d4a3f, 0x3e464f, 0x6b5a4a, 0x8a4a36];
 const OLD_PALETTE = [0x9c5b45, 0x8a4f3c, 0xa86a50, 0x7e4636, 0x94503a, 0xc9bba3, 0xd6c6a6];
 const WAREHOUSE_PALETTE = [0x9a9890, 0xb3ada0, 0x7f8a91, 0xa49a86, 0x8c8f88, 0x6f7a72];
 const CONTAINER_PALETTE = [0xa8402e, 0x2f5f8f, 0xc77a2a, 0x3d7a4a, 0xd8d4c8, 0x8a2f2a, 0x4a6b7d, 0xb59a3a];
+// Панельные дома (пастель), штукатурка домов среднего пояса, кирпич и песчаник кампуса
+const PANEL_PALETTE = [0xd9d2c3, 0xcfd3d6, 0xe3cdb4, 0xbfcab9, 0xd8d8d0, 0xc9bfd0, 0xe6dcc0];
+const STUCCO_PALETTE = [0xd9c7a8, 0xc9b49a, 0xe3d9c6, 0xb7a58e, 0xcfc4b3, 0xa9b4b9, 0xd6b8a0, 0xbfae95];
+const CAMPUS_PALETTE = [0x9c5b45, 0x8a4f3c, 0xa86a50, 0xd6c6a6, 0xc9b48f];
 
 const CELL = 50;  // ячейка пространственной сетки
-const CHUNK = 400;
+const CHUNK = 600;  // участок, рисуемый одним вызовом на материал (крупнее — меньше вызовов)
+const ATTACH_CHUNK = 400; // детали на зданиях: скрываются по расстоянию, участки мельче
 const _m = new THREE.Matrix4();
 const _m2 = new THREE.Matrix4();
 const _zero = new THREE.Matrix4().makeScale(0, 0, 0);
 const _c = new THREE.Color();
 const SMALL_ATTACH = new Set(['door', 'awning', 'cornice', 'fireescape', 'vent', 'ac', 'neonH']);
+const ROOF_ATTACH = new Set(['tank', 'antenna']); // мелочь на крышах: с высоты не видна
 const _v = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _qs = new THREE.Quaternion();
@@ -51,6 +57,7 @@ export class City {
     this.destroyed = 0;
     this.onDestroyed = null;
     this.onImpact = null; // (point, radius, force) — для машин, людей, фонарей
+    this.yardTrees = [];  // [x, z] деревьев во дворах кварталов (сажает trees.js)
 
     this.material = createBuildingMaterial();
     this.concrete = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0.05 });
@@ -76,16 +83,22 @@ export class City {
     // Отдельный поток случайностей для геометрических кварталов
     const rndShape = mulberry32(CITY.seed + 501);
     // Гиганты на мега-площадях (кварталы MEGA ниже пропускаются)
-    MEGA_SITES.forEach((s, i) => addMegaLandmark(this, s, i, mulberry32(CITY.seed + 900 + i)));
+    MEGA_SITES.forEach((s, i) => (s.tower ? addTvTower(this, s) : addMegaLandmark(this, s, i, mulberry32(CITY.seed + 900 + i))));
+    const at = (cx, cz, D) => Math.abs(cx - D.x) < 50 && Math.abs(cz - D.z) < 50;
     for (let i = 0; i < g; i++) for (let j = 0; j < g; j++) {
       const type = blockTypes[j * g + i];
       const bx = -HALF + i * CITY.block, bz = -HALF + j * CITY.block;
       const cx = bx + CITY.block / 2, cz = bz + CITY.block / 2;
       if (type === BLOCK.URBAN) {
-        if (Math.abs(cx - LANDMARK.x) < 50 && Math.abs(cz - LANDMARK.z) < 50) this.addLandmark(cx, cz);
+        if (at(cx, cz, LANDMARK)) this.addLandmark(cx, cz);
+        else if (at(cx, cz, DISTRICTS.westgate)) this.addTwinTowers(cx, cz);
+        else if (inCampus(cx, cz)) this.fillCampusBlock(bx, bz, rnd, at(cx, cz, DISTRICTS.campus));
+        else if (inSleeper(cx, cz)) this.fillSleeperBlock(bx, bz, rnd);
         else if (inOldTown(cx, cz)) this.fillOldTownBlock(bx, bz, rnd);
         // Там, где нет высоток, — иногда квартал-площадь с необычной постройкой
         else if (skylineAt(cx, cz) < 0.22 && rndShape() < 0.08) addGeometricBlock(this, bx, bz, rndShape);
+        // Средний пояс: часть кварталов — сплошной периметр домов вокруг двора
+        else if (skylineAt(cx, cz) < 0.12 && rndShape() < 0.3) this.fillPerimeterBlock(bx, bz, rnd);
         else this.fillUrbanBlock(bx, bz, rnd, 1);
       } else if (type === BLOCK.SUBURB) {
         if (rndShape() < 0.045) addGeometricBlock(this, bx, bz, rndShape, true);
@@ -107,6 +120,125 @@ export class City {
     }, fixed);
     // Шпиль — часть здания: рушится вместе с ним
     for (let k = 0; k < 4; k++) this.addSeg(b, { x, z, w: 2.2 - k * 0.4, d: 2.2 - k * 0.4, y0: 432 + k * 12, h: 12, type: 'concrete' });
+  }
+
+  // «Близнецы»: две одинаковые стеклянные башни западного делового квартала, между
+  // ними — два застеклённых перехода. Переход держится на обеих башнях: рушится
+  // опора ниже него — падает и он (см. destroySeg)
+  addTwinTowers(cx, cz) {
+    const fixed = () => 0.5;
+    this.addBuilding({ x: cx, z: cz, w: 74, d: 44, h: 14, color: 0xd8d2c4, glass: false, roof: null }, fixed);
+    const towers = [-1, 1].map((s) => {
+      const x = cx + s * 22;
+      const b = this.addBuilding({
+        x, z: cz, w: 26, d: 26, h: 312, color: 0x40566e, glass: true,
+        tiers: [{ at: 240, k: 0.84 }, { at: 288, k: 0.62 }], roof: null,
+      }, fixed);
+      for (let k = 0; k < 3; k++) this.addSeg(b, { x, z: cz, w: 2 - k * 0.5, d: 2 - k * 0.5, y0: 312 + k * 12, h: 12, type: 'concrete' });
+      b.links = [];
+      return b;
+    });
+    for (const y0 of [156, 216]) {
+      const br = this.newBuilding({ kind: 'building', x: cx, z: cz, color: 0x5a7896, glass: true });
+      br.shaped = true; // без деталей на крыше
+      const s = this.addSeg(br, { x: cx, z: cz, w: 20, d: 9, y0, h: 7 });
+      for (const t of towers) t.links.push(s);
+    }
+  }
+
+  // Спальный район: длинные панельные корпуса по краям квартала или точечные башни.
+  // Двор (газон, дорожки, детская площадка) рисует шейдер земли, деревья — trees.js
+  fillSleeperBlock(bx, bz, rnd) {
+    const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2, e = lot / 2;
+    const cx = bx + CITY.block / 2, cz = bz + CITY.block / 2;
+    // (u, v) — оси квартала; flip меняет их местами: корпуса стоят то вдоль X, то вдоль Z
+    const flip = rnd() < 0.5;
+    const put = (u, v, w, d, floors, roof = 'box') => this.addBuilding({
+      x: cx + (flip ? v : u), z: cz + (flip ? u : v), w: flip ? d : w, d: flip ? w : d, h: floors * 3,
+      color: PANEL_PALETTE[Math.floor(rnd() * PANEL_PALETTE.length)], glass: false, roof,
+    }, rnd);
+    const r = rnd();
+    if (r < 0.55) {
+      // Два длинных корпуса друг напротив друга, иногда — короткий с торца
+      const F = [9, 9, 12, 16][Math.floor(rnd() * 4)];
+      put(0, -(e - 7), lot - 2, 13, F);
+      put(0, e - 7, lot - 2, 13, F);
+      if (rnd() < 0.7) put((rnd() < 0.5 ? -1 : 1) * (e - 7), 0, 13, lot - 32, 5);
+    } else if (r < 0.85) {
+      // Две точечные башни по диагонали и двухэтажный детский сад
+      const s = rnd() < 0.5 ? -1 : 1;
+      put(-(e - 11), -s * (e - 11), 20, 20, 17 + Math.floor(rnd() * 9));
+      put(e - 11, s * (e - 11), 20, 20, 17 + Math.floor(rnd() * 9));
+      put(-(e - 17), s * (e - 9), 30, 14, 2, null);
+    } else {
+      // Корпус «углом»
+      const F = rnd() < 0.5 ? 9 : 12;
+      put(0, -(e - 7), lot - 2, 13, F);
+      put(-(e - 7), 7.5, 13, lot - 17, F);
+    }
+    for (let k = 0, m = 4 + Math.floor(rnd() * 4); k < m; k++) {
+      const u = (rnd() - 0.5) * 32, v = (rnd() - 0.5) * 32;
+      if (Math.abs(u) < 12 && Math.abs(v) < 9) continue; // детская площадка
+      this.yardTrees.push([cx + u, cz + v]);
+    }
+  }
+
+  // Университетский городок: корпуса из кирпича и песчаника по краям квартала,
+  // углы открыты — проходы на газон-«квадрат» с дорожками крест-накрест
+  fillCampusBlock(bx, bz, rnd, center) {
+    const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2, e = lot / 2;
+    const cx = bx + CITY.block / 2, cz = bz + CITY.block / 2;
+    if (center) { this.addCampusCenter(cx, cz); return; }
+    const open = rnd() < 0.5 ? Math.floor(rnd() * 4) : -1; // одна сторона иногда открыта
+    for (let side = 0; side < 4; side++) {
+      if (side === open) continue;
+      const nx = [0, 0, -1, 1][side], nz = [-1, 1, 0, 0][side];
+      const dep = 12 + rnd() * 3, len = lot - dep * 2 - 2 - rnd() * 6;
+      this.addBuilding({
+        x: cx + nx * (e - dep / 2), z: cz + nz * (e - dep / 2), w: nx ? dep : len, d: nx ? len : dep, h: 12 + rnd() * 10,
+        color: CAMPUS_PALETTE[Math.floor(rnd() * CAMPUS_PALETTE.length)], glass: false,
+        roof: 'gable', roofColor: 0x3e464f, ridge: nx ? 'z' : 'x',
+      }, rnd);
+    }
+    for (const [u, v] of [[14, 0], [-14, 0], [0, 14], [0, -14]]) this.yardTrees.push([cx + u, cz + v]);
+  }
+
+  // Сердце кампуса: часовая башня (циферблаты ночью светятся) и библиотека под куполом
+  addCampusCenter(cx, cz) {
+    const fixed = () => 0.5;
+    const tx = cx - 18, tz = cz - 14;
+    const tower = this.addBuilding({ x: tx, z: tz, w: 12, d: 12, h: 48, color: 0xd6c6a6, glass: false, roof: null }, fixed);
+    tower.shaped = true; // без деталей на крыше
+    this.addSeg(tower, { x: tx, z: tz, w: 12, d: 12, y0: 48, h: 11, type: 'shape', shape: 'clock' });
+    this.addSeg(tower, { x: tx, z: tz, w: 12.5, d: 12.5, y0: 59, h: 16, type: 'shape', shape: 'spire' }).color = new THREE.Color(0x4a5560);
+    const lib = this.addBuilding({ x: cx + 10, z: cz + 12, w: 46, d: 30, h: 15, color: 0xe2d6bf, glass: false, roof: null }, fixed);
+    lib.shaped = true;
+    this.addSeg(lib, { x: cx + 10, z: cz + 12, w: 24, d: 24, y0: 15, h: 15, type: 'shape', shape: 'dome' }).color = new THREE.Color(0x6f9484);
+  }
+
+  // Средний пояс города: сплошной периметр 5–8-этажных домов вокруг закрытого двора
+  fillPerimeterBlock(bx, bz, rnd) {
+    const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2;
+    const x0 = bx + margin, z0 = bz + margin, dep = 13 + rnd() * 3;
+    const n = 3 + Math.floor(rnd() * 2), H = 15 + rnd() * 9;
+    const house = (x, z, w, d) => this.addBuilding({
+      x, z, w: w - 0.4, d: d - 0.4, h: H * (0.85 + rnd() * 0.3),
+      color: STUCCO_PALETTE[Math.floor(rnd() * STUCCO_PALETTE.length)], glass: false, roof: rnd() < 0.5 ? 'box' : null,
+    }, rnd);
+    // Стороны вдоль X — на всю длину, вдоль Z — между ними
+    for (let k = 0; k < n; k++) {
+      const x = x0 + lot * (k + 0.5) / n;
+      house(x, z0 + dep / 2, lot / n, dep);
+      house(x, z0 + lot - dep / 2, lot / n, dep);
+    }
+    const inner = lot - dep * 2;
+    for (let k = 0; k < n - 1; k++) {
+      const z = z0 + dep + inner * (k + 0.5) / (n - 1);
+      house(x0 + dep / 2, z, dep, inner / (n - 1));
+      house(x0 + lot - dep / 2, z, dep, inner / (n - 1));
+    }
+    const cx = bx + CITY.block / 2, cz = bz + CITY.block / 2;
+    for (let k = 0, m = 2 + Math.floor(rnd() * 3); k < m; k++) this.yardTrees.push([cx + (rnd() - 0.5) * 30, cz + (rnd() - 0.5) * 30]);
   }
 
   // Старый город: плотная кирпичная застройка по периметру квартала, двор внутри
@@ -351,7 +483,9 @@ export class City {
     if (p.roof === 'box') {
       b.roof = { kind: 'box', w: p.w * (0.2 + rnd() * 0.25), h: 2 + rnd() * 4, d: p.d * (0.2 + rnd() * 0.25), ox: (rnd() - 0.5) * p.w * 0.25, oz: (rnd() - 0.5) * p.d * 0.25 };
     } else if (p.roof === 'gable') {
-      b.roof = { kind: 'gable', w: p.w + 0.8, h: 2.2 + rnd() * 1.6, d: p.d + 0.8, ox: 0, oz: 0, color: new THREE.Color(p.roofColor), rot: rnd() < 0.5 ? 0 : Math.PI / 2 };
+      // Конёк вдоль X (или вдоль Z — крыша повёрнута, ширина и глубина меняются местами)
+      const h = 2.2 + rnd() * 1.6, rz = p.ridge ? p.ridge === 'z' : rnd() >= 0.5;
+      b.roof = { kind: 'gable', w: (rz ? p.d : p.w) + 0.8, h, d: (rz ? p.w : p.d) + 0.8, ox: 0, oz: 0, color: new THREE.Color(p.roofColor), rot: rz ? Math.PI / 2 : 0 };
     }
     return b;
   }
@@ -482,7 +616,7 @@ export class City {
     const geos = makeAttachmentGeometries();
     const groups = new Map(); // ключ чанка → { тип: [{ seg, m, color }] }
     const put = (type, seg, m, color = 0xffffff) => {
-      const key = Math.floor(seg.x / CHUNK) * 100000 + Math.floor(seg.z / CHUNK);
+      const key = Math.floor(seg.x / ATTACH_CHUNK) * 100000 + Math.floor(seg.z / ATTACH_CHUNK);
       if (!groups.has(key)) groups.set(key, {});
       const g = groups.get(key);
       (g[type] = g[type] || []).push({ seg, m, color });
@@ -548,15 +682,17 @@ export class City {
         }
       }
       const core = skylineAt(b.x, b.z), old = inOldTown(b.x, b.z);
+      // В спальном районе и кампусе — без рекламы и неона
+      const calm = inSleeper(b.x, b.z) || inCampus(b.x, b.z);
       // Рекламный щит на крыше невысокого здания, повёрнут к улице
-      if (H > 14 && H < 95 && top.w > 13 && rnd() < 0.05 + core * 0.08) {
+      if (!calm && H > 14 && H < 95 && top.w > 13 && rnd() < 0.05 + core * 0.08) {
         const face = rnd() < 0.5 ? 0 : Math.PI / 2;
         const len = (face ? top.d : top.w) * 0.75;
         _q.setFromAxisAngle(_v.set(0, 1, 0), face + (rnd() < 0.5 ? Math.PI : 0));
         put('board', top, new THREE.Matrix4().compose(_v.set(top.x, roofY, top.z), _q, new THREE.Vector3(len / 10, len / 10, 1)), AD[Math.floor(rnd() * AD.length)]);
       }
       // Неоновые вывески на фасаде у тротуара (чаще в старом городе и в центре)
-      const signs = rnd() < (old ? 0.45 : 0.12 + core * 0.25) ? 1 + Math.floor(rnd() * 2) : 0;
+      const signs = !calm && rnd() < (old ? 0.45 : 0.12 + core * 0.25) ? 1 + Math.floor(rnd() * 2) : 0;
       const base = this.segs[b.segs[0]];
       for (let i = 0; i < signs; i++) {
         const y = 4.5 + rnd() * Math.min(8, H - 7);
@@ -602,10 +738,10 @@ export class City {
     if (!this.attachChunks) return;
     const far = 1600 + camPos.y * 0.5;
     for (const c of this.attachChunks) {
-      const d = Math.hypot(c.x - camPos.x, c.z - camPos.z);
+      const d = Math.hypot(c.x - camPos.x, c.z - camPos.z), d3 = Math.hypot(d, camPos.y);
       // Мелкие детали фасадов (двери, маркизы, карнизы, лестницы) — только вблизи (дальше они меньше пикселя)
       const near = this.smallAttachView ?? 600;
-      for (const m of c.meshes) m.visible = SMALL_ATTACH.has(m.name) ? d < near && camPos.y < 450 : d < far;
+      for (const m of c.meshes) m.visible = SMALL_ATTACH.has(m.name) ? d < near && camPos.y < 450 : ROOF_ATTACH.has(m.name) ? d3 < 1300 : d < far;
     }
   }
 
@@ -775,6 +911,8 @@ export class City {
     this.onImpact?.(point, Math.max(s.w, s.d) * 0.8, force * 0.5);
 
     if (b.kind !== 'building') return;
+    // Переход между башнями держится на обеих: рушится опора ниже него — падает и он
+    if (b.links) for (const ls of b.links) if (ls.alive && ls.y0 >= s.y0) this.startFall(this.buildings[ls.b], [ls], dir, force);
     // Всё, что выше, теряет опору — падает целым куском
     const idx = b.segs.indexOf(s.index);
     const above = [];

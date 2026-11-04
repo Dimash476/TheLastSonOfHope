@@ -414,7 +414,7 @@ export class HeroModel {
       const climb = p.climb || 0;
       acc.chest[0] -= Math.max(0, climb) * 0.12 * w;
       acc.knR[0] += Math.max(0, -climb) * 0.15 * w;
-      // Ускорение (Shift, рывок, гипер) — обе руки вытянуты вперёд, кулаки рядом
+      // Ускорение (Shift, W+Q, рывок, гипер) — обе руки вытянуты вперёд, кулаки рядом
       const bk = Math.max(p.boost || 0, p.hyper || 0) * w;
       if (bk > 0.01) {
         mixArm(acc, 'L', [-3.0, 0, -0.11], [-0.05, 0, 0], bk);

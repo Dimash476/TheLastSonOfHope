@@ -11,6 +11,7 @@ export function createInputState() {
     moveZ: 0,        // -1..1  назад / вперёд
     moveY: 0,        // -1..1  вниз / вверх
     boost: false,    // сверхскорость
+    cruise: false,   // лёгкое ускорение без сверхзвука (W + Q)
     hyper: false,    // гиперскорость (Shift + E)
     ultra: false,    // третий уровень (Shift + Q)
     warp: false,     // четвёртый уровень (Shift + F)
@@ -105,6 +106,7 @@ export class KeyboardMouseSource {
     s.hyper = s.boost && k.has('KeyE');
     s.ultra = s.boost && k.has('KeyQ');
     s.warp = s.boost && k.has('KeyF');
+    s.cruise = !s.boost && k.has('KeyQ');
     s.moveY = (k.has('Space') ? 1 : 0) - (k.has('KeyC') ? 1 : 0);
     s.slamHeld = k.has('KeyX');
     s.laser = k.has('KeyZ');
@@ -216,7 +218,7 @@ export class HandSource {
     // В кулаке Колосса: каждое сжатие левого кулака — рывок на свободу
     if (player.captured) s.moveY = m?.boost ? 1 : 0;
     s.boost = !!m?.boost;
-    s.hyper = s.ultra = s.warp = false;
+    s.hyper = s.ultra = s.warp = s.cruise = false;
     s.boostK = m ? m.k : 0;
     // Линейно: лёгкое движение головы сразу даёт заметный поворот.
     // Новое значение приходит раз в 70–250 мс — подтягиваемся к нему плавно, а не скачком

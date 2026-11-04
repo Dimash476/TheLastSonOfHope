@@ -73,6 +73,8 @@ export class Trees {
         }
       }
     }
+    // Дворы кварталов: спальный район, кампус, квартальная застройка
+    for (const [x, z] of this.world.city.yardTrees) add(x, z, 0, 1.05);
     // Мега-площади: аллея по газону вдоль края
     for (const s of MEGA_SITES) {
       const r = s.half - 12 - 8;

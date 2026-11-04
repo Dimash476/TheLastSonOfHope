@@ -30,6 +30,7 @@ import { Critters } from './world/critters.js';
 import { Countryside } from './world/countryside.js';
 import { Props } from './world/props.js';
 import { Space } from './world/space.js';
+import { PlanetMap } from './world/planetmap.js';
 import { Trees } from './world/trees.js';
 import { Soundscape } from './soundscape.js';
 import { WildSound } from './wildsound.js';
@@ -61,6 +62,17 @@ const mainPass = new RenderPass(scene, camera);
 mainPass.clear = false;      // не стираем цвет космоса
 mainPass.clearDepth = true;  // но глубину — стираем
 composer.addPass(mainPass);
+// Плавающее начало координат: у Луны и планет (сотни и тысячи км от центра) основную сцену
+// рисуем со сдвигом к камере — иначе float32 в матрицах костей героя заметно дрожит.
+// Ближе 65 км не сдвигаем: город и рельеф считают узоры по мировым координатам
+// (а дальше 60 км их всё равно отсекает дальняя плоскость камеры)
+const FAR_ORIGIN = 65000;
+function renderFrame() {
+  const far = camera.position.lengthSq() > FAR_ORIGIN * FAR_ORIGIN;
+  if (far) scene.position.copy(camera.position).negate();
+  composer.render();
+  if (far) { scene.position.set(0, 0, 0); scene.updateMatrixWorld(); }
+}
 // Страховка: битые пиксели (NaN/бесконечность) обнуляем до bloom,
 // иначе он раздувает их в чёрные прямоугольники
 composer.addPass(new ShaderPass({
@@ -131,7 +143,8 @@ const env = new Environment(scene, renderer);
 env.onThunder = () => setTimeout(() => audio.thunder(), 300 + Math.random() * 1200);
 
 const fire = new Fire(scene, dust);
-const world = { ...fx, city, fire, camera, toast: (t) => hud.toast(t) };
+const world = { ...fx, city, fire, camera, toast: (t, d) => hud.toast(t, d) };
+const planetMap = world.planetMap = new PlanetMap(scene, space, world);
 // Общее событие «удар/взрыв в точке»: разлетаются машины, люди, ломаются фонари
 world.impact = (point, radius, force, source) => {
   traffic.impulse(point, radius, force, source);
@@ -164,6 +177,7 @@ debris.onImpact = (p, r, f) => world.impact(p, r, f);
 const player = new Player(scene, world);
 const camRig = new ThirdPersonCamera(camera);
 const battle = new BossBattle(scene, world, player, hud, camera);
+planetMap.blocked = () => battle.active;
 
 city.onDestroyed = () => {
   if (city.destroyed % 25 === 0) hud.toast(`${city.destroyed} ЗДАНИЙ`);
@@ -414,7 +428,7 @@ function updatePhotoCamera(dt) {
   camera.updateMatrixWorld();
 }
 function savePhoto() {
-  composer.render();
+  renderFrame();
   renderer.domElement.toBlob((blob) => {
     if (!blob) return;
     const a = document.createElement('a');
@@ -467,6 +481,7 @@ function resetWorld(quiet = false) {
   air.reset();
   beach.reset();
   nature.reset();
+  planetMap.leave();
   player.spawn();
   if (!quiet) hud.toast('ГОРОД ВОССТАНОВЛЕН');
 }
@@ -482,7 +497,7 @@ function frame() {
   step(Math.min(dt, 0.05), !paused);
   shadowTick();
   gpuBegin();
-  composer.render();
+  renderFrame();
   gpuEnd();
   updateAdaptiveQuality(Math.min(dt, 0.1));
 }
@@ -523,11 +538,12 @@ function step(dt, active) {
     // Замедление времени после полностью заряженного удара
     if (player.slowmo > 0) { player.slowmo -= dt; gdt *= 0.25; }
     // Замедление: мир медленнее, герой в своём темпе
-    slow.k += ((slow.on ? 0.25 : 1) - slow.k) * Math.min(1, dt * 6);
+    slow.k += ((slow.on ? 0.05 : 1) - slow.k) * Math.min(1, dt * 6);
     const pdt = gdt;
     gdt *= slow.k;
 
     player.update(pdt, input, camRig);
+    planetMap.tick(player);
     if (mode === 'boss') battle.update(gdt, dt);
     city.update(gdt);
     debris.update(gdt);
@@ -548,7 +564,9 @@ function step(dt, active) {
 
   if (!photo.on) camRig.update(dt, input, player, city, effects.shakeOffset);
   env.update(dt, player.pos, camera, !paused && !photo.on);
-  space.update(dt, camera, env.sunDir, env.altitudeK, env.night);
+  planetMap.update(paused || photo.on ? 0 : dt, camera, env, player);
+  space.update(dt, camera, env.sunDir, env.altitudeK, env.night, player);
+  hud.markers(camera, player, !paused && !photo.on && !planetMap.active);
   // Космос рисуем, только когда небо хоть немного прозрачное
   spacePass.enabled = env.sky.material.uniforms.uOpacity.value < 0.995;
   mainPass.clear = !spacePass.enabled;
@@ -587,8 +605,8 @@ function step(dt, active) {
   // Фон мегаполиса: громче в центре и у земли, тише в пригороде и с высотой, нет в космосе
   {
     const cp = camera.position, r = Math.max(Math.abs(cp.x), Math.abs(cp.z));
-    const inCity = 1 - THREE.MathUtils.smoothstep(r, 1700, 3000);
-    const inSuburb = THREE.MathUtils.smoothstep(r, 1400, 2200) * (1 - THREE.MathUtils.smoothstep(r, 3000, 4000));
+    const inCity = 1 - THREE.MathUtils.smoothstep(r, 2400, 3800);
+    const inSuburb = THREE.MathUtils.smoothstep(r, 2100, 2900) * (1 - THREE.MathUtils.smoothstep(r, 3800, 4800));
     const low = 1 - THREE.MathUtils.smoothstep(cp.y, 150, 1800);
     audio.setAmbience(Math.max(inCity, inSuburb * 0.45) * low, inSuburb * low, env.night, env.W.rain);
   }
@@ -606,14 +624,14 @@ frame();
 
 // Для отладки из консоли
 window.game = {
-  scene, camera, renderer, player, city, battle, hands, setControl, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space,
+  scene, camera, renderer, player, city, battle, hands, setControl, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space, planetMap,
   // Запуск без захвата мыши (для автотестов)
   unpause() { paused = false; overlay.classList.add('hidden'); hud.show(true); },
   // Начать режим без захвата мыши (для автотестов)
   mode(m) { if (m === 'boss') { resetWorld(true); battle.start(); } else if (battle.active) { battle.stop(); resetWorld(true); } mode = m; },
   // Прогнать n кадров симуляции с фиксированным шагом
-  sim(n, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt, true); composer.render(); },
+  sim(n, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt, true); renderFrame(); },
   // Кадр с адаптивным качеством (frameDt — сколько «длился» кадр), состояние — в quality
   quality: dyn,
-  frameQ(frameDt) { shadowTick(); gpuBegin(); composer.render(); gpuEnd(); updateAdaptiveQuality(frameDt); },
+  frameQ(frameDt) { shadowTick(); gpuBegin(); renderFrame(); gpuEnd(); updateAdaptiveQuality(frameDt); },
 };

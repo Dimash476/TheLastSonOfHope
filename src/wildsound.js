@@ -138,7 +138,7 @@ export class WildSound {
     }
 
     // ---- город: собаки вдалеке, голуби, кафе, дети
-    const suburb = ss(r, 1400, 2200) * (1 - ss(r, 3000, 4000)) * low;
+    const suburb = ss(r, 2100, 2900) * (1 - ss(r, 3800, 4800)) * low;
     if (suburb > 0.3 && this.ev('dogFar', 28, dt)) this.s.bark(this.around(cam, 55, 85, 0, 2), 0.8 + Math.random() * 0.6);
     const street = (a.amb.urban || 0) * (1 - ss(cam.y, 8, 40)) * (1 - rain);
     if (street * day > 0.3 && this.ev('coo', 9, dt)) this.coo(this.around(cam, 6, 22, 0, 4));

@@ -1,15 +1,16 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CITY, DEBRIS } from '../config.js';
-import { HALF, BLOCK, blockAt } from './layout.js';
+import { HALF, BLOCK, blockAt, inSleeper } from './layout.js';
 
 // Собаки и кошки.
-// Собаки: гуляют с хозяевами на поводке или свободно бегают в парках; когда герой
+// Собаки: гуляют с хозяевами на поводке или свободно бегают в парках, у домов пригорода
+// и во дворах спального района; когда герой
 // приземлился и стоит — подбегают, прыгают, виляют хвостом и лают.
 // Кошки: сидят, умываются, гуляют; убегают, если герой подходит близко или пролетает.
 // Ударная волна подбрасывает их (без жестокости — встают и бегут).
 
-const DOGS = 34, CATS = 30, LEASHED = 22;
+const DOGS = 96, CATS = 90, LEASHED = 50;
 // Окрасы: основной цвет c, второй c2 и узор pat
 // собаки: 0 — однотонный, 1 — светлые грудь/живот/морда/лапы, 2 — пятна, 3 — тёмный «чепрак» на спине
 // кошки: 0 — однотонная, 1 — полосатая (табби), 2 — «смокинг» (белая грудь и носочки), 3 — трёхцветная
@@ -127,13 +128,17 @@ export class Animals {
       const ang = Math.random() * 6.28, r = 30 + Math.random() * 250;
       const x = focus.x + Math.cos(ang) * r, z = focus.z + Math.sin(ang) * r;
       const t = blockAt(x, z);
-      if (a.kind === 'dog' && t !== BLOCK.PARK && t !== BLOCK.BIGPARK && t !== BLOCK.BEACH) continue;
+      if (a.kind === 'dog' && t !== BLOCK.PARK && t !== BLOCK.BIGPARK && t !== BLOCK.BEACH && t !== BLOCK.SUBURB && !(t === BLOCK.URBAN && inSleeper(x, z))) continue;
       if (a.kind === 'cat' && t !== BLOCK.URBAN && t !== BLOCK.SUBURB && t !== BLOCK.PARK) continue;
       // Кошки — у стен на тротуаре: прижимаемся к краю квартала
       let px = x, pz = z;
       if (a.kind === 'cat') {
         const lx = ((x + HALF) % CITY.block), lz = ((z + HALF) % CITY.block);
         if (Math.random() < 0.5) px = x - lx + (lx < 50 ? 11.5 : CITY.block - 11.5); else pz = z - lz + (lz < 50 ? 11.5 : CITY.block - 11.5);
+      } else if (t === BLOCK.URBAN) {
+        // Собака спального района — во дворе, у центра квартала
+        const lx = ((x + HALF) % CITY.block), lz = ((z + HALF) % CITY.block);
+        px = x - lx + CITY.block / 2 + (Math.random() - 0.5) * 30; pz = z - lz + CITY.block / 2 + (Math.random() - 0.5) * 30;
       }
       if (W.city.segAt(_v.set(px, 0.5, pz), 0.5)) continue;
       a.pos.set(px, W.city.groundHeightAt(px, pz, 2), pz);

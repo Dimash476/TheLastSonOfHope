@@ -112,7 +112,18 @@ export function makeShapeGeometries() {
     withPart(cyl(0.012, 0.004, 0.08, 0.96, 8).translate(0.155, 0, 0), 1),
   ]);
 
-  const out = { sphere, dome, round, crown, twist, pyramid, bullet, geodome, pillar, cradle, tent };
+  // Часовой ярус башни: глухой куб, на каждой грани — циферблат (ночью светится) и стрелки
+  const clockFace = (ry) => [
+    withPart(new THREE.CircleGeometry(0.34, 32).translate(0, 0.5, 0.505).rotateY(ry), 2),
+    withPart(new THREE.BoxGeometry(0.035, 0.2, 0.012).translate(0, 0.1, 0).rotateZ(-1.05).translate(0, 0.5, 0.515).rotateY(ry), 3),
+    withPart(new THREE.BoxGeometry(0.028, 0.28, 0.012).translate(0, 0.14, 0).rotateZ(1.05).translate(0, 0.5, 0.515).rotateY(ry), 3),
+  ];
+  const clock = M([withPart(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), 1), ...[0, 1, 2, 3].flatMap((k) => clockFace(k * Math.PI / 2))]);
+  // Глухой четырёхгранный шатёр (крыша башни), грани плоские
+  const spire = withPart(new THREE.ConeGeometry(Math.SQRT1_2, 1, 4, 1).rotateY(Math.PI / 4).translate(0, 0.5, 0), 1);
+  spire.computeVertexNormals();
+
+  const out = { sphere, dome, round, crown, twist, pyramid, bullet, geodome, pillar, cradle, tent, clock, spire };
   // Гигантские формы вращения, нарезанные на ярусы (ключи вида «orb:3»)
   for (const name in GIANTS) {
     const slices = buildGiant(GIANTS[name]);
@@ -148,6 +159,17 @@ export const GIANTS = {
   saucer: { aspect: 0.24, slices: 2, radial: 72,
     profile: (y) => { const t = y / 0.24; return 0.5 * Math.pow(Math.sin(Math.PI * (0.08 + 0.84 * t)), 0.45) * (t < 0.5 ? 1 : 1 - (t - 0.5) * 0.5); },
     part: (y) => (Math.abs(y / 0.24 - 0.45) < 0.03 ? 2 : 0) },
+  // Смотровая капсула телебашни: снизу — гладкая чаша, посередине — стеклянный пояс
+  // (ресторан), над ним — светящееся кольцо и пологая крыша
+  tvpod: { aspect: 0.8, slices: 4, radial: 64,
+    profile: (y) => {
+      const t = y / 0.8;
+      if (t < 0.34) return 0.13 + 0.37 * Math.sin(t / 0.34 * Math.PI / 2);
+      if (t < 0.66) return 0.5 - 0.035 * (t - 0.34) / 0.32;
+      if (t < 0.72) return 0.47;
+      return Math.max(0.06, 0.47 * Math.cos((t - 0.72) / 0.28 * Math.PI / 2));
+    },
+    part: (y) => { const t = y / 0.8; return t < 0.34 ? 1 : t < 0.655 ? 0 : t < 0.725 ? 2 : 1; } },
   pagoda: { aspect: 1.5, slices: 9, radial: 8, flat: true,
     profile: (y) => { const t = y / 1.5, k = Math.min(8, Math.floor(t * 9)), f = t * 9 - k; return 0.5 * (1 - k * 0.095) * (f > 0.86 ? 1.06 : 1 - f * 0.05); },
     part: (y) => (((y / 1.5) * 9) % 1 > 0.86 ? 2 : 3) },
@@ -221,6 +243,34 @@ export function addGiant(city, b, name, x, z, D, y0, color = null) {
     if (color) seg.color = new THREE.Color(color);
   });
   return y0 + GIANTS[name].aspect * D;
+}
+
+// ================================================================ телебашня «Надежда»
+// Самое высокое сооружение города (≈515 м) на своей площади у реки: сужающийся
+// бетонный ствол, техническое кольцо-«тарелка», смотровая капсула со стеклянным
+// поясом и светящимся кольцом (ночью сияет над городом), мачта антенны с
+// заградительным огнём. Рушится по секциям, как всё остальное: верх падает целиком.
+export function addTvTower(city, site) {
+  const { x, z } = site, fixed = () => 0.5;
+  city.addBuilding({ x, z, w: 70, d: 70, h: 3, color: 0xd9d3c7, glass: false, type: 'concrete', roof: null }, fixed);
+  // Вестибюль — низкое стеклянное кольцо вокруг основания
+  const hall = city.newBuilding({ kind: 'building', x, z, color: 0x7aa0c8, glass: true });
+  hall.shaped = true;
+  city.addSeg(hall, { x, z, w: 50, d: 50, y0: 3, h: 9, type: 'shape', shape: 'round' });
+  // Сама башня — одно здание: секции идут снизу вверх (выбитая роняет всё, что выше)
+  const b = city.newBuilding({ kind: 'building', x, z, color: 0xe9e6df, glass: false });
+  const n = 28, sh = 352 / n;
+  for (let k = 0; k < n; k++) {
+    const y0 = 3 + k * sh, D = 24 - 12 * k / (n - 1);    // 24 → 12 м
+    city.addSeg(b, { x, z, w: D, d: D, y0, h: sh, type: 'shape', shape: 'pillar' });
+    if (k === 18) addGiant(city, b, 'saucer', x, z, 38, y0 + sh * 0.4, 0xf2efe8);
+  }
+  addGiant(city, b, 'tvpod', x, z, 50, 345, SILVER);
+  for (let k = 0; k < 2; k++) city.addSeg(b, { x, z, w: 9, d: 9, y0: 385 + k * 10, h: 10, type: 'shape', shape: 'pillar' });
+  // Мачта антенны: ступенями тоньше; на верхушке — красный огонь (ставит city.js)
+  const mast = [[4.5, 12], [4.5, 12], [3, 14], [3, 14], [2, 20], [1.4, 20], [0.9, 18]];
+  let y = 405;
+  for (const [w, h] of mast) { city.addSeg(b, { x, z, w, d: w, y0: y, h, type: 'concrete' }); y += h; }
 }
 
 // Материал: стекло со стойками и этажами (окна идут по окружности или по граням),

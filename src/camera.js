@@ -1,8 +1,11 @@
 import * as THREE from 'three';
 import { damp, smoothstep, clamp } from './utils.js';
+import { BODIES } from './world/bodies.js';
+
+const _b = new THREE.Vector3();
 
 // Камера от третьего лица: вращение мышью, отдаление и FOV растут со скоростью,
-// не проваливается в здания.
+// не проваливается в здания, под землю и под поверхность Луны и планет.
 export class ThirdPersonCamera {
   constructor(camera) {
     this.camera = camera;
@@ -51,6 +54,15 @@ export class ThirdPersonCamera {
     this.curDist = this.curDist === undefined ? d : (d < this.curDist ? d : damp(this.curDist, d, 3, dt));
     const pos = target.clone().addScaledVector(this.direction, -this.curDist).add(this.lag);
     pos.y = Math.max(pos.y, 0.4);
+    const map = player.world.planetMap;
+    if (map.active) pos.y = Math.max(pos.y, map.heightAt(pos.x, pos.z) + 0.8);
+    else {
+      for (const b of BODIES) {
+        _b.subVectors(pos, b.c);
+        const l = _b.length();
+        if (l < b.r + 0.4) pos.copy(b.c).addScaledVector(_b, (b.r + 0.4) / l);
+      }
+    }
     pos.add(shake);
     this.camera.position.copy(pos);
     this.camera.lookAt(pos.clone().add(this.direction));

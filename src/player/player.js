@@ -3,6 +3,7 @@ import { PLAYER as P, MACH, WORLD, SPACE } from '../config.js';
 import { HeroModel } from './model.js';
 import { clamp, damp, lerp, smoothstep } from '../utils.js';
 import { EyeLaser } from './laser.js';
+import { BODIES, CAP_NY, nearestBody, bodyGroundAt } from '../world/bodies.js';
 
 const _qI = new THREE.Quaternion();
 const CAPE_INERTIA = 0.6;  // доля поворота тела, которую плащ «не замечает» (инерция ткани)
@@ -11,6 +12,7 @@ const UP = new THREE.Vector3(0, 1, 0);
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _cp = new THREE.Vector3();
+const _p0 = new THREE.Vector3(), _seg = new THREE.Vector3(), _rel = new THREE.Vector3(), _bn = new THREE.Vector3();
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 
@@ -76,6 +78,7 @@ export class Player {
     }
     if (best) this.pos.set(best.x, bestTop, best.z);
     else this.pos.set(0, 0, 0);
+    this.onBody = this.nearBody = null;
     this.vel.set(0, 0, 0);
     this.grounded = true;
     this.falling = false;
@@ -198,6 +201,7 @@ export class Player {
     }
 
     // ------------------------------------------------ движение
+    this.cruiseOn = false;   // W + Q в полёте (выставляет fly)
     if (this.dashT > 0) {
       this.dashT -= dt;
       const sp = Math.max(P.dashSpeed, this.vel.length());
@@ -218,7 +222,7 @@ export class Player {
       const wish = new THREE.Vector3().addScaledVector(camFlat, input.moveZ).addScaledVector(right, input.moveX);
       if (wish.lengthSq() > 1) wish.normalize();
       // Пока поднимается с колена — стоит на месте
-      const top = this.landT > 0.25 || this.petting ? 0 : input.boost ? P.sprintSpeed : input.walk ? P.walkSpeed : P.runSpeed;
+      const top = this.landT > 0.25 || this.petting ? 0 : input.boost ? P.sprintSpeed : input.cruise ? P.cruiseRun : input.walk ? P.walkSpeed : P.runSpeed;
       // Человек разгоняется быстрее, чем тормозит с бега; шаг набирается мягко
       const hs0 = Math.hypot(this.vel.x, this.vel.z);
       const accel = top < hs0 ? P.groundAccel * 0.75 : top <= P.walkSpeed + 0.1 ? 5 : P.groundAccel;
@@ -248,7 +252,8 @@ export class Player {
         const hs = Math.hypot(this.vel.x, this.vel.z), top = Math.max(hs, P.runSpeed);
         this.vel.x = damp(this.vel.x, wish.x * top, wish.lengthSq() > 0.01 ? 1.2 : 0.3, dt);
         this.vel.z = damp(this.vel.z, wish.z * top, wish.lengthSq() > 0.01 ? 1.2 : 0.3, dt);
-        this.vel.y = Math.max(this.vel.y - 9.81 * 1.6 * dt, -P.slamSpeed * 0.5);
+        // На Луне и планетах — их тяжесть (в той же игровой пропорции, что и земная)
+        this.vel.y = Math.max(this.vel.y - (this.onBody ? this.onBody.g : 9.81) * 1.6 * dt, -P.slamSpeed * 0.5);
       }
       if (!this.falling) this.fly(dt, input, camDir, right);
     } else {
@@ -377,14 +382,20 @@ export class Player {
     wish.normalize();
     const boosting = input.boost && input.moveZ > 0;
     this.boosting = boosting;
-    const spaceK = smoothstep(SPACE.atmosphere, SPACE.spaceAlt, this.pos.y);
+    // W + Q: лёгкое ускорение — плавно до P.cruiseSpeed и так же плавно обратно
+    const cruise = !boosting && input.cruise && input.moveZ > 0;
+    if (cruise) this.cruising = true; else if (boosting) this.cruising = false;
+    this.cruiseOn = cruise;
+    // На карте планеты высота мира огромна, но это не космос: скорость как в атмосфере, без гипера
+    const onMap = this.world.planetMap.active;
+    const spaceK = onMap ? 0 : smoothstep(SPACE.atmosphere, SPACE.spaceAlt, this.pos.y);
     // Уровни ускорения: Shift → Shift+E (гипер) → Shift+Q (третий) → Shift+F (четвёртый)
     // С камеры уровень плавный: 40^k (k от правой руки)
-    const hyper = !boosting ? 1 : input.boostK != null ? Math.pow(P.warpMul, input.boostK)
+    const hyper = !boosting || onMap ? 1 : input.boostK != null ? Math.pow(P.warpMul, input.boostK)
       : input.warp ? P.warpMul : input.ultra ? P.ultraMul : input.hyper ? P.hyperMul : 1;
-    const target = boosting ? lerp(P.boostSpeed, P.spaceBoostSpeed, spaceK) * hyper : P.flySpeed * wl;
+    const target = boosting ? lerp(P.boostSpeed, P.spaceBoostSpeed, spaceK) * hyper : cruise ? P.cruiseSpeed : P.flySpeed * wl;
 
-    if (speed < 90 && !boosting) {
+    if (speed < 90 && !boosting && !cruise) {
       // Медленный полёт: плавно ведём вектор скорости
       this.vel.x = damp(this.vel.x, wish.x * target, P.flyAccel, dt);
       this.vel.y = damp(this.vel.y, wish.y * target, P.flyAccel, dt);
@@ -412,12 +423,16 @@ export class Player {
         dir.copy(newDir);
       }
       // Разгон / сброс к целевой скорости
-      if (speed > target) {
+      if (speed > target && this.cruising && speed <= P.cruiseSpeed + 5) {
+        // Отпустили W + Q: скорость уходит так же мягко, как набиралась
+        ns = Math.max(damp(speed, target, P.cruiseAccel, dt), speed - P.cruiseMaxAccel * dt);
+      } else if (speed > target) {
         // Отпустили ускорение (или гиперскорость): быстро сбрасываем скорость
         const brake = this.brakeDecel(speed, rho);
         ns = Math.max(target, speed - brake * dt);
       } else {
-        ns = damp(speed, target, boosting && speed < target ? P.boostAccel : 1.4, dt);
+        ns = damp(speed, target, boosting && speed < target ? P.boostAccel : cruise ? P.cruiseAccel : 1.4, dt);
+        if (cruise) ns = Math.min(ns, speed + P.cruiseMaxAccel * dt);
       }
       if (boosting) ns = Math.max(ns, Math.min(target, speed + (140 + spaceK * 1500) * hyper * dt));
       // Крутой вираж на скорости стоит энергии
@@ -434,6 +449,7 @@ export class Player {
     const steps = aboveCity ? 1 : Math.max(1, Math.ceil(dist / 1.5));
     const sdt = dt / steps;
     const hits = [];
+    _p0.copy(this.pos);
 
     for (let s = 0; s < steps; s++) {
       this.pos.addScaledVector(this.vel, sdt);
@@ -505,29 +521,44 @@ export class Player {
       if (out > 0) this.vel.addScaledVector(n, -out);
     }
 
-    // Луна: твёрдая поверхность
-    const moon = _v.set(...SPACE.moonPos);
-    const toMoon = this.center.clone().sub(moon);
-    const md = toMoon.length();
-    if (md < SPACE.moonRadius + P.radius) {
-      const n = toMoon.divideScalar(md);
-      this.pos.addScaledVector(n, SPACE.moonRadius + P.radius - md);
-      const vn = this.vel.dot(n);
-      if (vn < 0) {
-        if (-vn > 150) {
-          // Удар о Луну
-          const p = moon.clone().addScaledVector(n, SPACE.moonRadius);
-          W.effects.shockwave(p, { type: 'disc', dir: n, radius: 40 + Math.min(200, -vn * 0.1), life: 1.2, opacity: 0.8 });
-          W.dust.burst(p, 30, { size: [6, 16], speed: 40, life: [2, 4], color: 0x8a8884 });
-          if (!this.onMoon) W.toast?.('ЛУНА');
-        }
-        this.vel.addScaledVector(n, -vn);
-      }
-      this.onMoon = true;
-    } else if (md > SPACE.moonRadius + 5000) this.onMoon = false;
+    const map = W.planetMap;
+    if (map.active) {
+      // Отдельная карта планеты: вместо шаров и города — её рельеф
+      this.nearBody = this.onBody = map.body;
+      this.groundY = map.heightAt(this.pos.x, this.pos.z);
+      this.bodyAlt = this.pos.y - this.groundY;
+      this.belowCap = false;
+    } else {
+      // Луна и планеты: твёрдые шары. Проверяем весь путь за кадр, а не только его конец:
+      // на 360 км/с за кадр пролетаем километры и иначе проскочили бы насквозь
+      for (const B of BODIES) this.collideBody(B, _p0);
+      // Ближайшее тело: высота над ним (для HUD), название при подлёте
+      const nb = nearestBody(this.pos), lim = Math.max(20000, nb.body.r);
+      const near = nb.alt < lim || (this.nearBody === nb.body && nb.alt < lim * 1.5) ? nb.body : null;
+      if (near && near !== this.nearBody) W.toast?.(near.name.toUpperCase(), 2.2);
+      this.nearBody = near;
+      this.bodyAlt = nb.alt;
+      this.belowCap = !!near && this.pos.y - near.c.y < CAP_NY * _v.subVectors(this.pos, near.c).length();
 
-    // Земля / крыша под ногами
-    this.groundY = city.groundHeightAt(this.pos.x, this.pos.z, this.pos.y);
+      // На шаре держимся верхней шапки: дальше склон круче ~37° — там только летать
+      if (this.grounded && this.onBody) {
+        const B = this.onBody, dx = this.pos.x - B.c.x, dz = this.pos.z - B.c.z;
+        const d = Math.hypot(dx, dz), capR = B.r * Math.sqrt(1 - CAP_NY * CAP_NY) * 0.995;
+        if (d > capR) {
+          this.pos.x = B.c.x + dx * capR / d; this.pos.z = B.c.z + dz * capR / d;
+          const out = (this.vel.x * dx + this.vel.z * dz) / d;
+          if (out > 0) { this.vel.x -= dx / d * out; this.vel.z -= dz / d * out; }
+        }
+      }
+
+      // Земля / крыша под ногами (или верх Луны / планеты)
+      this.groundY = city.groundHeightAt(this.pos.x, this.pos.z, this.pos.y);
+      this.onBody = null;
+      for (const B of BODIES) {
+        const gy = bodyGroundAt(B, this.pos);
+        if (gy > this.groundY) { this.groundY = gy; this.onBody = B; }
+      }
+    }
     if (this.pos.y <= this.groundY) {
       const impact = -this.vel.y;
       this.pos.y = this.groundY;
@@ -541,7 +572,7 @@ export class Player {
         this.falling = false;
         // Ноги пружинят: чем сильнее удар, тем глубже присед
         if (impact > 1.5 && impact <= 45) { this.dipK = Math.min(1, 0.2 + impact / 22); this.dipT = 0.12 + 0.2 * this.dipK; }
-        if (impact > 8) W.dust.burst(this.pos.clone().setY(this.groundY + 0.3), Math.min(10, 3 + Math.round(impact / 5)), { size: [1.5, 3.5], speed: 4 + impact * 0.12, life: [0.5, 1.2], flat: true });
+        if (impact > 8) W.dust.burst(this.pos.clone().setY(this.groundY + 0.3), Math.min(10, 3 + Math.round(impact / 5)), { size: [1.5, 3.5], speed: 4 + impact * 0.12, life: [0.5, 1.2], flat: true, color: this.onBody?.dust });
         // Эффектная посадка на колено — только после быстрого падения
         if (impact > 45) this.heroLanding(Math.min(1, (impact - 45) / 110));
       }
@@ -559,6 +590,49 @@ export class Player {
     if (this.grounded) this.pos.y = this.groundY;
   }
 
+  // Столкновение с Луной или планетой за кадр: отрезок p0 → pos против шара
+  collideBody(B, p0) {
+    const R = B.r;
+    _rel.subVectors(p0, B.c);
+    const c0 = _rel.lengthSq() - R * R;
+    if (c0 < 0) {
+      // Начали кадр внутри (касание, телепорт) — дальше по радиусу
+      _bn.subVectors(this.pos, B.c);
+      if (_bn.lengthSq() >= R * R) return;
+      _bn.normalize();
+    } else {
+      _seg.subVectors(this.pos, p0);
+      const a = _seg.lengthSq(), b = _rel.dot(_seg);
+      if (a < 1e-12 || b >= 0) return;
+      const disc = b * b - a * c0;
+      if (disc < 0) return;
+      const s = (-b - Math.sqrt(disc)) / a;
+      if (s > 1) return;
+      _bn.copy(_seg).multiplyScalar(s).add(_rel).normalize();
+    }
+    // Сверху: ноги на поверхность поставит обычная логика земли (посадка, удар о землю).
+    // Если за кадр ушли глубже шапки — останавливаемся в точке входа
+    if (_bn.y > CAP_NY) {
+      if (bodyGroundAt(B, this.pos) === -Infinity) { this.pos.copy(B.c).addScaledVector(_bn, R); this.pos.y -= 0.001; }
+      return;
+    }
+    // Сбоку и снизу: отодвигаем (тело героя — над ступнями) и переносим на отдельную карту планеты.
+    // Пока идёт бой, карта недоступна: просто гасим скорость «внутрь»
+    const W = this.world, speed = this.vel.length();
+    this.pos.copy(B.c).addScaledVector(_bn, R + P.radius);
+    if (_bn.y < 0) this.pos.y -= P.height * -_bn.y;
+    if (W.planetMap.request(B, _bn, speed)) { this.vel.set(0, 0, 0); return; }
+    const vn = this.vel.dot(_bn);
+    if (vn < 0) {
+      if (-vn > 150) {
+        const p = B.c.clone().addScaledVector(_bn, R);
+        W.effects.shockwave(p, { type: 'disc', dir: _bn.clone(), radius: 40 + Math.min(200, -vn * 0.1), life: 1.2, opacity: 0.8 });
+        W.dust.burst(p, 30, { size: [6, 16], speed: 40, life: [2, 4], color: B.dust });
+      }
+      this.vel.addScaledVector(_bn, -vn);
+    }
+  }
+
   // Приземление на одно колено: трещина, пыль, волна по земле, тяжёлый удар
   heroLanding(k) {
     const W = this.world;
@@ -567,7 +641,7 @@ export class Player {
     const p = this.pos.clone();
     if (p.y < 1 && k > 0.45) W.effects.crater(p, 3 + 6 * k);
     W.effects.shockwave(p.clone().setY(p.y + 0.3), { type: 'ring', radius: 8 + 22 * k, life: 0.6, opacity: 0.7 });
-    W.dust.burst(p.clone().setY(p.y + 0.4), Math.round(14 + 26 * k), { size: [2, 5 + 6 * k], speed: 10 + 25 * k, life: [0.8, 2.2], flat: true });
+    W.dust.burst(p.clone().setY(p.y + 0.4), Math.round(14 + 26 * k), { size: [2, 5 + 6 * k], speed: 10 + 25 * k, life: [0.8, 2.2], flat: true, color: this.onBody?.dust });
     W.debris.explode(p, 6 + 12 * k, 8 + 15 * k);
     W.impact?.(p, 8 + 15 * k, 10 + 20 * k);
     W.effects.shake(0.15 + 0.25 * k);
@@ -738,8 +812,8 @@ export class Player {
     W.effects.shockwave(point, { type: 'sphere', radius: r * 1.1, life: 0.6, opacity: 0.35 });
     W.debris.explode(point, r * 1.6, 25 + 45 * k);
     W.impact?.(point, r * 2, 30 + 40 * k);
-    W.dust.burst(point.clone().setY(point.y + 1), Math.round(30 + 40 * k), { size: [6, 16], speed: 30 + 50 * k, life: [1.5, 3.5], flat: true });
-    W.dust.burst(point, 12, { size: [8, 18], speed: 8, life: [2, 4], rise: 3 });
+    W.dust.burst(point.clone().setY(point.y + 1), Math.round(30 + 40 * k), { size: [6, 16], speed: 30 + 50 * k, life: [1.5, 3.5], flat: true, color: this.onBody?.dust });
+    W.dust.burst(point, 12, { size: [8, 18], speed: 8, life: [2, 4], rise: 3, color: this.onBody?.dust });
     W.effects.flash(point, 30 * k + 10);
     if (k >= 1) W.effects.shake(0.3);
     W.effects.impactFX(0.6 + 0.4 * k, point, 0.25 * k, 8 * k);
@@ -827,7 +901,7 @@ export class Player {
     const crouch = this.takeoffT > 0 ? 0.8 : this.dipT > 0 ? this.dipK : 0;
     a.dip = damp(a.dip || 0, crouch, crouch > (a.dip || 0) ? 26 : 7, dt);
     // Ускорение (Shift, рывок, гипер) — обе руки вперёд
-    a.boost = damp(a.boost || 0, !this.grounded && !this.slamming && (this.boosting || this.dashT > 0) ? 1 : 0, 6, dt);
+    a.boost = damp(a.boost || 0, !this.grounded && !this.slamming && (this.boosting || this.cruiseOn || this.dashT > 0) ? 1 : 0, 6, dt);
     // Шаги: стук, пыль, лёгкий толчок камеры на спринте (касание пяткой — фаза 0 и π)
     const step = Math.floor(a.runPhase / Math.PI);
     if (this.grounded && hs > 1 && step !== this.stepIdx) {

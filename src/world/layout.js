@@ -10,28 +10,33 @@ export const BLOCK = {
   BIGPARK: 5, INDUSTRIAL: 6, PORT: 7, STADIUM: 8, BEACH: 9, MEGA: 10,
 };
 
-export const HALF = CITY.grid * CITY.block * 0.5;          // 2800 м — край сетки
+export const HALF = CITY.grid * CITY.block * 0.5;          // 3600 м — край сетки
 export const PLANE_HALF = HALF + 250;                      // плоская «городская» земля
 export const RIVER_Z = -HALF + CITY.riverRow * CITY.block + CITY.block / 2; // центр русла
 export const RIVER_HALF_W = CITY.block / 2 - CITY.road / 2 - CITY.sidewalk; // 38 м
 export const QUAY_X = HALF + CITY.road / 2 + CITY.sidewalk + 12;          // набережная: восточнее — море
 export const SEA_BED = -14;
 
-// Районы (центры и радиусы, м)
+// Районы (центры и радиусы, м). Центры новых районов — в центрах кварталов.
 export const DISTRICTS = {
   downtown: { x: 0, z: 0, r: 560, h: 270 },
   midtown: { x: 1250, z: -1100, r: 380, h: 210 },
+  westgate: { x: -2050, z: -850, r: 400, h: 230 },     // деловой квартал на западе с башнями-близнецами
   oldtown: { x: -1100, z: 1000, r: 450 },
+  sleeper: { x: -2250, z: 2350, r: 760 },              // спальный район: панельные корпуса и дворы
+  campus: { x: 850, z: -2550, r: 250 },                // университетский городок
 };
+// Телебашня «Надежда» — на своей площади у южного берега реки (центр квартала)
+export const TV_TOWER = { x: -1650, z: 450 };
 export const LANDMARK = { x: -50, z: -150 };                // главный небоскрёб
 export const BIG_PARK = { minX: -700, minZ: -1500, maxX: -300, maxZ: -1100 };
 export const POND = { x: -500, z: -1300, r: 58 };
 export const STADIUM = { x: 850, z: 950 };
 // Городской пляж на юго-востоке: от прибрежной улицы (x = HALF − 100) песок уходит в море
-export const BEACH = { x0: HALF - 100 + CITY.road / 2 + CITY.sidewalk, minZ: 1600, maxZ: 2800, x1: PLANE_HALF };
+export const BEACH = { x0: HALF - 100 + CITY.road / 2 + CITY.sidewalk, minZ: 2000, maxZ: HALF, x1: PLANE_HALF };
 export const inBeach = (x, z) => x > BEACH.x0 - 0.5 && z > BEACH.minZ && z < BEACH.maxZ && x < BEACH.x1 + 400;
 // Пирс развлечений: от набережной над пляжем в море, в конце — широкая площадка с аттракционами
-export const PIER = { z: 2150, len: 370, w: 18, platFrom: 230, platW: 66 };
+export const PIER = { z: 2750, len: 370, w: 18, platFrom: 230, platW: 66 };
 // Высота настила: пологий пандус от набережной до ~4 м над водой
 export function pierDeckY(x) {
   const t = x - BEACH.x0;
@@ -53,6 +58,10 @@ export const TOWNS = [
 ];
 
 const inRect = (x, z, R) => x > R.minX && x < R.maxX && z > R.minZ && z < R.maxZ;
+const inCircle = (x, z, D) => Math.hypot(x - D.x, z - D.z) < D.r;
+export const inOldTown = (x, z) => inCircle(x, z, DISTRICTS.oldtown);
+export const inSleeper = (x, z) => inCircle(x, z, DISTRICTS.sleeper);
+export const inCampus = (x, z) => inCircle(x, z, DISTRICTS.campus);
 
 // ---------------------------------------------------------------- кварталы
 export const blockTypes = (() => {
@@ -67,6 +76,8 @@ export const blockTypes = (() => {
     else if (cx > HALF - 100 && cz > BEACH.minZ && cz < BEACH.maxZ) type = BLOCK.BEACH; // пляж
     else if (cx > HALF - 100) type = BLOCK.PORT;                                   // последняя колонна у моря
     else if (cx > HALF - 700 && cz > -(HALF - 300) && cz < 1400) type = BLOCK.INDUSTRIAL; // промзона у порта
+    else if (inCampus(cx, cz)) type = BLOCK.URBAN;                                  // кампус — сплошь корпуса и дворы
+    else if (inSleeper(cx, cz)) type = rnd() < 0.08 ? BLOCK.PARK : BLOCK.URBAN;     // спальный район (и скверы)
     else if (Math.max(Math.abs(cx), Math.abs(cz)) < CITY.urbanHalf) type = Math.hypot(cx, cz) > 260 && rnd() < 0.06 ? BLOCK.PARK : BLOCK.URBAN;
     else type = rnd() < 0.06 ? BLOCK.PARK : BLOCK.SUBURB;
     t[j * g + i] = type;
@@ -80,14 +91,12 @@ export function blockAt(x, z) {
   return blockTypes[j * CITY.grid + i];
 }
 
-// Высотность центра: два кластера небоскрёбов (деловой центр и мидтаун)
+// Высотность: три кластера небоскрёбов (деловой центр, мидтаун и западный квартал)
 export function skylineAt(x, z) {
   const d = DISTRICTS;
-  const a = Math.exp(-((Math.hypot(x - d.downtown.x, z - d.downtown.z) / d.downtown.r) ** 2));
-  const b = Math.exp(-((Math.hypot(x - d.midtown.x, z - d.midtown.z) / d.midtown.r) ** 2)) * (d.midtown.h / d.downtown.h);
-  return Math.max(a, b);
+  const peak = (D) => Math.exp(-((Math.hypot(x - D.x, z - D.z) / D.r) ** 2)) * (D.h / d.downtown.h);
+  return Math.max(peak(d.downtown), peak(d.midtown), peak(d.westgate));
 }
-export const inOldTown = (x, z) => Math.hypot(x - DISTRICTS.oldtown.x, z - DISTRICTS.oldtown.z) < DISTRICTS.oldtown.r;
 
 // ---------------------------------------------------------------- мега-площади
 // Несколько мест, где квартал 3×3 (≈300 м с дорогами по краям) — одна огромная площадь без
@@ -95,6 +104,9 @@ export const inOldTown = (x, z) => Math.hypot(x - DISTRICTS.oldtown.x, z - DISTR
 // центра, старого города и реки, на городской или пригородной застройке.
 export const MEGA_SITES = (() => {
   const g = CITY.grid, rnd = mulberry32(CITY.seed + 777), B = CITY.block;
+  const cell = (x) => Math.floor((x + HALF) / B);
+  // Площадь телебашни 3×3 — первой, остальные обходят её стороной
+  const tower = { i: cell(TV_TOWER.x), j: cell(TV_TOWER.z), x: TV_TOWER.x, z: TV_TOWER.z, half: B * 1.5, tower: true, n: 1 };
   const free = (i, j, n) => {
     for (let a = -n; a <= n; a++) for (let b = -n; b <= n; b++) {
       const t = blockTypes[(j + b) * g + (i + a)];
@@ -107,7 +119,7 @@ export const MEGA_SITES = (() => {
   for (let i = 3; i < g - 3; i++) for (let j = 3; j < g - 3; j++) {
     if (Math.abs(j - CITY.riverRow) < 4 || !free(i, j, 2)) continue;
     const x = -HALF + (i + 0.5) * B, z = -HALF + (j + 0.5) * B;
-    if (inOldTown(x, z)) continue;
+    if (inOldTown(x, z) || Math.hypot(x - tower.x, z - tower.z) < 700) continue;
     const score = Math.abs(Math.hypot(x - LANDMARK.x, z - LANDMARK.z) - 1100);
     if (score < giantScore) { giantScore = score; giant = { i, j, x, z, half: B * 2.5, giant: true, n: 2 }; }
   }
@@ -122,12 +134,14 @@ export const MEGA_SITES = (() => {
     if (!ok) continue;
     const x = -HALF + (i + 0.5) * B, z = -HALF + (j + 0.5) * B;
     if (skylineAt(x, z) > 0.3 || inOldTown(x, z) || Math.hypot(x - LANDMARK.x, z - LANDMARK.z) < 700) continue;
+    if (Math.hypot(x - DISTRICTS.sleeper.x, z - DISTRICTS.sleeper.z) < DISTRICTS.sleeper.r + 150) continue;
+    if (Math.hypot(x - DISTRICTS.campus.x, z - DISTRICTS.campus.z) < DISTRICTS.campus.r + 150) continue;
     cands.push({ i, j, x, z, r: rnd() });
   }
   cands.sort((p, q) => p.r - q.r);
-  const sites = giant ? [giant] : [];
+  const sites = giant ? [tower, giant] : [tower];
   for (const c of cands) {
-    if (sites.length >= 12) break;
+    if (sites.length >= 14) break;
     if (sites.some((s) => Math.hypot(s.x - c.x, s.z - c.z) < 850)) continue;
     sites.push({ i: c.i, j: c.j, x: c.x, z: c.z, half: B * 1.5, n: 1 });
   }
