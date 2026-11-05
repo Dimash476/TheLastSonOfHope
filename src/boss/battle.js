@@ -43,6 +43,7 @@ export class BossBattle {
     this.player.knockT = 0;
     this.el.ui.classList.remove('hidden');
     this.el.hero.classList.remove('hidden');
+    document.getElementById('boss-title').textContent = 'КОЛОСС';
     this.el.phase.textContent = 'ФАЗА 1 · ПРОБУЖДЕНИЕ';
     this.banner('ТРЕВОГА! НА ГОРОД ПАДАЕТ КОЛОСС', 3.5);
     setTimeout(() => { if (this.active && !this.ended && this.time > 3) this.banner('ОСТАНОВИ КОЛОССА!', 3); }, 4200);

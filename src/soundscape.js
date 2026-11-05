@@ -529,7 +529,7 @@ export class Soundscape {
     if (player.charge > 0) this.intensity += dt * 0.15;
     this.intensity = Math.min(1, Math.max(0, this.intensity - dt * 0.05));
     const mood = inSpace > 0.5 ? 'space' : this.intensity > 0.35 ? 'epic' : env.night > 0.6 ? 'night' : 'calm';
-    const userMusic = a.music && !a.music.paused;
+    const userMusic = (a.music && !a.music.paused) || a.themeOn;
     this.updateScore(dt, mood, this.scoreOn && !paused && !userMusic);
   }
 }

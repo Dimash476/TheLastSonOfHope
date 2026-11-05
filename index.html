@@ -51,21 +51,40 @@
       <kbd>P</kbd> фоторежим · <kbd>V</kbd> замедление времени<br />
       <kbd>T</kbd> время суток · <kbd>U</kbd> погода · <kbd>M</kbd> своя музыка · <kbd>N</kbd> музыка игры<br />
       <kbd>Ctrl</kbd> управление: ПК / камера (жесты с веб-камеры)<br />
-      <kbd>G</kbd> качество графики · <kbd>K</kbd> восстановить · <kbd>Esc</kbd> пауза
+      <kbd>G</kbd> качество графики · <kbd>K</kbd> восстановить · <kbd>Esc</kbd> пауза<br />
+      <span class="dim">Во Вторжении: после удара <kbd>ЛКМ</kbd> ещё раз — нагнать врага в полёте · <kbd>Z</kbd> в его луч и <kbd>W</kbd> — передавить · <kbd>Tab</kbd> захват цели</span>
     </div>
 
     <!-- Битва с боссом -->
     <div id="boss-ui" class="hidden">
-      <div id="boss-name">КОЛОСС <span id="boss-phase">ФАЗА 1</span></div>
+      <div id="boss-name"><span id="boss-title">КОЛОСС</span> <span id="boss-phase">ФАЗА 1</span></div>
       <div id="boss-bar"><div id="boss-lag"></div><div id="boss-fill"></div><i style="left:33.33%"></i><i style="left:66.67%"></i></div>
     </div>
     <div id="hero-ui" class="hidden">
       <div class="hero-head"><span class="heart">♥</span> ЗДОРОВЬЕ <span id="hero-value">100 / 100</span></div>
       <div id="hero-bar"><div id="hero-lag"></div><div id="hero-fill"></div></div>
     </div>
+    <div id="ship-ui" class="hidden">
+      <div class="ship-head">КОРАБЛЬ КСАРРОНА</div>
+      <div id="ship-bar"><div id="ship-fill"></div></div>
+    </div>
     <div id="boss-marker" class="hidden"><div class="pin"></div><span id="boss-marker-d"></span></div>
     <div id="hurt-flash"></div>
     <div id="map-fade"></div>
+
+    <!-- Вторжение -->
+    <div id="cine-bars"><i></i><i></i></div>
+    <div id="inv-alert" class="hidden"><div class="head">ВНИМАНИЕ</div><div id="inv-alert-body"></div></div>
+    <div id="inv-sub" class="hidden"></div>
+    <div id="inv-hint" class="hidden"></div>
+    <div id="inv-radio" class="hidden"></div>
+    <div id="dialog" class="hidden">
+      <div id="dialog-who"></div>
+      <div id="dialog-text"></div>
+      <div id="dialog-options" class="hidden"></div>
+      <div id="dialog-next" class="hidden"><b>ДАЛЬШЕ ▸</b> <kbd>ЛКМ</kbd> <kbd>Пробел</kbd></div>
+      <div id="dialog-keys" class="dialog-keys hidden"><kbd>1</kbd>–<kbd>4</kbd> ответ · мышь вверх-вниз и <kbd>ЛКМ</kbd> — выбрать</div>
+    </div>
 
     <div id="toast"></div>
     <div id="interact"></div>
@@ -98,6 +117,10 @@
         <button class="mode boss" id="mode-boss">
           <div class="mode-title">Битва</div>
           <div class="mode-desc">С неба падает Колосс — каменный великан с магмой внутри. Останови его, пока он не стёр город.</div>
+        </button>
+        <button class="mode invasion" id="mode-invasion">
+          <div class="mode-title">Вторжение</div>
+          <div class="mode-desc">С Ксаррона прилетает генерал Ксарг. Сначала он предложит сдаться. Откажешься — бой за Землю, от города до космоса.</div>
         </button>
         <button class="mode locked" id="mode-story">
           <span class="badge">Скоро</span>

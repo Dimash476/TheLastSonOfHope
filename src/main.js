@@ -35,6 +35,7 @@ import { Trees } from './world/trees.js';
 import { Soundscape } from './soundscape.js';
 import { WildSound } from './wildsound.js';
 import { BossBattle } from './boss/battle.js';
+import { Invasion } from './boss/invasion.js';
 import { installSunFog, createGodRaysPass, createGradePass, updateCinematic } from './fx/cinematic.js';
 
 // Туман со светом солнца — до создания и компиляции материалов
@@ -177,7 +178,9 @@ debris.onImpact = (p, r, f) => world.impact(p, r, f);
 const player = new Player(scene, world);
 const camRig = new ThirdPersonCamera(camera);
 const battle = new BossBattle(scene, world, player, hud, camera);
-planetMap.blocked = () => battle.active;
+const invasion = new Invasion(scene, world, player, hud, camera, camRig);
+invasion.onWarm = () => renderer.compile(scene, camera);
+planetMap.blocked = () => battle.active || invasion.active;
 
 city.onDestroyed = () => {
   if (city.destroyed % 25 === 0) hud.toast(`${city.destroyed} ЗДАНИЙ`);
@@ -210,7 +213,7 @@ $('loading').classList.add('hidden');
 
 // Главное меню: выбор режима. Симулятор и битва с боссом; сюжет — в разработке.
 let paused = true;
-let mode = null;            // 'sim' | 'boss' (потом — 'story')
+let mode = null;            // 'sim' | 'boss' | 'invasion' (потом — 'story')
 // Экран: main — выбор режима, pause — пауза, end — итог битвы
 const showMenu = (which) => {
   $('modes').classList.toggle('hidden', which !== 'main');
@@ -224,19 +227,26 @@ function startPlaying() {
   kbm.requestLock();
 }
 // Битва всегда начинается в целом городе; из битвы в симулятор — тоже с чистого листа
-function startMode(m) {
+function enterMode(m) {
+  if (battle.active) battle.stop();
+  if (invasion.active) invasion.stop();
   if (m === 'boss') { resetWorld(true); battle.start(); }
-  else if (battle.active) { battle.stop(); resetWorld(true); }
+  else if (m === 'invasion') { resetWorld(true); invasion.start(); }
+  else if (mode === 'boss' || mode === 'invasion') resetWorld(true);
   mode = m;
+}
+function startMode(m) {
+  enterMode(m);
   startPlaying();
 }
 $('mode-sim').addEventListener('click', () => startMode('sim'));
 $('mode-boss').addEventListener('click', () => startMode('boss'));
+$('mode-invasion').addEventListener('click', () => startMode('invasion'));
 $('mode-story').addEventListener('click', () => { $('story-note').classList.remove('hidden'); });
 playBtn.addEventListener('click', startPlaying);
-$('end-retry').addEventListener('click', () => startMode('boss'));
-$('end-menu').addEventListener('click', () => { battle.stop(); resetWorld(true); mode = null; showMenu('main'); });
-battle.onEnd = (win, title, sub) => {
+$('end-retry').addEventListener('click', () => startMode(mode));
+$('end-menu').addEventListener('click', () => { enterMode('sim'); mode = null; showMenu('main'); });
+battle.onEnd = invasion.onEnd = (win, title, sub) => {
   $('end-title').textContent = title;
   $('end-sub').textContent = sub;
   $('battle-end').classList.toggle('lose', !win);
@@ -249,13 +259,14 @@ $('menu-btn').addEventListener('click', () => {
   if (photo.on) setPhoto(false);
   if (slow.on) { slow.on = false; audio.setMuffle?.(0); slowBadge.classList.remove('show'); }
 });
-renderer.domElement.addEventListener('click', () => { if (paused && mode && !battle.ended) startPlaying(); });
+const modeEnded = () => (mode === 'invasion' ? invasion.ended : battle.ended);
+renderer.domElement.addEventListener('click', () => { if (paused && mode && !modeEnded()) startPlaying(); });
 document.addEventListener('pointerlockchange', () => {
   paused = !kbm.locked;
   overlay.classList.toggle('hidden', !paused);
   hud.show(!paused && !photo.on);
   // На паузе — «Продолжить» и «Главное меню»
-  if (paused && mode) showMenu(battle.ended ? 'end' : 'pause');
+  if (paused && mode) showMenu(modeEnded() ? 'end' : 'pause');
 });
 
 window.addEventListener('resize', () => {
@@ -460,7 +471,10 @@ window.addEventListener('keydown', (e) => {
     if (e.code === 'KeyH') photoUI.classList.toggle('min');
     return;
   }
-  if (e.code === 'KeyN' && !paused) hud.toast(soundscape.toggleScore() ? 'МУЗЫКА: ВКЛ' : 'МУЗЫКА: ВЫКЛ');
+  if (e.code === 'KeyN' && !paused) {
+    if (invasion.active && invasion.theme.playing) hud.toast(invasion.theme.toggle() ? 'ТЕМА БОЯ: ВКЛ' : 'ТЕМА БОЯ: ВЫКЛ');
+    else hud.toast(soundscape.toggleScore() ? 'МУЗЫКА: ВКЛ' : 'МУЗЫКА: ВЫКЛ');
+  }
   if (e.code === 'KeyG' && !paused) { qualityIndex = (qualityIndex + 1) % QUALITY.length; hud.toast(applyQuality(qualityIndex)); }
 });
 
@@ -522,13 +536,16 @@ function step(dt, active) {
       audio.setMuffle?.(slow.on ? 1 : 0);
       slowBadge.classList.toggle('show', slow.on);
     }
-    if (input.reset && mode !== 'boss') resetWorld();
+    if (input.reset && mode !== 'boss' && mode !== 'invasion') resetWorld();
     if (input.toggleHelp) hud.toggleHelp();
     if (input.cycleTime && env.cycleTime) hud.toast(env.cycleTime());
     if (input.cycleWeather && env.cycleWeather) hud.toast(env.cycleWeather());
     if (input.nextTrack) {
-      const name = audio.nextTrack();
-      hud.toast(name ? `♪ ${name}` : 'Положите mp3 в папку music/');
+      if (invasion.active && invasion.theme.playing) hud.toast(invasion.theme.next(), 2.6);
+      else {
+        const name = audio.nextTrack();
+        hud.toast(name ? `♪ ${name}` : 'Положите mp3 в папку music/');
+      }
     }
 
     // Хит-стоп: на долю секунды замедляем время при сильном ударе
@@ -537,14 +554,18 @@ function step(dt, active) {
     if (hitstop > 0) { hitstop -= dt; gdt = dt * 0.08; }
     // Замедление времени после полностью заряженного удара
     if (player.slowmo > 0) { player.slowmo -= dt; gdt *= 0.25; }
+    // Вторжение само замедляет время: окно серии, уклонение, финальный удар
+    if (invasion.active) gdt *= invasion.timeScale;
     // Замедление: мир медленнее, герой в своём темпе
     slow.k += ((slow.on ? 0.05 : 1) - slow.k) * Math.min(1, dt * 6);
     const pdt = gdt;
     gdt *= slow.k;
 
+    invasion.preUpdate(input, dt);
     player.update(pdt, input, camRig);
     planetMap.tick(player);
     if (mode === 'boss') battle.update(gdt, dt);
+    if (mode === 'invasion') invasion.update(gdt, dt, input);
     city.update(gdt);
     debris.update(gdt);
     glass.update(gdt);
@@ -564,6 +585,7 @@ function step(dt, active) {
 
   if (!photo.on) camRig.update(dt, input, player, city, effects.shakeOffset);
   env.update(dt, player.pos, camera, !paused && !photo.on);
+  if (invasion.active) invasion.fx.applyEnv(env, scene, camera);
   planetMap.update(paused || photo.on ? 0 : dt, camera, env, player);
   space.update(dt, camera, env.sunDir, env.altitudeK, env.night, player);
   hud.markers(camera, player, !paused && !photo.on && !planetMap.active);
@@ -579,7 +601,7 @@ function step(dt, active) {
   pier.update(paused || photo.on ? 0 : dt * slow.k, env.night, camera.position);
   nature.update(dt, camera.position);
   // На высоком и среднем качестве (со свечением) картинка чуть темнее
-  renderer.toneMappingExposure = env.exposure * (1 - env.altitudeK * 0.25) * (bloom.enabled ? 0.88 : 1) * (1 - 0.32 * (env.glare || 0));
+  renderer.toneMappingExposure = env.exposure * (1 - env.altitudeK * 0.25) * (bloom.enabled ? 0.88 : 1) * (1 - 0.32 * (env.glare || 0)) * (invasion.active ? 1 - 0.18 * invasion.fx.smog : 1);
   city.material.userData.uNight.value = env.night;
   props.setNight(env.night);
   traffic.setNight(env.night);
@@ -595,10 +617,11 @@ function step(dt, active) {
   impactPass.uniforms.uFlash.value = effects.screenFlash;
   impactPass.uniforms.uCharge.value = effects.chargeK;
   impactPass.uniforms.uSpeed.value = THREE.MathUtils.smoothstep(player.vel.length(), 150, 3000) * (1 - env.altitudeK * 0.6);
-  camRig.extraFov = effects.fovKick - effects.chargeK * 9;
+  camRig.extraFov = effects.fovKick - effects.chargeK * 9 - (invasion.active ? invasion.fx.zoom : 0);
   updateCinematic({ env, camera, godRays, grade, dt, quality: qualityIndex });
   // Лёгкая виньетка всегда (киношный кадр), сильнее — в фоторежиме и замедлении
   grade.uniforms.uVig.value = photo.on ? 0.35 : 0.16 + (1 - slow.k) * 0.5;
+  if (invasion.active) invasion.fx.applyGrade(grade);
   // Свечение: мягче днём, сильнее на закате и ночью — огни города «дышат»
   bloom.strength = 0.26 + env.night * 0.26;
   audio.listener = camera.position;
@@ -614,6 +637,7 @@ function step(dt, active) {
   soundscape.update({ dt, player, camera, people, traffic, city, env, paused });
   wild.update({ dt: dt * slow.k, camera, env, world, paused: paused || photo.on, menu: paused, slow: slow.k });
   if (paused) air.mute();
+  invasion.setPaused(paused || invasion.ended);
   audio.update(player.vel.length(), paused, player.pos.y < 1500 ? env.W.rain : 0, env.altitudeK);
   endFrame(input);
 }
@@ -624,13 +648,15 @@ frame();
 
 // Для отладки из консоли
 window.game = {
-  scene, camera, renderer, player, city, battle, hands, setControl, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space, planetMap,
+  scene, camera, renderer, player, city, battle, invasion, hands, setControl, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space, planetMap,
   // Запуск без захвата мыши (для автотестов)
   unpause() { paused = false; overlay.classList.add('hidden'); hud.show(true); },
   // Начать режим без захвата мыши (для автотестов)
-  mode(m) { if (m === 'boss') { resetWorld(true); battle.start(); } else if (battle.active) { battle.stop(); resetWorld(true); } mode = m; },
+  mode(m) { enterMode(m); },
   // Прогнать n кадров симуляции с фиксированным шагом
   sim(n, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt, true); renderFrame(); },
+  // То же без рендера: шаги логики для проверок боя
+  steps(n, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt, true); },
   // Кадр с адаптивным качеством (frameDt — сколько «длился» кадр), состояние — в quality
   quality: dyn,
   frameQ(frameDt) { shadowTick(); gpuBegin(); renderFrame(); gpuEnd(); updateAdaptiveQuality(frameDt); },

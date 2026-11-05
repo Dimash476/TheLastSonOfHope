@@ -58,6 +58,27 @@ const POSE = {
     hipL: [-0.9, 0, 0.15], knL: [0.5, 0, 0], ankL: [0.3, 0, 0],
     hipR: [-0.7, 0, -0.15], knR: [0.6, 0, 0], ankR: [0.3, 0, 0],
   },
+  // Блок: предплечья скрещены перед лицом, корпус собран
+  guard: {
+    spine: [0.14, 0, 0], chest: [0.08, 0, 0], neck: [0.14, 0, 0],
+    shL: [-1.15, -0.5, 0.2], elL: [-2.0, 0, 0],
+    shR: [-1.15, 0.5, -0.2], elR: [-2.0, 0, 0],
+    hipL: [-0.25, 0, 0.08], knL: [0.45, 0, 0], hipR: [-0.1, 0, -0.08], knR: [0.3, 0, 0],
+  },
+  // Отброшен ударом: корпус сложен, руки и ноги отстают от тела
+  knock: {
+    spine: [0.5, 0, 0], chest: [0.32, 0, 0], neck: [0.42, 0, 0],
+    shL: [-1.3, 0, 0.55], shR: [-1.05, 0, -0.7], elL: [-0.45, 0, 0], elR: [-0.8, 0, 0],
+    hipL: [-1.05, 0, 0.16], knL: [0.75, 0, 0], ankL: [0.6, 0, 0],
+    hipR: [-0.75, 0, -0.14], knR: [0.35, 0, 0], ankR: [0.6, 0, 0],
+  },
+  // Лежит без сил: руки раскинуты, ноги расслаблены
+  downed: {
+    spine: [0.04, 0, 0.06], neck: [-0.1, 0.5, 0],
+    shL: [0.1, 0, 1.15], shR: [0.1, 0, -0.85], elL: [-0.5, 0, 0], elR: [-0.25, 0, 0],
+    hipL: [0, 0, 0.2], knL: [0.2, 0, 0], ankL: [0.75, 0, 0],
+    hipR: [-0.25, 0, -0.16], knR: [0.5, 0, 0], ankR: [0.75, 0, 0],
+  },
   slam: {
     spine: [0.3, 0, 0], neck: [0.2, 0, 0],
     shL: [-2.7, 0, 0.25], shR: [-2.7, 0, -0.25], elL: [-0.5, 0, 0], elR: [-0.5, 0, 0],
@@ -66,19 +87,161 @@ const POSE = {
   },
 };
 
+// Удар всем телом, как в кино. Замах: таз и плечи скручены от цели, кулак у уха, вторая рука тянется к цели.
+// Проход: таз, корпус, плечо и рука разворачиваются. Навылет: корпус перекручивает, кулак идёт дальше.
+// Заданы для правой руки, для левой зеркалятся
+const BLOW_R = {
+  coil: {
+    pelvis: [0.04, -0.22, 0], spine: [-0.2, -0.38, 0.06], chest: [-0.12, -0.3, 0.04], neck: [0.08, 0.72, 0],
+    shR: [1.36, 0, -0.78], elR: [-2.75, 0, 0],
+    shL: [-1.0, 0, 0.85], elL: [-0.45, 0, 0],
+    hipR: [0.55, 0, -0.1], knR: [1.45, 0, 0], ankR: [0.95, 0, 0],
+    hipL: [-1.05, 0, 0.1], knL: [1.2, 0, 0], ankL: [0.6, 0, 0],
+  },
+  // Рука отсчитывается от скрученной груди: её разворот и наклон погашены в плече, кулак идёт точно в цель
+  drive: {
+    pelvis: [0.08, 0.22, 0], spine: [0.22, 0.36, -0.04], chest: [0.1, 0.3, -0.03], neck: [-0.3, -0.7, 0],
+    shR: [-2.0, 0, -0.8], elR: [-0.04, 0, 0],
+    shL: [0.85, 0, 0.35], elL: [-1.75, 0, 0],
+    hipR: [-0.6, 0, -0.06], knR: [0.55, 0, 0], ankR: [0.7, 0, 0],
+    hipL: [0.5, 0, 0.1], knL: [0.95, 0, 0], ankL: [0.95, 0, 0],
+  },
+  through: {
+    pelvis: [0.12, 0.3, 0], spine: [0.3, 0.5, -0.06], chest: [0.16, 0.4, -0.04], neck: [-0.38, -0.9, 0],
+    shR: [-2.0, 0, -1.05], elR: [-0.18, 0, 0],
+    shL: [1.0, 0, 0.5], elL: [-1.35, 0, 0],
+    hipR: [-0.8, 0, -0.04], knR: [0.85, 0, 0], ankR: [0.75, 0, 0],
+    hipL: [0.62, 0, 0.12], knL: [0.75, 0, 0], ankL: [1.0, 0, 0],
+  },
+};
+
+function mirrorPose(pose) {
+  const out = {};
+  for (const n in pose) {
+    const last = n[n.length - 1], name = last === 'L' ? n.slice(0, -1) + 'R' : last === 'R' ? n.slice(0, -1) + 'L' : n;
+    out[name] = [pose[n][0], -pose[n][1], -pose[n][2]];
+  }
+  return out;
+}
+
+const BLOW = {
+  R: BLOW_R,
+  L: { coil: mirrorPose(BLOW_R.coil), drive: mirrorPose(BLOW_R.drive), through: mirrorPose(BLOW_R.through) },
+};
+const LEG_JOINTS = new Set(['hipL', 'knL', 'ankL', 'hipR', 'knR', 'ankR']);
+
+// f: 0..1 замах, 1..2 кулак идёт к цели, 2..3 навылет. k — вес позы, legK — насколько участвуют ноги
+function blowPose(acc, side, f, pitch, k, legK = 1) {
+  const set = BLOW[side], arm = 'sh' + side;
+  const x = f < 1 ? f : f < 2 ? f - 1 : Math.min(1, f - 2);
+  const e = f < 1 ? x * x * (3 - 2 * x) : f < 2 ? x * x : 1 - (1 - x) * (1 - x) * (1 - x);
+  const from = f < 2 ? set.coil : set.drive, to = f < 1 ? set.coil : f < 2 ? set.drive : set.through;
+  const lift = f < 1 ? 0 : f < 2 ? e : 1;
+  for (const n of JOINTS) {
+    const a = acc[n], w = (LEG_JOINTS.has(n) ? legK : 1) * k * (f < 1 ? e : 1);
+    if (w <= 0) continue;
+    for (let i = 0; i < 3; i++) {
+      let v = lerp(from[n][i], to[n][i], f < 1 ? 1 : e);
+      if (i === 0 && n === arm) v -= pitch * lift;
+      a[i] = lerp(a[i], v, w);
+    }
+  }
+}
+
+// Тело, получившее удар. k — корпус складывается сразу и с отскоком, h — голова и конечности догоняют позже
+export function newReel() { return { k: 0, v: 0, h: 0, hv: 0, kind: 0, s: 1, ext: false }; }
+
+export function reelHit(r, k = 1, kind = -1) {
+  r.v += 24 * k;
+  r.hv += 12 * k;
+  r.kind = kind >= 0 ? kind : Math.floor(Math.random() * 3);
+  r.s = Math.random() < 0.5 ? -1 : 1;
+}
+
+export function tickReel(r, dt) {
+  const d = Math.min(dt, 0.05);
+  r.v += (-190 * r.k - 9 * r.v) * d;
+  r.k += r.v * d;
+  r.hv += (-64 * r.h - 5 * r.hv) * d;
+  r.h += r.hv * d;
+}
+
+function reelPose(acc, r) {
+  const k = r.k, h = r.h, s = r.s, ah = Math.abs(h);
+  if (Math.abs(k) + ah < 0.01) return;
+  // Общее: корпус сложился, руки и ноги отстают от тела
+  acc.spine[0] += 0.55 * k;
+  acc.chest[0] += 0.3 * k;
+  acc.shL[0] -= 0.7 * h; acc.shR[0] -= 0.6 * h;
+  acc.shL[2] += 0.45 * h; acc.shR[2] -= 0.45 * h;
+  acc.elL[0] -= 0.5 * ah; acc.elR[0] -= 0.35 * ah;
+  acc.hipL[0] -= 0.8 * h; acc.hipR[0] -= 0.55 * h;
+  acc.knL[0] += 0.7 * ah; acc.knR[0] += 0.4 * ah;
+  if (r.kind === 0) {
+    // В корпус: подбородок к груди, затем голову откидывает
+    acc.spine[0] += 0.35 * k;
+    acc.neck[0] += 0.65 * k - 0.45 * h;
+  } else if (r.kind === 1) {
+    // В челюсть: голова запрокидывается и уходит вбок, спина выгибается
+    acc.neck[0] -= 1.05 * k;
+    acc.neck[1] += s * 0.75 * k;
+    acc.neck[2] += s * 0.35 * k;
+    acc.chest[0] -= 0.55 * k;
+    acc.spine[0] -= 0.35 * k;
+    acc.chest[1] += s * 0.4 * k;
+  } else {
+    // Сбоку: корпус скручивает, таз уходит в другую сторону
+    acc.pelvis[1] -= s * 0.4 * k;
+    acc.spine[1] += s * 0.7 * k;
+    acc.chest[1] += s * 0.6 * k;
+    acc.neck[1] += s * 0.7 * h;
+    acc.spine[2] += s * 0.25 * k;
+  }
+}
+
+// Удар дошёл: кулак доходит до конца, потом рука и корпус отпускают
+export function followBlow(o, dt) {
+  const b = o.blow;
+  if (!b || b.f < 2) return;
+  if (o.driven) return;
+  b.f += dt * 1.5;
+  if (b.f > 2.55) b.k = Math.max(0, 1 - (b.f - 2.55) / 0.45);
+  if (b.f >= 3) { o.blow = null; o.poseQ = null; }
+}
+
+// Корпус лицом по направлению dir; lean > 0 — наклон вперёд, в удар
+const _bx = new THREE.Vector3(), _by = new THREE.Vector3(), _bm = new THREE.Matrix4(), _bq = new THREE.Quaternion();
+const AXIS_X = new THREE.Vector3(1, 0, 0);
+export function blowQuat(out, dir, lean = 0) {
+  _by.set(0, 1, 0).addScaledVector(dir, -dir.y);
+  if (_by.lengthSq() < 0.02) _by.set(0, 0, 1).addScaledVector(dir, -dir.z);
+  _by.normalize();
+  _bx.crossVectors(_by, dir);
+  out.setFromRotationMatrix(_bm.makeBasis(_bx, _by, dir));
+  return out.multiply(_bq.setFromAxisAngle(AXIS_X, lean));
+}
+
 const _pivot = new THREE.Vector3();
 
 export class HeroModel {
-  constructor() {
+  // opts.external: только риг и анимация — тело подключает тот, кто создал модель (см. boss/kinmodel.js)
+  constructor(opts = {}) {
     this.group = new THREE.Group();
     this.j = {};
     this.t = 0;
     this.runBob = 0;
     this.POSE = POSE;
     this.build();
-    this.group.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     this.skinned = null;
     this.cape = null;
+    if (opts.external) {
+      // Манекен не нужен: убираем его сетки, остаются только суставы
+      const meshes = [];
+      this.group.traverse((o) => { if (o.isMesh) meshes.push(o); });
+      for (const m of meshes) { m.parent.remove(m); m.geometry.dispose(); }
+      return;
+    }
+    this.group.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     this.loadBody();
   }
 
@@ -316,6 +479,14 @@ export class HeroModel {
       const a = acc[n], v = POSE.brake[n];
       for (let i = 0; i < 3; i++) a[i] = lerp(a[i], v[i], p.brake);
     }
+    // Отброшен ударом и лежит без сил (бой с генералом и его солдатами)
+    for (const [w, pose] of [[p.knock, POSE.knock], [p.downed, POSE.downed]]) {
+      if (!(w > 0.01)) continue;
+      for (const n in pose) {
+        const a = acc[n], v = pose[n];
+        for (let i = 0; i < 3; i++) a[i] = lerp(a[i], v[i], w);
+      }
+    }
 
     // Походка по биомеханике человека. Фаза u (0..1) — цикл левой ноги, 0 — касание пяткой.
     // Тазобедренный, коленный и голеностоп идут по реальным кривым шага / бега; стопа
@@ -445,6 +616,14 @@ export class HeroModel {
       acc.shL[2] += 0.3 * k;
     }
 
+    // Блок: перекрывает руки и корпус
+    if (p.guard > 0.01) {
+      const G = POSE.guard;
+      mixArm(acc, 'L', G.shL, G.elL, p.guard);
+      mixArm(acc, 'R', G.shR, G.elR, p.guard);
+      for (const n of ['spine', 'chest', 'neck', 'hipL', 'knL', 'hipR', 'knR']) acc[n][0] += G[n][0] * p.guard;
+    }
+
     // Держим тяжёлое над головой
     if (p.lift > 0.01) {
       mixArm(acc, 'L', [-2.85, 0, 0.32], [-0.55, 0, 0], p.lift);
@@ -472,8 +651,20 @@ export class HeroModel {
       acc.shL[0] += -0.55 * w;
     }
 
+    // Отозвался на удар
+    if (p.reel) reelPose(acc, p.reel);
+
+    // Удар сцены: герой или генерал в серии
+    if (p.blow && p.blow.k > 0) blowPose(acc, p.blow.side, p.blow.f, p.blow.pitch || 0, p.blow.k);
+
     // Удар
-    if (p.punch) {
+    if (p.punch && p.punch.heavy) {
+      // В большом бою обычный удар тоже идёт всем телом: короткий замах, долгий проход и возврат
+      const { side, t, pitch, hitAt } = p.punch;
+      const f = t < hitAt ? 0.35 + 1.65 * (t / hitAt) : 2 + (t - hitAt) / (1 - hitAt);
+      const air = 1 - p.stand / total;
+      blowPose(acc, side, f, pitch, smoothstep(0, 0.08, t) * (1 - smoothstep(0.72, 1, t)), air);
+    } else if (p.punch) {
       const { side, t, power, pitch } = p.punch;
       const s = side === 'R' ? 1 : -1;
       const strike = smoothstep(0.12, 0.3, t);
@@ -563,7 +754,7 @@ function mixArm(acc, side, sh, el, w) {
 
 // Рельеф (bump) по процедурной карте высот h (в метрах) — без текстур.
 // Метод Mikkelsen: производные позиции и высоты по экрану дают наклон нормали.
-const BUMP_GLSL = `
+export const BUMP_GLSL = `
   vec3 heroBump(vec3 pos, vec3 n, float h) {
     vec3 dpx = dFdx(pos), dpy = dFdy(pos);
     float dhx = dFdx(h), dhy = dFdy(h);
@@ -578,7 +769,7 @@ const BUMP_GLSL = `
 // атлетичная фигура (плечи, грудь, спина V-силуэтом, руки, ноги, узкая талия) и мужественное
 // лицо (широкая чёткая челюсть, квадратный подбородок, скулы, надбровные дуги).
 // Смещения — вдоль нормалей и «раздвиганием» по X; всё плавно затухает (без швов и складок).
-function sculptBody(sk, body, eyes) {
+export function sculptBody(sk, body, eyes) {
   const g = body.geometry, P = g.attributes.position, N = g.attributes.normal;
   g.computeBoundingBox();
   const u = (g.boundingBox.max.y - g.boundingBox.min.y) / 1.88;
@@ -654,7 +845,7 @@ function sculptBody(sk, body, eyes) {
 }
 
 // Точки скелета в исходной позе в координатах сетки, переведённые в метры
-function bodyRefs(sk, mesh) {
+export function bodyRefs(sk, mesh) {
   mesh.geometry.computeBoundingBox();
   const bb = mesh.geometry.boundingBox;
   const u = (bb.max.y - bb.min.y) / 1.88; // единиц сетки на метр
@@ -992,7 +1183,7 @@ function buildBoots(sk, body) {
 }
 
 // Лофт по длине стопы: сечения — суперэллипсы, подошва плоская
-function makeBootGeometry(L, W) {
+export function makeBootGeometry(L, W) {
   const NS = 28, NR = 24;
   const pos = [], col = [], idx = [];
   for (let i = 0; i <= NS; i++) {
@@ -1025,13 +1216,14 @@ function makeBootGeometry(L, W) {
 }
 
 // Глаза: белок, серо-голубая радужка с тёмным ободком и лучиками, зрачок, влажный блеск
-function createEyeMaterial(mesh) {
+export function createEyeMaterial(mesh, irisIn = 'vec3(0.2, 0.32, 0.42)', irisOut = 'vec3(0.34, 0.44, 0.5)') {
   // Радужка и зрачок — по расстоянию от оси взгляда каждого глаза (центры из габаритов меша)
   mesh.geometry.computeBoundingBox();
   const bb = mesh.geometry.boundingBox;
   const R = (bb.max.y - bb.min.y) / 2, cx = (bb.max.x - bb.min.x) / 4, cy = (bb.max.y + bb.min.y) / 2;
   const cz = bb.max.z - R, f = (v) => v.toFixed(5);
   const mat = new THREE.MeshStandardMaterial({ roughness: 0.18, envMapIntensity: 0.4 });
+  mat.customProgramCacheKey = () => 'eye-' + irisIn + irisOut;
   mat.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vBind;')
@@ -1048,7 +1240,7 @@ function createEyeMaterial(mesh) {
           float ring = smoothstep(0.38, 0.54, r);
           float rays = 0.8 + 0.2 * sin(atan(q.y, q.x) * 37.0) * sin(atan(q.y, q.x) * 11.0 + 1.3);
           vec3 sclera = vec3(0.6, 0.57, 0.54) * (0.82 + 0.18 * front);
-          vec3 irisC = mix(vec3(0.2, 0.32, 0.42), vec3(0.34, 0.44, 0.5), smoothstep(0.24, 0.42, r)) * rays;
+          vec3 irisC = mix(${irisIn}, ${irisOut}, smoothstep(0.24, 0.42, r)) * rays;
           irisC = mix(irisC, vec3(0.05, 0.07, 0.1), ring * 0.8);
           diffuseColor.rgb = mix(mix(sclera, irisC, iris), vec3(0.01), pupil);
         }`);

@@ -8,13 +8,30 @@ const S_NONE = 0, S_FLY = 1, S_REST = 2, S_SINK = 3, S_HELD = 4;
 const CELL = 8, TABLE = 1 << 14;
 const hashCell = (ix, iz) => ((ix * 73856093) ^ (iz * 19349663)) & (TABLE - 1);
 
+const CONCRETE = new THREE.Color(0x77706a);
+
+// Кусок бетона, а не ровный кирпич: рваные грани. Совпадающие вершины смещаем одинаково, чтобы не было щелей
+function rubbleGeometry() {
+  const box = new THREE.BoxGeometry(1, 1, 1, 2, 2, 2);
+  const p = box.attributes.position, off = new Map();
+  for (let i = 0; i < p.count; i++) {
+    const key = `${p.getX(i)},${p.getY(i)},${p.getZ(i)}`;
+    if (!off.has(key)) off.set(key, [0, 1, 2].map(() => (Math.random() - 0.5) * 0.3));
+    const o = off.get(key);
+    p.setXYZ(i, p.getX(i) + o[0], p.getY(i) + o[1], p.getZ(i) + o[2]);
+  }
+  const geo = box.toNonIndexed();
+  geo.computeVertexNormals();
+  return geo;
+}
+
 // Обломки: один InstancedMesh на все куски + упрощённая физика:
 // гравитация, рельеф, крыши и стены зданий, столкновения кусков друг с другом.
 export class Debris {
   constructor(scene, { max = DEBRIS.max, glass = false } = {}) {
     const N = this.max = max;
     this.glass = glass;
-    const geo = new THREE.BoxGeometry(1, 1, 1);
+    const geo = glass ? new THREE.BoxGeometry(1, 1, 1) : rubbleGeometry();
     // Стекло — блестящее и отражает небо, бетон — матовый
     const mat = glass
       ? new THREE.MeshStandardMaterial({ roughness: 0.05, metalness: 0.9, envMapIntensity: 1.5 })
@@ -79,7 +96,9 @@ export class Debris {
     this.thrown[i] = 0;
     this.state[i] = S_FLY;
 
-    this._c.copy(color).multiplyScalar(this.glass ? 0.9 + Math.random() * 0.2 : 0.6 + Math.random() * 0.35);
+    if (this.glass) this._c.copy(color).multiplyScalar(0.9 + Math.random() * 0.2);
+    // Внутри дом серый, какого бы цвета ни был снаружи
+    else this._c.copy(color).lerp(CONCRETE, 0.45 + Math.random() * 0.4).multiplyScalar(0.5 + Math.random() * 0.4);
     this.mesh.setColorAt(i, this._c);
     this.mesh.instanceColor.needsUpdate = true;
     this.writeMatrix(i);

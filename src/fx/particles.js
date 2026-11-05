@@ -27,6 +27,7 @@ export class Particles {
     this.rise = new Float32Array(max);
     this.grav = new Float32Array(max);
     this.alpha0 = new Float32Array(max);
+    this.plume = new Uint8Array(max);
     this.next = 0;
 
     this.material = new THREE.ShaderMaterial({
@@ -73,7 +74,8 @@ export class Particles {
     this.material.uniforms.uScale.value = heightPx / (2 * Math.tan(THREE.MathUtils.degToRad(fovDeg) / 2));
   }
 
-  // opts: size [min,max], speed, life [min,max], delay, rise (м/с² вверх), gravity, flat (разлёт по земле), color, dir, alpha
+  // opts: size [min,max], speed, life [min,max], delay, rise (м/с² вверх), gravity, flat (разлёт по земле), color, dir, alpha,
+  // plume (дым столбом: плотность держится почти до конца жизни, а не тает сразу)
   burst(pos, count, opts = {}) {
     const [smin, smax] = opts.size || [1, 3];
     const [lmin, lmax] = opts.life || [0.5, 1.5];
@@ -104,6 +106,7 @@ export class Particles {
       this.rise[i] = opts.rise || 0;
       this.grav[i] = opts.gravity || 0;
       this.alpha0[i] = opts.alpha ?? 1;
+      this.plume[i] = opts.plume ? 1 : 0;
 
       const shade = 0.85 + Math.random() * 0.25;
       this.aColor[i3] = color.r * shade; this.aColor[i3 + 1] = color.g * shade; this.aColor[i3 + 2] = color.b * shade;
@@ -126,7 +129,7 @@ export class Particles {
       this.aPos[i3 + 1] = Math.max(0.3, this.aPos[i3 + 1] + this.vel[i3 + 1] * dt);
       this.aPos[i3 + 2] += this.vel[i3 + 2] * dt;
       this.aSize[i] = this.size0[i] + (this.size1[i] - this.size0[i]) * Math.sqrt(t);
-      this.aAlpha[i] = this.alpha0[i] * Math.min(1, t * 8) * (1 - t) * (1 - t);
+      this.aAlpha[i] = this.alpha0[i] * Math.min(1, t * 8) * (this.plume[i] ? 1 - t * t * t : (1 - t) * (1 - t));
     }
     const a = this.geo.attributes;
     a.position.needsUpdate = a.aSize.needsUpdate = a.aAlpha.needsUpdate = a.aColor.needsUpdate = true;

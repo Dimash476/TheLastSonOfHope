@@ -57,7 +57,11 @@ export class HUD {
   }
 
   show(v) { this.el.hud.classList.toggle('hidden', !v); }
-  toggleHelp() { this.el.help.classList.toggle('hidden'); }
+  toggleHelp() {
+    // В бою подсказка по умолчанию скрыта (#hud.fight): там H её показывает
+    if (this.el.hud.classList.contains('fight')) this.el.help.classList.toggle('shown');
+    else this.el.help.classList.toggle('hidden');
+  }
 
   toast(text, t = 1.6) {
     this.el.toast.textContent = text;

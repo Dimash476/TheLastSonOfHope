@@ -33,7 +33,7 @@ export function loadSkinnedHero(url, opts) {
   return new GLTFLoader().loadAsync(url).then((gltf) => new SkinnedHero(gltf, opts));
 }
 
-class SkinnedHero {
+export class SkinnedHero {
   // opts: { height, material(mesh) → Material, chestScale }
   constructor(gltf, opts = {}) {
     this.scene = gltf.scene;

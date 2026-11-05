@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { PLAYER as P, MACH, WORLD, SPACE } from '../config.js';
-import { HeroModel } from './model.js';
+import { newReel, tickReel, HeroModel } from './model.js';
 import { clamp, damp, lerp, smoothstep } from '../utils.js';
 import { EyeLaser } from './laser.js';
 import { BODIES, CAP_NY, nearestBody, bodyGroundAt } from '../world/bodies.js';
@@ -59,8 +59,13 @@ export class Player {
     this.boosting = false;
     this.slowmo = 0;     // замедление времени (читает главный цикл)
     this.knockT = 0;     // отброшен ударом босса: управление ненадолго потеряно
+    this.reel = newReel();   // как тело отзывается на удар
+    this.blow = null;        // удар сцены: { side, f, k, pitch }
+    this.poseQ = null;       // корпус ведёт сцена, а не полёт
     this.throwT = -1;    // бросок мяча: время с начала замаха (-1 — не бросаем)
     this.stepIdx = 0;
+    this.driven = null;  // функция (dt, input, camDir): телом управляет режим, а не игрок (серия ударов, сцены)
+    this.lockDir = null; // направление на цель: корпус и удар идут туда, а не за камерой
 
     this.anim = { stand: 1, hover: 0, fly: 0, slam: 0, run: 0, runPhase: 0, sprint: 0, punch: null, charge: 0, bob: 0, lift: 0 };
     this.spawn();
@@ -115,6 +120,21 @@ export class Player {
       return;
     }
 
+    // Телом управляет режим (серия ударов, сцены): ввод не двигает героя
+    if (this.driven) {
+      this.driven(dt, input, camDir);
+      this.tickPunch(dt, camDir);
+      this.laser.update(dt, false, camDir, this);
+      this.updateOrientation(dt, camDir, camFlat);
+      this.updateAnimation(dt, camDir);
+      this.updateCloth(dt);
+      this.updateHeld();
+      W.effects.setCharge(this.model.fistWorldPos('R', _cp), 0);
+      W.effects.chargeK = 0;
+      W.audio?.setCharge(0);
+      return;
+    }
+
     // ------------------------------------------------ способности
     if (input.slam && !this.grounded && !this.slamming) {
       this.slamming = true;
@@ -150,14 +170,14 @@ export class Player {
     }
     if (input.punch && this.held) { this.punchHeld(camDir); input.punch = false; }
 
-    if (input.punch && (this.punchT < 0 || this.punchT > P.punchDuration * 0.55) && this.charge <= 0 && !this.slamming) {
+    if (input.punch && (this.punchT < 0 || this.punchT > (this.punchLen ?? P.punchDuration) * 0.55) && this.charge <= 0 && !this.slamming) {
       this.startPunch(0);
       if (this.speed < 30) this.vel.addScaledVector(camDir, 10);
     }
 
     // Лазер из глаз (удерживать Z): бьёт туда, куда смотрит камера
     this.lasering = input.laser && !this.slamming && !this.held && this.charge <= 0;
-    this.laser.update(dt, this.lasering, camDir, this);
+    this.laser.update(dt, this.lasering, this.laserAim || camDir, this);
 
     // Погладить собаку или кошку: рядом с животным ПКМ гладит, а не заряжает удар
     this.petTarget = this.grounded && !this.held && !this.lasering && this.charge <= 0 ? W.animals?.findPettable(this.pos, 2.4) : null;
@@ -280,7 +300,7 @@ export class Player {
       W.effects.flash(this.center, 25);
       W.audio?.boom(1.0, this.center.clone());
       W.effects.impactFX(0.7, null, 0.15, 10);
-      W.toast?.('SONIC BOOM');
+      if (!W.boss?.fightOn) W.toast?.('SONIC BOOM');
       if (this.pos.y - this.groundY < 60) W.impact?.(this.center.clone(), 70, 18);
     } else if (this.supersonic && mach < 0.9) this.supersonic = false;
 
@@ -308,19 +328,35 @@ export class Player {
       W.dust.burst(this.pos.clone().setY(this.groundY + 0.3), 1, { size: [1.5, 3], speed: 2, life: [0.6, 1.2] });
     }
 
-    // ------------------------------------------------ удар: момент попадания
-    if (this.punchT >= 0) {
-      this.punchT += dt;
-      if (!this.punchHit && this.punchT >= P.punchHitTime) {
-        this.punchHit = true;
-        if (this.punchPower === 0) this.resolvePunch(camDir);
-      }
-      if (this.punchT > P.punchDuration * (1 + this.punchPower * 0.5)) this.punchT = -1;
-    }
+    this.tickPunch(dt, camDir);
 
     this.updateOrientation(dt, camDir, camFlat);
     this.updateAnimation(dt, camDir);
-    // Плащ: гравитация и встречный поток в системе координат персонажа
+    this.updateCloth(dt);
+    this.updateHeld();
+
+    // Свечение кулака при зарядке
+    const ck = this.charge / P.heavyMaxCharge;
+    W.effects.setCharge(this.model.fistWorldPos('R', _cp), ck);
+    W.effects.chargeK = ck;
+    W.audio?.setCharge(ck);
+    if (ck > 0.3) W.effects.shake(ck * ck * dt * 0.8);
+    if (ck > 0 && Math.random() < ck * 0.8) W.sparks.burst(_cp, 1, { size: [0.2, 0.5], speed: 3, life: [0.2, 0.4], color: 0xffc860 });
+  }
+
+  // Удар: момент попадания и конец анимации
+  tickPunch(dt, camDir) {
+    if (this.punchT < 0) return;
+    this.punchT += dt;
+    if (!this.punchHit && this.punchT >= (this.punchHitAt ?? P.punchHitTime)) {
+      this.punchHit = true;
+      if (this.punchPower === 0) this.resolvePunch(camDir);
+    }
+    if (this.punchT > (this.punchLen ?? P.punchDuration) * (1 + this.punchPower * 0.5)) this.punchT = -1;
+  }
+
+  // Плащ: гравитация и встречный поток в системе координат персонажа
+  updateCloth(dt) {
     {
       const inv = this.root.quaternion.clone().invert();
       const g = new THREE.Vector3(0, -14, 0).applyQuaternion(inv);
@@ -339,15 +375,6 @@ export class Player {
       this.prevRootQ = (this.prevRootQ || new THREE.Quaternion()).copy(this.root.quaternion);
       this.model.updateCape(dt, g, wind, this.grounded, frameRot);
     }
-    this.updateHeld();
-
-    // Свечение кулака при зарядке
-    const ck = this.charge / P.heavyMaxCharge;
-    W.effects.setCharge(this.model.fistWorldPos('R', _cp), ck);
-    W.effects.chargeK = ck;
-    W.audio?.setCharge(ck);
-    if (ck > 0.3) W.effects.shake(ck * ck * dt * 0.8);
-    if (ck > 0 && Math.random() < ck * 0.8) W.sparks.burst(_cp, 1, { size: [0.2, 0.5], speed: 3, life: [0.2, 0.4], color: 0xffc860 });
   }
 
   // Торможение, м/с²: в атмосфере — сила полёта (~80 g) + сопротивление воздуха,
@@ -470,6 +497,7 @@ export class Player {
           W.sparks.burst(_cp, 25, { size: [0.4, 1.2], speed: 30, life: [0.2, 0.6], color: 0xffd28a });
           W.debris.explode(_cp, 25, 30);
           W.audio?.punch(1);
+          W.boss?.onRam?.(_cp, dir, speed);
           continue;
         }
 
@@ -826,9 +854,33 @@ export class Player {
     const speed = this.vel.length();
     const acting = this.punchT >= 0 || this.charge > 0 || !!this.held || this.lasering;
 
+    // Корпус ведёт сцена: удар в серии, падение
+    if (this.poseQ) {
+      this.quat.copy(this.poseQ);
+      this.flyK = 0;
+      this.root.position.copy(this.pos).addScaledVector(UP, 1.0);
+      this.root.quaternion.copy(this.quat);
+      return;
+    }
+    // Отброшен ударом: спина ведёт полёт, тело медленно кувыркается
+    if (this.knockT > 0 && speed > 15 && !this.grounded) {
+      this.tumble = (this.tumble || 0) + 2.2 * dt;
+      const z = this.vel.clone().divideScalar(-speed), x = new THREE.Vector3().crossVectors(UP, z);
+      if (x.lengthSq() < 1e-3) x.set(1, 0, 0);
+      x.normalize();
+      const y = new THREE.Vector3().crossVectors(z, x);
+      _q.setFromRotationMatrix(_m.makeBasis(x, y, z)).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), this.tumble));
+      this.quat.slerp(_q, 1 - Math.exp(-14 * dt));
+      this.flyK = 0;
+      this.root.position.copy(this.pos).addScaledVector(UP, 1.0);
+      this.root.quaternion.copy(this.quat);
+      return;
+    }
+
     // Куда смотрит персонаж по горизонтали
     let targetFacing;
     if (this.petting) targetFacing = new THREE.Vector3(this.petting.pos.x - this.pos.x, 0, this.petting.pos.z - this.pos.z).normalize();
+    else if (this.lockDir && Math.hypot(this.lockDir.x, this.lockDir.z) > 0.05) targetFacing = new THREE.Vector3(this.lockDir.x, 0, this.lockDir.z).normalize();
     else if (acting) targetFacing = camFlat;
     else if (this.grounded || this.falling) targetFacing = hv.lengthSq() > 1 ? hv.clone().normalize() : this.facing;
     else targetFacing = speed > 5 && hv.lengthSq() > 4 ? hv.clone().normalize() : camFlat;
@@ -871,6 +923,11 @@ export class Player {
 
   updateAnimation(dt, camDir) {
     const a = this.anim;
+    if (!this.reel.ext) tickReel(this.reel, dt);
+    a.reel = this.reel;
+    a.blow = this.blow;
+    // У героя knockT; у отряда свой счётчик, вес ему задаёт Kin.animate
+    if (this.knockT !== undefined) a.knock = damp(a.knock || 0, this.knockT > 0 && !this.grounded ? 1 : 0, 12, dt);
     const air = this.grounded ? 0 : 1;
     const slam = this.slamming ? 1 : 0;
     const fall = this.falling ? 1 : 0;
@@ -915,9 +972,10 @@ export class Player {
     a.land = damp(a.land || 0, this.landT > 0.25 && this.grounded ? 1 : 0, this.landT > 0.25 ? 18 : 5, dt);
     a.bob = air * (1 - this.flyK) * Math.sin(performance.now() * 0.002) * 0.06;
 
-    const pitch = Math.asin(clamp(camDir.y, -1, 1));
+    const pitch = Math.asin(clamp((this.lockDir || camDir).y, -1, 1));
+    const punchAll = (this.punchLen ?? P.punchDuration) * (1 + this.punchPower * 0.5);
     a.punch = this.punchT >= 0
-      ? { side: this.punchSide, t: this.punchT / (P.punchDuration * (1 + this.punchPower * 0.5)), power: this.punchPower, pitch }
+      ? { side: this.punchSide, t: this.punchT / punchAll, power: this.punchPower, pitch, heavy: !!this.punchLen, hitAt: (this.punchHitAt ?? P.punchHitTime) / punchAll }
       : null;
     a.charge = this.charge;
     a.lift = damp(a.lift, this.held && this.held.kind !== 'person' ? 1 : 0, 10, dt);

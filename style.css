@@ -176,6 +176,11 @@ kbd {
 #hero-ui.low #hero-fill { background: #ff2a2a; }
 #hero-ui.low #hero-bar { box-shadow: 0 0 12px rgba(255, 40, 40, 0.8); }
 
+#ship-ui { position: absolute; right: 24px; top: 112px; width: 240px; text-align: right; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8); }
+.ship-head { font-size: 11px; font-weight: 800; letter-spacing: 3px; color: #e8a080; }
+#ship-bar { position: relative; height: 8px; margin-top: 5px; border-radius: 2px; background: rgba(20, 10, 6, 0.7); border: 1px solid rgba(232, 96, 76, 0.5); overflow: hidden; }
+#ship-fill { position: absolute; right: 0; top: 0; bottom: 0; width: 100%; background: linear-gradient(90deg, #ff8a30, #c2381c); transition: width 0.15s; }
+
 #boss-marker { position: absolute; left: 0; top: 0; margin: -10px 0 0 -40px; width: 80px; text-align: center; font-size: 12px; font-weight: 700; color: #ffb070; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9); }
 #boss-marker .pin { width: 12px; height: 12px; margin: 0 auto 3px; transform: rotate(45deg); border: 2px solid #ff9a4a; background: rgba(255, 120, 40, 0.35); }
 #boss-marker.edge .pin { background: #ff9a4a; }
@@ -189,6 +194,54 @@ kbd {
 #map-fade { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity 0.8s ease-out; }
 #map-fade.black { opacity: 1; transition: none; }
 #hurt-flash { position: absolute; inset: 0; opacity: 0; pointer-events: none; background: radial-gradient(ellipse at center, rgba(255, 0, 0, 0) 45%, rgba(200, 20, 10, 0.55) 100%); }
+
+/* ---------- Вторжение ---------- */
+.mode.invasion { border-color: rgba(214, 74, 58, 0.55); }
+.mode.invasion .mode-title { color: #e8604c; }
+.mode.invasion:hover { border-color: #e8604c; background: rgba(44, 18, 16, 0.88); }
+
+#inv-alert {
+  position: absolute; top: 60px; left: 50%; transform: translateX(-50%); width: min(560px, 86vw); padding: 14px 18px;
+  background: rgba(10, 8, 8, 0.72); border-left: 3px solid #e8604c; font-family: Consolas, 'Courier New', monospace;
+}
+#inv-alert .head { font-size: 12px; font-weight: 700; letter-spacing: 4px; color: #e8604c; }
+#inv-alert-body { margin-top: 8px; min-height: 92px; font-size: 14px; line-height: 1.55; color: #f0e6da; white-space: pre-line; }
+
+#inv-sub {
+  position: absolute; left: 50%; bottom: 13vh; transform: translateX(-50%); width: min(760px, 86vw); text-align: center;
+  font-size: 19px; line-height: 1.4; color: #f6efe6; text-shadow: 0 2px 6px rgba(0, 0, 0, 0.95), 0 0 2px #000;
+}
+
+#inv-hint { position: absolute; left: 50%; top: 88px; transform: translateX(-50%); font-size: 14px; font-weight: 700; letter-spacing: 2px; white-space: nowrap; color: #f6e4c8; text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95); }
+
+/* Киношные полосы; в сцене скрываем приборы */
+#cine-bars i { position: absolute; left: 0; right: 0; height: 0; background: #000; transition: height 0.7s ease; pointer-events: none; }
+#cine-bars i:first-child { top: 0; }
+#cine-bars i:last-child { bottom: 0; }
+#cine-bars.on i { height: 11vh; }
+#hud.cine #speedo, #hud.cine #stats, #hud.cine #help, #hud.cine #crosshair, #hud.cine #charge-wrap, #hud.cine #interact, #hud.cine #inv-hint, #hud.cine #boss-ui, #hud.cine #hero-ui, #hud.cine #boss-marker { display: none; }
+/* В бою подсказка управления не закрывает экран (H — показать) */
+#hud.fight #help:not(.shown) { display: none; }
+
+/* Радиоперехват: маленькая строка сбоку, бой не закрывает */
+#inv-radio { position: absolute; left: 24px; bottom: 24vh; max-width: min(380px, 60vw); font: 12px/1.45 ui-monospace, Consolas, monospace; letter-spacing: 0.5px; color: #c6d0ba; text-shadow: 0 1px 3px #000, 0 0 2px #000; }
+/* В этом бою полоса здоровья без отметок фаз */
+#hud.fight #boss-bar i { display: none; }
+
+/* Переговоры */
+#dialog { position: absolute; left: 50%; bottom: 13vh; transform: translateX(-50%); width: min(780px, 90vw); padding: 14px 20px; background: rgba(6, 6, 8, 0.66); border-top: 1px solid rgba(232, 96, 76, 0.55); }
+#dialog-who { font-size: 12px; font-weight: 800; letter-spacing: 4px; color: #e8604c; }
+#dialog-text { margin-top: 6px; min-height: 86px; font-size: 18px; line-height: 1.45; color: #f6efe6; }
+#dialog-next { margin-top: 8px; text-align: right; font-size: 12px; color: #cfd6da; }
+#dialog-next b { margin-right: 6px; padding: 5px 16px; font-size: 14px; letter-spacing: 3px; color: #fff; background: rgba(232, 96, 76, 0.28); border: 1px solid rgba(232, 96, 76, 0.75); border-radius: 3px; animation: dialog-next 1.2s ease-in-out infinite; }
+@keyframes dialog-next { 50% { background: rgba(232, 96, 76, 0.5); } }
+#dialog-options { margin-top: 10px; }
+.dialog-opt { padding: 5px 10px; font-size: 16px; color: #cfd6da; border-left: 2px solid transparent; }
+.dialog-opt b { display: inline-block; width: 20px; color: #8e9aa2; font-weight: 800; }
+.dialog-opt.sel { color: #fff; background: rgba(255, 255, 255, 0.09); border-left-color: #3fe0b0; }
+.dialog-opt.hot { color: #ff9f8a; }
+.dialog-opt.hot.sel { color: #ffc6b8; border-left-color: #e8604c; }
+.dialog-keys { margin-top: 8px; font-size: 12px; opacity: 0.6; }
 
 #battle-end { margin-top: 30px; }
 #end-title { font-size: 40px; font-weight: 900; letter-spacing: 6px; color: #3fe0b0; }

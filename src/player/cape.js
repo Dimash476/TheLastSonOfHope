@@ -17,7 +17,8 @@ const LATERAL_W = 0.72;   // доля полной ширины подола, к
 const _tmp = new THREE.Vector3();
 
 export class Cape {
-  constructor(parent) {
+  // opts: { color, sheenColor } — цвет ткани (по умолчанию винный плащ героя)
+  constructor(parent, opts = {}) {
     this.parent = parent; // группа модели персонажа (локальная система координат)
     const n = W * H;
     this.pos = new Float32Array(n * 3);
@@ -52,8 +53,8 @@ export class Cape {
     this.geo = geo;
     // Тяжёлая красная ткань с отливом; изнутри темнее, по краю — тёмная кайма
     const mat = new THREE.MeshPhysicalMaterial({
-      color: 0x5e1424, roughness: 0.65, metalness: 0.0, side: THREE.DoubleSide,
-      sheen: 0.7, sheenRoughness: 0.45, sheenColor: new THREE.Color(0.5, 0.16, 0.2),
+      color: opts.color ?? 0x5e1424, roughness: 0.65, metalness: 0.0, side: THREE.DoubleSide,
+      sheen: 0.7, sheenRoughness: 0.45, sheenColor: opts.sheenColor ?? new THREE.Color(0.5, 0.16, 0.2),
     });
     mat.onBeforeCompile = (shader) => {
       shader.vertexShader = shader.vertexShader

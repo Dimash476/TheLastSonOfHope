@@ -944,7 +944,8 @@ export class City {
         const delay = xf ? Math.random() * 0.05 : Math.min(dist / 90, 0.8) + Math.random() * 0.1;
         this.fx.debris.spawn(
           _v.x, _v.y, _v.z,
-          sx * (0.75 + Math.random() * 0.2), sy * (0.75 + Math.random() * 0.2), sz * (0.75 + Math.random() * 0.2),
+          // Башня рассыпается на бетонные глыбы, а не на этажи целиком
+          Math.min(9, sx * (0.75 + Math.random() * 0.2)), Math.min(9, sy * (0.75 + Math.random() * 0.2)), Math.min(9, sz * (0.75 + Math.random() * 0.2)),
           dir.x * push * 0.7 + dx * rad + (Math.random() - 0.5) * 4,
           (baseVel || 0) * 0.3 + dir.y * push * 0.5 + dy * rad * 0.5 + Math.random() * 3,
           dir.z * push * 0.7 + dz * rad + (Math.random() - 0.5) * 4,
@@ -1090,6 +1091,7 @@ export class City {
         this.fx.dust.burst(impactPoint, 24, { size: [10, 22], speed: 25, life: [4, 8], flat: true });
         this.fx.audio?.crumble(Math.min(1, f.segs.length / 8), 'concrete', impactPoint);
         this.onImpact?.(impactPoint, 30 + f.height * 0.5, 40);
+        this.onCollapse?.(impactPoint, f.height);
         this.scene.remove(f.mesh);
         for (const part of f.mesh.children) part.dispose();
         this.falling.splice(i, 1);

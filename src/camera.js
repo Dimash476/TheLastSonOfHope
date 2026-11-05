@@ -3,6 +3,7 @@ import { damp, smoothstep, clamp } from './utils.js';
 import { BODIES } from './world/bodies.js';
 
 const _b = new THREE.Vector3();
+const _f = new THREE.Vector3();
 
 // Камера от третьего лица: вращение мышью, отдаление и FOV растут со скоростью,
 // не проваливается в здания, под землю и под поверхность Луны и планет.
@@ -16,29 +17,46 @@ export class ThirdPersonCamera {
     this.lag = new THREE.Vector3();
     this.direction = new THREE.Vector3(0, 0, -1);
     this.fov = camera.fov;
+    this.focus = null;   // { pos, k, rate, dist, side, lift, fov } — камера поворачивается к цели, подходит к плечу и сужает угол
+    this.shot = null;    // { pos, look, fov } — готовый кадр кинематографической сцены
   }
 
   update(dt, input, player, city, shake) {
     this.yaw -= input.lookDX * this.sensitivity;
     this.pitch = clamp(this.pitch - input.lookDY * this.sensitivity, -1.45, 1.45);
 
+    // Цель в кадре: поворачиваем к ней поверх мыши; k — насколько сильно
+    const F = this.focus, fk = F ? F.k : 0;
+    if (fk > 0.001) {
+      _f.copy(F.pos).sub(player.pos);
+      _f.y -= 1.5;
+      const tYaw = Math.atan2(-_f.x, -_f.z), tPitch = Math.atan2(_f.y, Math.hypot(_f.x, _f.z));
+      let dy = tYaw - this.yaw;
+      dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+      const r = (1 - Math.exp(-(F.rate ?? 9) * dt)) * fk;
+      this.yaw += dy * r;
+      this.pitch = clamp(this.pitch + (tPitch - this.pitch) * r, -1.45, 1.45);
+    }
+
     const cp = Math.cos(this.pitch);
     this.direction.set(-Math.sin(this.yaw) * cp, Math.sin(this.pitch), -Math.cos(this.yaw) * cp);
 
     const speed = player.vel.length();
     const k = smoothstep(40, 800, speed);
-    this.dist = damp(this.dist, 5.5 + k * 7, 3, dt);
+    const distGoal = 5.5 + k * 7;
+    this.dist = damp(this.dist, F ? distGoal + ((F.dist ?? distGoal) - distGoal) * fk : distGoal, F && fk > 0.3 ? 8 : 3, dt);
 
     // Камера чуть отстаёт на большой скорости — ощущение рывка
     const lagTarget = player.vel.clone().multiplyScalar(-0.006);
     if (lagTarget.length() > 5) lagTarget.setLength(5);
+    lagTarget.multiplyScalar(1 - fk);
     this.lag.x = damp(this.lag.x, lagTarget.x, 4, dt);
     this.lag.y = damp(this.lag.y, lagTarget.y, 4, dt);
     this.lag.z = damp(this.lag.z, lagTarget.z, 4, dt);
 
-    const target = player.pos.clone().add(new THREE.Vector3(0, 1.5, 0));
+    const target = player.pos.clone().add(new THREE.Vector3(0, 1.5 + (F?.lift ?? 0) * fk, 0));
     const right = new THREE.Vector3(-this.direction.z, 0, this.direction.x).normalize();
-    target.addScaledVector(right, 0.55); // камера чуть через правое плечо
+    target.addScaledVector(right, 0.55 + ((F?.side ?? 0.55) - 0.55) * fk); // камера чуть через правое плечо
 
     // Не заходим внутрь зданий: идём от персонажа к камере и останавливаемся перед стеной
     let d = this.dist;
@@ -67,10 +85,17 @@ export class ThirdPersonCamera {
     this.camera.position.copy(pos);
     this.camera.lookAt(pos.clone().add(this.direction));
 
-    const fovTarget = 70 + 28 * k;
-    this.baseFov = damp(this.baseFov ?? 70, fovTarget, 4, dt);
+    let fovTarget = 70 + 28 * k * (1 - 0.5 * fk);
+    if (F?.fov) fovTarget += (F.fov - fovTarget) * fk;
+    this.baseFov = damp(this.baseFov ?? 70, fovTarget, F?.fov ? 9 : 4, dt);
     // extraFov — толчки от ударов и «прицеливание» при зарядке
     this.camera.fov = this.baseFov + (this.extraFov || 0);
+    // Кинематографический кадр: камера стоит там, где задумано
+    if (this.shot) {
+      this.camera.position.copy(this.shot.pos);
+      this.camera.lookAt(this.shot.look);
+      this.camera.fov = this.shot.fov ?? this.camera.fov;
+    }
     this.camera.updateProjectionMatrix();
   }
 }

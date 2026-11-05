@@ -23,6 +23,8 @@ export class GameAudio {
     this.tracks = [];
     this.trackIndex = 0;
     this.musicOn = true;
+    this.musicHold = false;  // своя музыка на паузе, пока играет тема боя (boss/theme.js)
+    this.themeOn = false;    // тема боя звучит: фоновая музыка игры молчит
     this.music = null;
     this.listener = null; // позиция камеры (Vector3), задаётся снаружи
     this.listenerRight = null; // направление «вправо» от камеры — для панорамы
@@ -35,7 +37,7 @@ export class GameAudio {
   }
 
   init() {
-    if (this.ctx) { this.ctx.resume(); this.music?.paused && this.musicOn && this.music.play().catch(() => {}); return; }
+    if (this.ctx) { this.ctx.resume(); this.music?.paused && this.musicOn && !this.musicHold && this.music.play().catch(() => {}); return; }
     const ctx = this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     // Браузер может приостановить звук (переключение окна, гарнитура) — сразу возобновляем
     ctx.onstatechange = () => { if (ctx.state !== 'running' && ctx.state !== 'closed' && !this.paused) ctx.resume().catch(() => {}); };
@@ -96,13 +98,15 @@ export class GameAudio {
     const ctx = this.ctx;
     this.master = ctx.createGain();
     this.master.gain.value = 0.75;
+    // Силу насыщения задаёт громкость на входе: сам изгиб кривой у работающего узла менять нельзя
+    this.outPre = ctx.createGain();
     const drive = ctx.createWaveShaper();
-    drive.curve = softClipCurve(1.6);
+    drive.curve = softClipCurve(2.7);
     drive.oversample = '2x';
-    const low = ctx.createBiquadFilter(); low.type = 'lowshelf'; low.frequency.value = 90; low.gain.value = 5;
+    const low = this.outLow = ctx.createBiquadFilter(); low.type = 'lowshelf'; low.frequency.value = 90; low.gain.value = 5;
     const body = ctx.createBiquadFilter(); body.type = 'peaking'; body.frequency.value = 220; body.Q.value = 0.8; body.gain.value = 2;
     const presence = ctx.createBiquadFilter(); presence.type = 'peaking'; presence.frequency.value = 2800; presence.Q.value = 0.9; presence.gain.value = 2.5;
-    const glue = ctx.createDynamicsCompressor();
+    const glue = this.outGlue = ctx.createDynamicsCompressor();
     glue.threshold.value = -16; glue.ratio.value = 3.5; glue.attack.value = 0.006; glue.release.value = 0.22; glue.knee.value = 8;
     const limiter = ctx.createDynamicsCompressor();
     limiter.threshold.value = -2; limiter.ratio.value = 20; limiter.attack.value = 0.001; limiter.release.value = 0.08; limiter.knee.value = 0;
@@ -111,8 +115,23 @@ export class GameAudio {
       this.muffle = ctx.createBiquadFilter(); this.muffle.type = 'lowpass'; this.muffle.frequency.value = 20000; this.muffle.Q.value = 0.7;
       this.muffle.connect(ctx.destination);
     }
-    this.master.connect(drive).connect(low).connect(body).connect(presence).connect(glue).connect(limiter).connect(this.muffle);
-    this.outChain = [this.master, drive, low, body, presence, glue, limiter];
+    this.master.connect(this.outPre).connect(drive).connect(low).connect(body).connect(presence).connect(glue).connect(limiter).connect(this.muffle);
+    this.outChain = [this.master, this.outPre, drive, low, body, presence, glue, limiter];
+    this.applyHeavy();
+  }
+
+  // Режим большого боя: выход жёстче — перегруз сильнее, низ шире, компрессор плотнее
+  setHeavy(on) {
+    this.heavy = on;
+    if (this.ctx) this.applyHeavy();
+  }
+
+  applyHeavy() {
+    const h = this.heavy;
+    this.outPre.gain.value = h ? 0.84 : 0.59;
+    this.outLow.gain.value = h ? 8 : 5;
+    this.outGlue.threshold.value = h ? -22 : -16;
+    this.outGlue.ratio.value = h ? 5 : 3.5;
   }
 
   // Постоянные каналы по дальности: громкость, «глухость», задержка (скорость звука), эхо
@@ -247,37 +266,56 @@ export class GameAudio {
     this.rotorGain.gain.setTargetAtTime(Math.min(0.5, k), ctx.currentTime, 0.25);
   }
 
-  // Лазер-плазма. charge 0..1 — накопление (нарастающий писк с ускоряющейся пульсацией),
-  // power 0..1 — мощность луча: электрический гул с вибрацией, треск разрядов, шипение.
+  // Лазер-плазма. charge 0..1 — накопление: низкий рык, который дрожит всё быстрее.
+  // power 0..1 — мощность луча: тяжёлый перегруженный рёв на самых низах, грязная середина, треск разрядов.
   buildLaser() {
     const ctx = this.ctx;
     this.laserOut = ctx.createGain(); this.laserOut.gain.value = 0.9;
     this.laserOut.connect(this.master);
-    // --- зарядка: два тона, громкость «дрожит» всё быстрее
+    // --- зарядка: две пилы через фильтр и перегруз, снизу суб, громкость «дрожит» всё быстрее
     this.chgOsc = [ctx.createOscillator(), ctx.createOscillator()];
-    this.chgOsc[0].type = 'sine'; this.chgOsc[1].type = 'triangle';
+    this.chgOsc[0].type = 'sawtooth'; this.chgOsc[1].type = 'sawtooth';
+    this.chgFilter = ctx.createBiquadFilter(); this.chgFilter.type = 'lowpass'; this.chgFilter.frequency.value = 180; this.chgFilter.Q.value = 3;
+    const chgDrive = ctx.createWaveShaper(); chgDrive.curve = softClipCurve(3); chgDrive.oversample = '2x';
     this.chgTrem = ctx.createGain(); this.chgTrem.gain.value = 0.6;
     this.chgLfo = ctx.createOscillator(); this.chgLfo.frequency.value = 6;
     const lfoDepth = ctx.createGain(); lfoDepth.gain.value = 0.4;
     this.chgLfo.connect(lfoDepth).connect(this.chgTrem.gain);
     this.chgGain = ctx.createGain(); this.chgGain.gain.value = 0;
-    for (const o of this.chgOsc) { o.connect(this.chgTrem); o.start(); }
-    this.chgTrem.connect(this.chgGain).connect(this.laserOut);
+    for (const o of this.chgOsc) { o.connect(this.chgFilter); o.start(); }
+    this.chgFilter.connect(chgDrive).connect(this.chgTrem).connect(this.chgGain).connect(this.laserOut);
     this.chgLfo.start();
-    // --- гул плазмы: пила с частотной вибрацией, перегруз, фильтр раскрывается с мощностью
-    const buzz = [ctx.createOscillator(), ctx.createOscillator()];
-    buzz[0].type = 'sawtooth'; buzz[1].type = 'square';
-    buzz[0].frequency.value = 58; buzz[1].frequency.value = 116.7;
-    const fm = ctx.createOscillator(); fm.frequency.value = 27;
-    const fmDepth = ctx.createGain(); fmDepth.gain.value = 9;
+    const chgSub = ctx.createOscillator(); chgSub.frequency.value = 34;
+    this.chgSubGain = ctx.createGain(); this.chgSubGain.gain.value = 0;
+    chgSub.connect(this.chgSubGain).connect(this.laserOut); chgSub.start();
+    // --- рёв луча: низкие пилы и квадрат с медленной вибрацией, сильный перегруз, фильтр раскрывается с мощностью
+    const buzz = [ctx.createOscillator(), ctx.createOscillator(), ctx.createOscillator(), ctx.createOscillator()];
+    buzz[0].type = 'sawtooth'; buzz[1].type = 'sawtooth'; buzz[2].type = 'sawtooth'; buzz[3].type = 'square';
+    buzz[0].frequency.value = 41; buzz[1].frequency.value = 41.6; buzz[2].frequency.value = 82.3; buzz[3].frequency.value = 27.5;
+    const fm = ctx.createOscillator(); fm.frequency.value = 13;
+    const fmDepth = ctx.createGain(); fmDepth.gain.value = 3;
     fm.connect(fmDepth); for (const o of buzz) fmDepth.connect(o.frequency);
-    const drive = ctx.createWaveShaper(); drive.curve = softClipCurve(4); drive.oversample = '2x';
-    this.plasmaFilter = ctx.createBiquadFilter(); this.plasmaFilter.type = 'lowpass'; this.plasmaFilter.frequency.value = 500; this.plasmaFilter.Q.value = 4;
+    const drive = ctx.createWaveShaper(); drive.curve = softClipCurve(7); drive.oversample = '2x';
+    this.plasmaFilter = ctx.createBiquadFilter(); this.plasmaFilter.type = 'lowpass'; this.plasmaFilter.frequency.value = 300; this.plasmaFilter.Q.value = 4;
     this.buzzGain = ctx.createGain(); this.buzzGain.gain.value = 0;
-    const bmix = ctx.createGain(); bmix.gain.value = 0.5;
+    const bmix = ctx.createGain(); bmix.gain.value = 0.4;
     for (const o of buzz) { o.connect(bmix); o.start(); }
     fm.start();
     bmix.connect(drive).connect(this.plasmaFilter).connect(this.buzzGain).connect(this.laserOut);
+    // --- горение: глубокий шум как от реактивного сопла и грязная середина, рваная на 27 Гц
+    const roar = ctx.createBufferSource(); roar.buffer = this.brown; roar.loop = true;
+    const rbp = ctx.createBiquadFilter(); rbp.type = 'bandpass'; rbp.frequency.value = 180; rbp.Q.value = 0.8;
+    const rdrive = ctx.createWaveShaper(); rdrive.curve = softClipCurve(3);
+    this.roarGain = ctx.createGain(); this.roarGain.gain.value = 0;
+    roar.connect(rbp).connect(rdrive).connect(this.roarGain).connect(this.laserOut); roar.start();
+    const mid = ctx.createBufferSource(); mid.buffer = this.noise; mid.loop = true;
+    const mbp = ctx.createBiquadFilter(); mbp.type = 'bandpass'; mbp.frequency.value = 900; mbp.Q.value = 1.4;
+    const tear = ctx.createGain(); tear.gain.value = 0.55;
+    const tearLfo = ctx.createOscillator(); tearLfo.type = 'square'; tearLfo.frequency.value = 27;
+    const tearDepth = ctx.createGain(); tearDepth.gain.value = 0.45;
+    tearLfo.connect(tearDepth).connect(tear.gain); tearLfo.start();
+    this.midGain = ctx.createGain(); this.midGain.gain.value = 0;
+    mid.connect(mbp).connect(tear).connect(this.midGain).connect(this.laserOut); mid.start();
     // --- треск разрядов: петля из случайных щелчков разной силы
     const len = ctx.sampleRate * 2, crackle = ctx.createBuffer(1, len, ctx.sampleRate), c = crackle.getChannelData(0);
     for (let i = 0; i < len;) {
@@ -286,7 +324,7 @@ export class GameAudio {
       i += Math.floor(dur * 0.3 + Math.random() * ctx.sampleRate * 0.012);
     }
     const cs = ctx.createBufferSource(); cs.buffer = crackle; cs.loop = true;
-    const cbp = ctx.createBiquadFilter(); cbp.type = 'bandpass'; cbp.frequency.value = 2600; cbp.Q.value = 0.6;
+    const cbp = ctx.createBiquadFilter(); cbp.type = 'bandpass'; cbp.frequency.value = 1100; cbp.Q.value = 0.7;
     this.crackGain = ctx.createGain(); this.crackGain.gain.value = 0;
     cs.connect(cbp).connect(this.crackGain).connect(this.laserOut); cs.start();
     // --- шипение
@@ -300,24 +338,30 @@ export class GameAudio {
     if (!this.ctx) return;
     if (!this.laserOut) this.buildLaser();
     const t = this.ctx.currentTime, k = 0.04;
-    // Писк зарядки растёт по тону и громкости; при выстреле уходит под гул
-    const f = 160 + 1500 * Math.pow(charge, 1.6);
+    // Рык зарядки растёт снизу, а не пищит; при выстреле уходит под рёв луча
+    const f = 58 + 240 * Math.pow(charge, 1.6);
     this.chgOsc[0].frequency.setTargetAtTime(f, t, k);
-    this.chgOsc[1].frequency.setTargetAtTime(f * 1.505, t, k);
-    this.chgLfo.frequency.setTargetAtTime(5 + 38 * charge * charge, t, k);
-    this.chgGain.gain.setTargetAtTime(charge * charge * 0.05 * (1 - power * 0.8), t, k);
-    this.buzzGain.gain.setTargetAtTime(power * 0.11, t, power > 0.01 ? 0.05 : 0.12);
-    this.plasmaFilter.frequency.setTargetAtTime(400 + 3200 * power, t, 0.08);
-    this.crackGain.gain.setTargetAtTime(power * 0.5, t, 0.06);
-    this.hissGain.gain.setTargetAtTime(power * 0.035, t, 0.08);
+    this.chgOsc[1].frequency.setTargetAtTime(f * 1.012, t, k);
+    this.chgFilter.frequency.setTargetAtTime(170 + 1300 * charge * charge, t, k);
+    this.chgLfo.frequency.setTargetAtTime(5 + 32 * charge * charge, t, k);
+    this.chgGain.gain.setTargetAtTime(charge * charge * 0.1 * (1 - power * 0.85), t, k);
+    this.chgSubGain.gain.setTargetAtTime(charge * 0.26 * (1 - power * 0.6), t, k);
+    const rel = power > 0.01 ? 0.05 : 0.12;
+    this.buzzGain.gain.setTargetAtTime(power * 0.26, t, rel);
+    this.plasmaFilter.frequency.setTargetAtTime(300 + 1500 * power, t, 0.08);
+    this.roarGain.gain.setTargetAtTime(power * 0.42, t, rel);
+    this.midGain.gain.setTargetAtTime(power * 0.075, t, rel);
+    this.crackGain.gain.setTargetAtTime(power * 0.3, t, 0.06);
+    this.hissGain.gain.setTargetAtTime(power * 0.012, t, 0.08);
   }
 
-  // Вспышка выстрела: хлопок с уходящим вниз «вжухом»
+  // Вспышка выстрела: тяжёлый хлопок, тон обрушивается вниз
   laserIgnite() {
     if (!this.ctx) return;
-    this.noiseBurst({ dur: 0.45, freq: 7000, sweepTo: 400, type: 'lowpass', gain: 0.35, attack: 0.003 });
-    this.tone({ dur: 0.35, from: 420, to: 70, gain: 0.3, type: 'sawtooth' });
-    this.tone({ dur: 0.5, from: 90, to: 40, gain: 0.35 });
+    this.boom(0.35);
+    this.noiseBurst({ dur: 0.5, freq: 3200, sweepTo: 180, type: 'lowpass', gain: 0.4, attack: 0.003 });
+    this.tone({ dur: 0.45, from: 200, to: 32, gain: 0.34, type: 'sawtooth' });
+    this.tone({ dur: 0.7, from: 70, to: 28, gain: 0.45 });
   }
 
   // Данные о месте: urban 0..1 (центр города у земли — 1), park 0..1 (пригород/зелень), night, rain
@@ -417,13 +461,22 @@ export class GameAudio {
     this.music = new Audio(this.tracks[this.trackIndex]);
     this.music.volume = 0.35;
     this.music.addEventListener('ended', () => this.playTrack(this.trackIndex + 1));
-    if (this.musicOn) this.music.play().catch(() => {});
+    if (this.musicOn && !this.musicHold) this.music.play().catch(() => {});
+  }
+
+  // Тема боя играет — своя музыка ждёт на паузе (или наоборот)
+  holdMusic(on) {
+    this.musicHold = on;
+    if (!this.music) return;
+    if (on) this.music.pause();
+    else if (this.musicOn) this.music.play().catch(() => {});
   }
 
   // M: следующий трек; если треков нет — ничего
   nextTrack() {
     if (!this.tracks.length) return null;
     this.musicOn = true;
+    this.musicHold = false;
     this.playTrack(this.trackIndex + 1);
     return decodeURIComponent(this.tracks[this.trackIndex].split('/').pop());
   }
@@ -515,6 +568,11 @@ export class GameAudio {
 
   // Общий «тяжёлый» слой: суббас + тело + щелчок. Делает удары плотными и весомыми
   impactLayer(o, k, deep = 1) {
+    // В большом бою у каждого удара рваный низ и хруст
+    if (this.heavy) {
+      this.tone({ dur: 0.26 + 0.2 * deep, from: 75 * deep + 30, to: 30, gain: 0.55 * k, type: 'sawtooth', dest: o });
+      this.noiseBurst({ dur: 0.07, freq: 950, type: 'bandpass', q: 0.7, gain: 0.8 * k, attack: 0.001, dest: o });
+    }
     this.tone({ dur: 0.5 + 0.3 * deep, from: 55 * deep + 20, to: 26, gain: 0.9 * k, dest: o });                   // суббас
     this.noiseBurst({ dur: 0.18 + 0.1 * deep, freq: 260, type: 'bandpass', q: 0.9, gain: 0.9 * k, attack: 0.003, dest: o }); // тело
     this.noiseBurst({ dur: 0.012, freq: 3200, type: 'highpass', gain: 0.5 * k, attack: 0.0005, dest: o });          // щелчок
@@ -631,6 +689,7 @@ export class GameAudio {
   }
 
   whoosh(k = 1) {
+    if (this.heavy) this.noiseBurst({ dur: 0.3 + 0.3 * k, freq: 170, gain: 0.5 * k, attack: 0.08, brown: true });
     this.noiseBurst({ dur: 0.25 + 0.3 * k, freq: 350, sweepTo: 2200, type: 'bandpass', q: 1.2, gain: 0.3 * k, attack: 0.07 });
   }
 
@@ -679,6 +738,9 @@ export class GameAudio {
     this.windFilter.frequency.setTargetAtTime(250 + Math.min(speed, 2000) * 2.5, t, 0.1);
     this.rainGain.gain.setTargetAtTime(paused ? 0 : rain * 0.12, t, 0.3);
     this.updateAmbience(paused);
-    if (paused) this.setCharge(0);
+    if (paused) {
+      this.setCharge(0);
+      if (this.laserOut) this.setLaser(0, 0);
+    }
   }
 }
