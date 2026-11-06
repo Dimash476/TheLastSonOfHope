@@ -117,6 +117,7 @@ export class Player {
       this.laser.update(dt, false, camDir, this);
       this.updateOrientation(dt, camDir, camFlat);
       this.updateAnimation(dt, camDir);
+      this.updateCloth(dt);
       return;
     }
 
@@ -864,12 +865,14 @@ export class Player {
     }
     // Отброшен ударом: спина ведёт полёт, тело медленно кувыркается
     if (this.knockT > 0 && speed > 15 && !this.grounded) {
-      this.tumble = (this.tumble || 0) + 2.2 * dt;
+      // Чем сильнее удар, тем быстрее кувыркается, и не вокруг одной оси
+      this.tumble = (this.tumble || 0) + clamp(speed / 60, 3, 10) * dt;
       const z = this.vel.clone().divideScalar(-speed), x = new THREE.Vector3().crossVectors(UP, z);
       if (x.lengthSq() < 1e-3) x.set(1, 0, 0);
       x.normalize();
       const y = new THREE.Vector3().crossVectors(z, x);
       _q.setFromRotationMatrix(_m.makeBasis(x, y, z)).multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), this.tumble));
+      _q.multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), this.tumble * 0.6));
       this.quat.slerp(_q, 1 - Math.exp(-14 * dt));
       this.flyK = 0;
       this.root.position.copy(this.pos).addScaledVector(UP, 1.0);
@@ -975,7 +978,7 @@ export class Player {
     const pitch = Math.asin(clamp((this.lockDir || camDir).y, -1, 1));
     const punchAll = (this.punchLen ?? P.punchDuration) * (1 + this.punchPower * 0.5);
     a.punch = this.punchT >= 0
-      ? { side: this.punchSide, t: this.punchT / punchAll, power: this.punchPower, pitch, heavy: !!this.punchLen, hitAt: (this.punchHitAt ?? P.punchHitTime) / punchAll }
+      ? { side: this.punchSide, t: this.punchT / punchAll, power: this.punchPower, pitch, heavy: !!this.punchLen, hitAt: (this.punchHitAt ?? P.punchHitTime) / punchAll, kind: this.punchSide === 'L' && this.punchPower <= 0 ? 'hook' : 'straight' }
       : null;
     a.charge = this.charge;
     a.lift = damp(a.lift, this.held && this.held.kind !== 'person' ? 1 : 0, 10, dt);
@@ -986,7 +989,7 @@ export class Player {
     a.throwT = this.throwT >= 0 ? this.throwT / 0.65 : -1;
 
     // Покой на земле дольше 3 с — руки на пояс
-    const busy = hs > 1 || this.punchT >= 0 || this.charge > 0 || this.held || this.lasering || this.petting || this.landT > 0 || this.waveT > 0 || this.throwT >= 0 || this.helpT > 0;
+    const busy = hs > 1 || this.punchT >= 0 || this.charge > 0 || this.held || this.lasering || this.petting || this.landT > 0 || this.waveT > 0 || this.throwT >= 0 || this.helpT > 0 || this.downK > 0;
     this.idleT = this.grounded && !busy ? (this.idleT || 0) + dt : 0;
     a.idle = damp(a.idle || 0, this.idleT > 3 ? 1 : 0, 3, dt);
     // Полёт: крен, сила встречного ветра, набор/снижение, гиперскорость
@@ -1002,7 +1005,7 @@ export class Player {
     const toward = Math.abs(yaw) < 2.2 ? 1 : 0;   // камера спереди — смотрим прямо
     a.lookYaw = damp(a.lookYaw || 0, toward * yaw, 5, dt);
     a.lookPitch = damp(a.lookPitch || 0, toward * Math.asin(clamp(camDir.y, -1, 1)), 5, dt);
-    a.look = this.petting || this.landT > 0 ? 0 : 1;
+    a.look = this.petting || this.landT > 0 || this.downK > 0 ? 0 : 1;
     this.model.animate(dt, a);
   }
 }

@@ -115,7 +115,7 @@ export class Kin {
     this.lasering = false;
     this.landT = 0;
     this.smashed = 0;
-    this.spinRate = (Math.random() < 0.5 ? -1 : 1) * (1.4 + Math.random() * 2.2);
+    this.spinRate = (Math.random() < 0.5 ? -1 : 1) * (4 + Math.random() * 5);
   }
 
   // Попадание: вся тяжесть удара собрана в BattleFX
@@ -266,7 +266,7 @@ export class Kin {
     let rate = 10;
     this.flyK = 0;
     if (this.knock > 0 && speed > 15) {
-      // Спина ведёт полёт, тело медленно вращается вокруг своей оси
+      // Спина ведёт полёт, тело кувыркается сразу вокруг двух осей
       this.spin += this.spinRate * dt;
       _z.copy(this.vel).divideScalar(-speed);
       _x.crossVectors(UP, _z);
@@ -275,6 +275,7 @@ export class Kin {
       _y.crossVectors(_z, _x);
       _q.setFromRotationMatrix(_m.makeBasis(_x, _y, _z));
       _q.multiply(_q2.setFromAxisAngle(_z.set(0, 0, 1), this.spin));
+      _q.multiply(_q2.setFromAxisAngle(_x.set(1, 0, 0), this.spin * 0.6));
       rate = 14;
     } else if (!this.grounded && !acting && !this.slamming && !this.falling && speed > 12 && !(look && speed < 45)) {
       // Полёт: голова вперёд по скорости, лицом к земле (как у героя)

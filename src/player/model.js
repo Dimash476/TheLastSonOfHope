@@ -79,6 +79,14 @@ const POSE = {
     hipL: [0, 0, 0.2], knL: [0.2, 0, 0], ankL: [0.75, 0, 0],
     hipR: [-0.25, 0, -0.16], knR: [0.5, 0, 0], ankR: [0.75, 0, 0],
   },
+  // Приподнялся на правом локте: корпус откинут, левая рука прижата к груди, ноги лежат
+  prop: {
+    spine: [0.26, 0, 0], chest: [0.1, 0, 0], neck: [0.4, 0, 0],
+    shR: [0.75, 0, -0.35], elR: [-0.25, 0, 0],
+    shL: [-0.2, -0.9, 0.25], elL: [-1.7, 0, 0],
+    hipL: [-0.55, 0, 0.16], knL: [0.2, 0, 0], ankL: [0.6, 0, 0],
+    hipR: [-1.0, 0, -0.12], knR: [1.15, 0, 0], ankR: [0.35, 0, 0],
+  },
   slam: {
     spine: [0.3, 0, 0], neck: [0.2, 0, 0],
     shL: [-2.7, 0, 0.25], shR: [-2.7, 0, -0.25], elL: [-0.5, 0, 0], elR: [-0.5, 0, 0],
@@ -124,15 +132,143 @@ function mirrorPose(pose) {
   return out;
 }
 
-const BLOW = {
-  R: BLOW_R,
-  L: { coil: mirrorPose(BLOW_R.coil), drive: mirrorPose(BLOW_R.drive), through: mirrorPose(BLOW_R.through) },
+// Ноги у всех ударов одни: толчок и вынос бедра. Различаются корпус и руки
+const legsOf = (p) => ({ hipR: p.hipR, knR: p.knR, ankR: p.ankR, hipL: p.hipL, knL: p.knL, ankL: p.ankL });
+const withLegs = (set) => ({
+  coil: { ...legsOf(BLOW_R.coil), ...set.coil },
+  drive: { ...legsOf(BLOW_R.drive), ...set.drive },
+  through: { ...legsOf(BLOW_R.through), ...set.through },
+});
+
+const BLOW_KINDS = {
+  straight: BLOW_R,
+  // Боковой: локоть в стороне, предплечье поперёк корпуса, вся сила в развороте груди
+  hook: withLegs({
+    coil: {
+      pelvis: [0.04, -0.3, 0], spine: [-0.1, -0.5, 0.06], chest: [-0.05, -0.35, 0.04], neck: [0.05, 0.95, 0],
+      shR: [0.2, 0, -1.25], elR: [-1.9, 0, 0],
+      shL: [-1.1, 0, 0.6], elL: [-1.7, 0, 0],
+    },
+    drive: {
+      pelvis: [0.08, 0.35, -0.04], spine: [0.18, 0.5, -0.12], chest: [0.06, 0.4, -0.06], neck: [-0.2, -1.0, 0],
+      shR: [0, 0, -1.57], elR: [-1.75, 0, 0],
+      shL: [0.8, 0, 0.45], elL: [-1.9, 0, 0],
+    },
+    through: {
+      pelvis: [0.1, 0.55, -0.04], spine: [0.22, 0.7, -0.12], chest: [0.1, 0.55, -0.06], neck: [-0.25, -1.25, 0],
+      shR: [0.1, 0, -1.45], elR: [-1.7, 0, 0],
+      shL: [1.0, 0, 0.5], elL: [-1.6, 0, 0],
+    },
+  }),
+  // С разворота: корпус делает оборот (см. blowYaw), рука в сторону приходит тыльной стороной кулака
+  back: withLegs({
+    coil: {
+      pelvis: [0.04, 0, 0], spine: [-0.05, -0.2, 0], chest: [-0.05, -0.15, 0], neck: [0.05, -0.9, 0],
+      shR: [0.3, 0, -0.9], elR: [-1.4, 0, 0],
+      shL: [0.2, 0, 0.5], elL: [-1.9, 0, 0],
+    },
+    drive: {
+      pelvis: [0.05, -0.15, 0], spine: [0.08, -0.25, -0.05], chest: [0.03, -0.2, -0.04], neck: [-0.05, -1.2, 0],
+      shR: [0, 0, -1.5], elR: [-0.25, 0, 0],
+      shL: [0.5, 0, 0.4], elL: [-1.9, 0, 0],
+    },
+    through: {
+      pelvis: [0.05, -0.2, 0], spine: [0.1, -0.3, -0.05], chest: [0.05, -0.25, -0.04], neck: [-0.05, -1.3, 0],
+      shR: [0.1, 0, -1.4], elR: [-0.2, 0, 0],
+      shL: [0.6, 0, 0.45], elL: [-1.7, 0, 0],
+    },
+  }),
+  // Плечом: боком к цели (см. blowYaw), руки прижаты, корпус завален в удар
+  shoulder: withLegs({
+    coil: {
+      pelvis: [0.05, -0.1, 0], spine: [-0.1, -0.35, 0.05], chest: [-0.05, -0.25, 0], neck: [0.1, -0.5, 0],
+      shR: [0.6, 0, -0.35], elR: [-2.3, 0, 0],
+      shL: [0.5, 0, 0.4], elL: [-2.3, 0, 0],
+    },
+    drive: {
+      pelvis: [0.1, 0, 0.1], spine: [0.3, 0, 0.35], chest: [0.12, 0, 0.2], neck: [0, -1.0, 0],
+      shR: [0.2, 0, -0.25], elR: [-2.2, 0, 0],
+      shL: [0.5, 0, 0.4], elL: [-2.3, 0, 0],
+    },
+    through: {
+      pelvis: [0.12, 0, 0.14], spine: [0.36, 0, 0.42], chest: [0.15, 0, 0.25], neck: [0, -1.1, 0],
+      shR: [0.1, 0, -0.3], elR: [-2.1, 0, 0],
+      shL: [0.6, 0, 0.45], elL: [-2.2, 0, 0],
+    },
+  }),
+  // Сверху двумя руками: руки над головой, корпус складывается в удар
+  hammer: withLegs({
+    coil: {
+      pelvis: [-0.1, 0, 0], spine: [-0.35, 0, 0], chest: [-0.15, 0, 0], neck: [-0.05, 0, 0],
+      shR: [-2.9, 0, -0.25], elR: [-0.7, 0, 0],
+      shL: [-2.9, 0, 0.25], elL: [-0.7, 0, 0],
+    },
+    drive: {
+      pelvis: [0.15, 0, 0], spine: [0.4, 0, 0], chest: [0.2, 0, 0], neck: [0.1, 0, 0],
+      shR: [-1.85, 0, 0.28], elR: [-0.1, 0, 0],
+      shL: [-1.85, 0, -0.28], elL: [-0.1, 0, 0],
+    },
+    through: {
+      pelvis: [0.2, 0, 0], spine: [0.55, 0, 0], chest: [0.3, 0, 0], neck: [0.15, 0, 0],
+      shR: [-1.55, 0, 0.28], elR: [-0.1, 0, 0],
+      shL: [-1.55, 0, -0.28], elL: [-0.1, 0, 0],
+    },
+  }),
+  // Снизу вверх: присед и подъём всем телом
+  upper: withLegs({
+    coil: {
+      pelvis: [0.1, -0.2, 0], spine: [0.35, -0.3, 0], chest: [0.15, -0.2, 0], neck: [-0.25, 0.3, 0],
+      shR: [0.7, 0, -0.25], elR: [-2.2, 0, 0],
+      shL: [-0.5, 0, 0.6], elL: [-1.6, 0, 0],
+    },
+    drive: {
+      pelvis: [-0.05, 0.2, 0], spine: [-0.1, 0.35, 0], chest: [-0.05, 0.25, 0], neck: [-0.2, -0.2, 0],
+      shR: [-1.75, 0, -0.2], elR: [-0.7, 0, 0],
+      shL: [0.6, 0, 0.3], elL: [-1.8, 0, 0],
+    },
+    through: {
+      pelvis: [-0.08, 0.25, 0], spine: [-0.2, 0.45, 0], chest: [-0.1, 0.3, 0], neck: [-0.3, -0.2, 0],
+      shR: [-2.07, 0, -0.2], elR: [-0.5, 0, 0],
+      shL: [0.8, 0, 0.35], elL: [-1.6, 0, 0],
+    },
+  }),
 };
+const BLOW = {};
+for (const kind in BLOW_KINDS) {
+  const set = BLOW_KINDS[kind];
+  BLOW[kind] = { R: set, L: { coil: mirrorPose(set.coil), drive: mirrorPose(set.drive), through: mirrorPose(set.through) } };
+}
 const LEG_JOINTS = new Set(['hipL', 'knL', 'ankL', 'hipR', 'knR', 'ankR']);
 
+// Как тело идёт в удар: зазор до цели на контакте, наклон на замахе и в ударе, подъём над целью.
+// flat: сколько высоты цели идёт в наклон корпуса. Сверху и снизу бьёт рука, а корпус остаётся стоять
+export const BLOW_WAY = {
+  straight: { gap: 1.12, lean: [-0.26, 0.42], rise: 0 },
+  hook: { gap: 0.85, lean: [-0.16, 0.3], rise: 0 },
+  back: { gap: 0.85, lean: [-0.08, 0.12], rise: 0, spin: true },
+  shoulder: { gap: 0.6, lean: [0, 0], rise: 0 },
+  hammer: { gap: 0.8, lean: [-0.3, 0.6], rise: 0.82, flat: 0.15 },
+  upper: { gap: 0.5, lean: [0.28, 0.05], rise: -0.62, flat: 0.15 },
+};
+
+// Поворот корпуса вокруг своей оси на протяжении удара
+function blowYaw(b) {
+  const s = b.side === 'R' ? 1 : -1, f = b.f;
+  if (b.kind === 'back') {
+    // Спиной к цели к концу замаха, рука в сторону смотрит на цель как раз в момент удара
+    const a = f < 1 ? Math.PI * f * f * (3 - 2 * f) : f < 2 ? Math.PI + (f - 1) * (f - 1) * Math.PI / 2 : Math.PI * 1.5 + (f - 2) * 0.9;
+    return -s * a;
+  }
+  if (b.kind === 'shoulder') {
+    const x = Math.min(1, f);
+    return s * 1.35 * x * x * (3 - 2 * x);
+  }
+  return 0;
+}
+
 // f: 0..1 замах, 1..2 кулак идёт к цели, 2..3 навылет. k — вес позы, legK — насколько участвуют ноги
-function blowPose(acc, side, f, pitch, k, legK = 1) {
-  const set = BLOW[side], arm = 'sh' + side;
+function blowPose(acc, side, f, pitch, k, legK = 1, kind = 'straight') {
+  const set = BLOW[kind][side], arm = 'sh' + side;
   const x = f < 1 ? f : f < 2 ? f - 1 : Math.min(1, f - 2);
   const e = f < 1 ? x * x * (3 - 2 * x) : f < 2 ? x * x : 1 - (1 - x) * (1 - x) * (1 - x);
   const from = f < 2 ? set.coil : set.drive, to = f < 1 ? set.coil : f < 2 ? set.drive : set.through;
@@ -211,14 +347,39 @@ export function followBlow(o, dt) {
 
 // Корпус лицом по направлению dir; lean > 0 — наклон вперёд, в удар
 const _bx = new THREE.Vector3(), _by = new THREE.Vector3(), _bm = new THREE.Matrix4(), _bq = new THREE.Quaternion();
-const AXIS_X = new THREE.Vector3(1, 0, 0);
-export function blowQuat(out, dir, lean = 0) {
+const AXIS_X = new THREE.Vector3(1, 0, 0), AXIS_Y = new THREE.Vector3(0, 1, 0);
+export function blowQuat(out, dir, lean = 0, yaw = 0) {
   _by.set(0, 1, 0).addScaledVector(dir, -dir.y);
   if (_by.lengthSq() < 0.02) _by.set(0, 0, 1).addScaledVector(dir, -dir.z);
   _by.normalize();
   _bx.crossVectors(_by, dir);
   out.setFromRotationMatrix(_bm.makeBasis(_bx, _by, dir));
+  if (yaw) out.multiply(_bq.setFromAxisAngle(AXIS_Y, yaw));
   return out.multiply(_bq.setFromAxisAngle(AXIS_X, lean));
+}
+
+// Корпус на протяжении удара b. Оборот ставим сразу: плавный поворот пошёл бы коротким путём, в обратную сторону
+const _bq2 = new THREE.Quaternion(), _bd = new THREE.Vector3();
+export function aimBlow(q, dir, b, rdt, rate) {
+  const w = BLOW_WAY[b.kind] || BLOW_WAY.straight;
+  _bd.copy(dir);
+  if (w.flat !== undefined) { _bd.y *= w.flat; _bd.normalize(); }
+  blowQuat(_bq2, _bd, w.lean[b.f < 1 ? 0 : 1], blowYaw(b));
+  if (w.spin && b.f >= 0.2) q.copy(_bq2);
+  else q.slerp(_bq2, 1 - Math.exp(-rate * rdt));
+}
+
+// Раскрутка: держащий в центре, вторая фигура на вытянутой руке летит по кругу, вытянувшись от центра.
+// Пишет в outC центр летящего тела, в victimQ его поворот, в holderQ поворот держащего
+const _wr = new THREE.Vector3(), _wt = new THREE.Vector3(), _wx = new THREE.Vector3();
+export function whirlPose(center, a, R, tilt, outC, victimQ, holderQ) {
+  const cx = Math.cos(a), sz = Math.sin(a), ct = Math.cos(tilt);
+  _wr.set(cx * ct, Math.sin(tilt), sz * ct);
+  outC.copy(center).addScaledVector(_wr, R);
+  _wt.set(-sz, 0, cx);
+  _wx.crossVectors(_wr, _wt);
+  victimQ.setFromRotationMatrix(_bm.makeBasis(_wx, _wr, _wt));
+  blowQuat(holderQ, _wr, -0.22);
 }
 
 const _pivot = new THREE.Vector3();
@@ -480,7 +641,7 @@ export class HeroModel {
       for (let i = 0; i < 3; i++) a[i] = lerp(a[i], v[i], p.brake);
     }
     // Отброшен ударом и лежит без сил (бой с генералом и его солдатами)
-    for (const [w, pose] of [[p.knock, POSE.knock], [p.downed, POSE.downed]]) {
+    for (const [w, pose] of [[p.knock, POSE.knock], [p.downed, POSE.downed], [p.prop, POSE.prop]]) {
       if (!(w > 0.01)) continue;
       for (const n in pose) {
         const a = acc[n], v = pose[n];
@@ -655,7 +816,7 @@ export class HeroModel {
     if (p.reel) reelPose(acc, p.reel);
 
     // Удар сцены: герой или генерал в серии
-    if (p.blow && p.blow.k > 0) blowPose(acc, p.blow.side, p.blow.f, p.blow.pitch || 0, p.blow.k);
+    if (p.blow && p.blow.k > 0) blowPose(acc, p.blow.side, p.blow.f, p.blow.pitch || 0, p.blow.k, 1, p.blow.kind);
 
     // Удар
     if (p.punch && p.punch.heavy) {
@@ -663,7 +824,7 @@ export class HeroModel {
       const { side, t, pitch, hitAt } = p.punch;
       const f = t < hitAt ? 0.35 + 1.65 * (t / hitAt) : 2 + (t - hitAt) / (1 - hitAt);
       const air = 1 - p.stand / total;
-      blowPose(acc, side, f, pitch, smoothstep(0, 0.08, t) * (1 - smoothstep(0.72, 1, t)), air);
+      blowPose(acc, side, f, pitch, smoothstep(0, 0.08, t) * (1 - smoothstep(0.72, 1, t)), air, p.punch.kind);
     } else if (p.punch) {
       const { side, t, power, pitch } = p.punch;
       const s = side === 'R' ? 1 : -1;

@@ -138,6 +138,21 @@ export class Debris {
     }
   }
 
+  // Убрать всё, что лежит и падает над этим местом: сцене нужна чистая площадка
+  clearAround(x, z, r, minRad = 0) {
+    let dirty = false;
+    for (let i = 0; i < this.high; i++) {
+      const st = this.state[i];
+      if (st === S_NONE || st === S_HELD || this.rad[i] < minRad) continue;
+      const i3 = i * 3, dx = this.pos[i3] - x, dz = this.pos[i3 + 2] - z, R = r + this.rad[i];
+      if (dx * dx + dz * dz > R * R) continue;
+      this.state[i] = S_NONE;
+      this.mesh.setMatrixAt(i, this._zero);
+      dirty = true;
+    }
+    if (dirty) this.mesh.instanceMatrix.needsUpdate = true;
+  }
+
   // ---------------------------------------------------------------- захват
   findGrabbable(p, range) {
     let best = -1, bestD = range * range;

@@ -8,6 +8,7 @@ import { mulberry32, smoothstep, lerp, clamp } from '../utils.js';
 //
 // Его можно разгромить: удар и луч оставляют пробоины, тело на скорости проходит насквозь с дырами
 // на входе и выходе. Лезвия, башня и кольцо отваливаются, а без главного корпуса он падает на город.
+// Один таран его не валит: с каждым пролётом он сильнее горит, кренится и садится.
 
 export const SHIP = { length: 1240, hoverY: 900, belly: 74 };
 
@@ -35,6 +36,14 @@ const BRIDGE_Z = [H - 620, H - 800, H - 980];
 // Прочность частей и скорость, с которой тело проходит корпус насквозь
 const PART_HP = { main: 3500, L: 800, R: 800, tower: 600, ring: 800 };
 const RAM_SPEED = 120;
+const RAMS = 5;         // столько пролётов насквозь выдерживает главный корпус
+const RAM_GAP = 1.2;    // с: пока тело внутри и ещё столько после выхода, это всё тот же пролёт
+const WOUND_RADIO = [null,
+  'ШТАБ: Есть пробитие корпуса. Он ещё держится.',
+  'ШТАБ: Корабль горит. Пожар идёт вдоль всего корпуса.',
+  'ШТАБ: Он кренится и теряет высоту!',
+  'ШТАБ: Корпус трещит по швам. Ещё один такой удар, и он рухнет.',
+];
 const HOLES = 16;
 const FIRES = 8;
 // Откуда бьют орудия
@@ -355,6 +364,15 @@ export class Warship {
     this.laserAcc = 0;
     this.pitch = 0;
     this.roll = 0;
+    this.passT = 0;
+    this.passMain = 0;
+    this.passParts = new Set();
+    this.insideT = 0;
+    this.wounds = 0;
+    this.sag = 0;
+    this.blastN = 0;
+    this.blastIn = 0;
+    this.listSide = Math.random() < 0.5 ? -1 : 1;
     this.turretT = 2;
     this.group.rotation.z = 0;
   }
@@ -439,9 +457,10 @@ export class Warship {
     return false;
   }
 
-  // Тело переместилось из from в body.pos. На скорости — насквозь, медленно — упирается в борт.
-  // Через готовую пробоину можно влететь и вылететь на любой скорости: внутри корпус пустой
-  collide(body, from) {
+  // Тело переместилось из from в body.pos. На скорости — насквозь, медленно — упирается в борт снаружи.
+  // Через готовую пробоину можно влететь на любой скорости: внутри корпус пустой.
+  // Наружу выпускаем всегда: и на малой скорости, и когда корабль уже падает или лежит
+  collide(body, from, dt = 0) {
     if (this.state === 'off') return;
     const g = this.group.position, R2 = 850 * 850;
     if (body.pos.distanceToSquared(g) > R2 && from.distanceToSquared(g) > R2) return;
@@ -457,34 +476,70 @@ export class Warship {
       if (!part === !was) { _c.copy(_l); continue; }
       const inside = !!was, touched = part || was;
       was = part;
-      if (this.inHole(_l)) { _c.copy(_l); continue; }
+      if (this.inHole(_l)) {
+        // Новый заход через готовую пробоину тоже бьёт: снаружи цело, зато внутри рвётся всё, что по пути
+        const L = _l.clone();
+        if (speed >= RAM_SPEED && this.state === 'hover' && body === this.inv.player && this.passT <= 0) this.ram(L, body, speed, touched);
+        _c.copy(L);
+        continue;
+      }
       if (speed >= RAM_SPEED && this.state === 'hover') {
         const L = _l.clone();
         this.ram(L, body, speed, touched);
         _c.copy(L);
         continue;
       }
+      if (inside) { _c.copy(_l); continue; }
       // Борт: остаёмся по свою сторону, скорость вдоль него сохраняется
       body.pos.copy(_c).applyMatrix4(this.group.matrixWorld);
       _n.set(_c.x, _c.y - 6, 0);
       if (touched !== 'main') _n.set(_c.x - (touched === 'L' ? -BLADE_X : touched === 'R' ? BLADE_X : 0), _c.y - 6, 0);
       if (_n.lengthSq() < 1e-3) _n.set(0, 1, 0);
       _n.normalize().transformDirection(this.group.matrixWorld);
-      if (inside) _n.negate();
       const vn = body.vel.dot(_n);
       if (vn < 0) body.vel.addScaledVector(_n, -vn);
       if (body.knock > 0 && -vn > 40) body.crash?.(body.pos.clone(), -vn);
       return;
     }
+    if (body !== this.inv.player) return;
+    if (!was) { this.insideT = 0; return; }
+    this.passT = RAM_GAP;
+    // Завис внутри и не летит: корпус сам выдавливает наружу, в кадре здесь всё равно ничего не видно
+    this.insideT += dt;
+    if (speed < RAM_SPEED && this.insideT > 0.7) {
+      _n.set(_b.x - (was === 'L' ? -BLADE_X : was === 'R' ? BLADE_X : 0), _b.y - 6, 0);
+      if (_n.lengthSq() < 1e-3) _n.set(0, 1, 0);
+      _n.normalize().transformDirection(this.group.matrixWorld);
+      body.pos.addScaledVector(_n, Math.min(90, 30 + this.insideT * 30) * dt);
+    }
   }
 
   // Удар сквозь обшивку: пробоина, взрыв, обломки корпуса
   ram(local, body, speed, part) {
-    const I = this.inv, W = I.world, L = local.clone();
-    const amount = body === I.player ? 200 + speed * 0.5 : 300;
+    const I = this.inv, W = I.world, L = local.clone(), hero = body === I.player;
+    // Вход и выход рвут обшивку, но за один пролёт корпус теряет не больше одной доли прочности,
+    // с какой скорости ни влети и сколько частей ни задень
+    const fresh = hero && this.passT <= 0;
+    if (fresh) { this.passParts.clear(); this.passMain = 0; }
+    if (hero) this.passT = RAM_GAP;
+    const first = !hero || !this.passParts.has(part);
+    if (hero) this.passParts.add(part);
+    const M = this.parts.main, P = this.parts[part] || M, share = M.max / RAMS;
     const dir = _d.copy(body.vel).normalize().clone();
     const p = _l.copy(L).applyMatrix4(this.group.matrixWorld).clone();
-    this.damage(part, amount, p, dir, L);
+    if (!first) { this.addHole(L, share); this.addFire(L); }
+    else if (!hero) this.damage(part, 300, p, dir, L);
+    else {
+      // Лезвие, башня и кольцо отваливаются со второго раза, главному корпусу через них достаётся вполовину
+      const take = Math.min(P === M ? 1 : 0.5, 1 - this.passMain);
+      this.passMain += take;
+      if (P === M) this.damage('main', share * take, p, dir, L);
+      else {
+        M.hp -= share * take;
+        this.damage(part, P.max * 0.55, p, dir, L);
+      }
+      this.addHole(L, share);
+    }
     W.effects.shockwave(p.clone(), { type: 'disc', dir, radius: 26 + Math.min(40, speed * 0.04), life: 0.6, opacity: 1, color: 0xffc890 });
     W.effects.shockwave(p.clone(), { type: 'sphere', radius: 18, life: 0.45, opacity: 0.45, color: 0xffa060 });
     W.fire.explosion(p, 1.8);
@@ -492,11 +547,12 @@ export class Warship {
     W.effects.flash(p, 50);
     W.effects.impactFX(1, p, 0.32, 14);
     this.chunks(p, dir, 14);
-    I.player.hitstop = Math.max(I.player.hitstop, 0.07);
-    I.fx.play('clash', { pos: p, rate: 0.62 }) || W.audio?.metal(1, p.clone());
+    I.player.hitstop = Math.max(I.player.hitstop, first ? 0.11 : 0.05);
+    I.fx.play('shipRam', { gain: first ? 1 : 0.6, pos: p }) || W.audio?.metal(1, p.clone());
     I.fx.play('shipBlast', { gain: 0.6, pos: p });
     I.theme.duck(0.8);
-    I.fx.crashZoom(6, 0.18);
+    I.fx.crashZoom(first ? 9 : 5, first ? 0.28 : 0.15);
+    if (fresh) I.slowFor(0.4, 0.3);
     body.vel.multiplyScalar(0.8);
   }
 
@@ -522,6 +578,18 @@ export class Warship {
     if (amount >= 150) this.addFire(l);
     if (P.key !== 'main' && P.hp <= 0 && !P.off) this.dropPart(P.key);
     if (this.parts.main.hp <= 0) this.startFall();
+    else this.wound();
+  }
+
+  // Корпус сдаёт по долям: на каждой доле новый стон, цепочка взрывов внутри, сильнее крен и просадка
+  wound() {
+    const M = this.parts.main, n = Math.floor((1 - M.hp / M.max) * RAMS + 1e-3);
+    if (n <= this.wounds || this.state !== 'hover') return;
+    this.wounds = n;
+    this.blastN += 3 + n;
+    this.blastIn = 0.25;
+    this.inv.fx.play('shipGroan', { gain: 0.55 + n * 0.11, pos: this.group.position });
+    this.inv.story.radio(WOUND_RADIO[n] || WOUND_RADIO[RAMS - 1], 4);
   }
 
   addHole(l, amount) {
@@ -559,6 +627,7 @@ export class Warship {
     if (this.state === 'hover') {
       this.parts.main.hp -= 300;
       if (this.parts.main.hp <= 0) this.startFall();
+      else this.wound();
     }
   }
 
@@ -775,6 +844,7 @@ export class Warship {
   update(dt, listener, audio) {
     if (this.state === 'off') return;
     this.t += dt;
+    if (this.passT > 0) this.passT -= dt;
     const U = this.mat.userData;
     U.uTime.value += dt;
     const g = this.group;
@@ -790,7 +860,20 @@ export class Warship {
       U.uHeat.value = hot;
       if (k >= 1) { this.state = 'hover'; this.heatMat.opacity = 0; U.uHeat.value = 0; }
     } else if (this.state === 'hover') {
-      g.position.y = this.target.y + Math.sin(U.uTime.value * 0.35) * 4;
+      // Раненый корабль садится и заваливается на борт; изнутри его рвёт ещё несколько секунд
+      const w = this.wounds / RAMS, ease = 1 - Math.exp(-0.7 * dt);
+      this.sag += (w * 130 - this.sag) * ease;
+      this.pitch += (w * 0.055 - this.pitch) * ease;
+      this.roll += (this.listSide * w * 0.075 - this.roll) * ease;
+      g.position.y = this.target.y - this.sag + Math.sin(U.uTime.value * 0.35) * 4;
+      if (this.blastN > 0) {
+        this.blastIn -= dt;
+        if (this.blastIn <= 0) {
+          this.blastN--;
+          this.blastIn = 0.35 + Math.random() * 0.6;
+          this.innerBlast(0.6 + w * 0.5);
+        }
+      }
     } else if (this.state === 'leave') {
       const k = Math.min(1, this.t / 14);
       const e = k * k * k;
@@ -814,7 +897,7 @@ export class Warship {
     B.uK.value += ((this.beamOn ? 1 : 0) - B.uK.value) * Math.min(1, dt * 2);
     this.beam.visible = B.uK.value > 0.01;
     if (this.beam.visible) {
-      const h = this.target.y - SHIP.belly - 2 - (this.groundY ?? 0);
+      const h = this.target.y - this.sag - SHIP.belly - 2 - (this.groundY ?? 0);
       this.beam.scale.set(1, h, 1);
       this.beam.position.set(0, -SHIP.belly - 2 - h / 2, -120);
     }

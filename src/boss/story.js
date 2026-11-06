@@ -103,14 +103,11 @@ export class Story {
     this.lockCd = 0;
     this.cutLook = 0;
     this.cutHit = false;
-    this.endT = 0;
-    this.endCam = false;
     this.radioT = 0;
     this.radioQ = [];
     this.saidDuel = false;
     this.saidShip = false;
     this.duelTime = 0;
-    this.endRadio = false;
     this.plasma.mesh.visible = false;
     this.$radio.classList.add('hidden');
   }
@@ -143,7 +140,7 @@ export class Story {
         if (next) this.radio(next[0], next[1]);
       }
     }
-    if (I.endT !== null && I.endWin) { this.ending(realDt); return; }
+    if (I.endT !== null && I.endWin) { this.brawlOn = false; this.brawlDone = true; return; }
     if (!X || I.stage !== 'duel' || !X.alive) return;
     if (I.heroDown) {
       if (this.fall || this.aft || this.lock) this.cancel();
@@ -226,7 +223,7 @@ export class Story {
   // ---------------------------------------------------------------- срез небоскрёба
   tryCut() {
     const I = this.inv, X = I.xarg, P = I.player, W = I.world;
-    if (this.cutCd > 0 || X.state !== 'neutral' || X.hp > XARG_HP * 0.78 || X.pos.y > 500 || P.pos.y > 500 || I.chain.kin || this.brawlOn) return;
+    if (this.cutCd > 0 || !['neutral', 'recover', 'regain'].includes(X.state) || X.hp > XARG_HP * 0.78 || X.pos.y > 500 || P.pos.y > 500 || I.chain.kin || this.brawlOn) return;
     W.city.sphereQuery(I.heroC, 170, this.list);
     let pick = null;
     for (const s of this.list) {
@@ -408,7 +405,7 @@ export class Story {
     if (this.fallDone || !X.climbed || this.brawlOn) return;
     const high = SPACE.atmosphere * 0.8;
     if (X.pos.y < high || P.pos.y < high || X.c.distanceTo(I.heroC) > 1500) return;
-    if (!['neutral', 'combo', 'recover', 'stun'].includes(X.state)) return;
+    if (!['neutral', 'regain', 'combo', 'recover', 'stun'].includes(X.state)) return;
     this.spaceT += realDt;
     if (this.spaceT > 9 || X.hp < XARG_HP * 0.5) this.beginFall();
   }
@@ -674,41 +671,10 @@ export class Story {
   tryBrawl() {
     const I = this.inv, X = I.xarg;
     if (this.brawlOn || this.brawlDone || X.hp > XARG_HP * 0.16) return;
-    if (X.c.distanceTo(I.heroC) > 300 || !['neutral', 'combo', 'recover', 'stun', 'down', 'guard'].includes(X.state)) return;
+    if (X.c.distanceTo(I.heroC) > 300 || !['neutral', 'regain', 'combo', 'recover', 'stun', 'down', 'guard'].includes(X.state)) return;
     this.brawlOn = true;
     X.startBrawl();
     I.say('Ты… думаешь… что это конец?', 3, true);
     I.fx.cineFor(4);
-  }
-
-  // ---------------------------------------------------------------- конец
-  ending(realDt) {
-    const I = this.inv, P = I.player, X = I.xarg;
-    this.endT += realDt;
-    this.brawlOn = false;
-    this.brawlDone = true;
-    if (!this.endRadio && this.endT > 5) {
-      this.endRadio = true;
-      this.radio(I.shipDown ? 'ШТАБ: Корабль лежит в парке. Он… он их остановил.' : 'ШТАБ: Корабль уходит. Он… он их остановил.', 5);
-    }
-    if (this.endT < 2.8) return;
-    if (!this.endCam) {
-      this.endCam = true;
-      I.setCine(true);
-      P.driven = I.holdHero;
-      P.punchT = -1;
-      P.charge = 0;
-      P.lasering = false;
-      I.camRig.shot = this.shot;
-    }
-    // Герой стоит посреди того, что осталось
-    const a = (this.endT - 2.8) * 0.16 + 0.8, S = this.shot;
-    S.pos.set(I.heroC.x + Math.cos(a) * 8.5, 0, I.heroC.z + Math.sin(a) * 8.5);
-    // Снизу вверх: за спиной героя дымное небо, а не стена дома
-    S.pos.y = Math.max(I.heroC.y - 3.6, I.world.city.groundHeightAt(S.pos.x, S.pos.z, I.heroC.y + 2) + 0.7);
-    const far = X.c.distanceTo(I.heroC);
-    S.look.copy(I.heroC);
-    if (far < 200) S.look.lerp(X.c, 0.25);
-    S.fov = 38;
   }
 }

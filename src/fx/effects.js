@@ -377,8 +377,8 @@ function makeCraterTexture() {
   c.width = c.height = 256;
   const g = c.getContext('2d');
   const grd = g.createRadialGradient(128, 128, 0, 128, 128, 128);
-  grd.addColorStop(0, 'rgba(20,18,16,0.95)');
-  grd.addColorStop(0.45, 'rgba(35,30,26,0.85)');
+  grd.addColorStop(0, 'rgba(46,41,36,0.95)');
+  grd.addColorStop(0.45, 'rgba(50,44,38,0.85)');
   grd.addColorStop(0.6, 'rgba(70,62,54,0.6)');
   grd.addColorStop(1, 'rgba(70,62,54,0)');
   g.fillStyle = grd;

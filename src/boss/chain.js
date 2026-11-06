@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { spaceK } from './kin.js';
 import { BODIES } from '../world/bodies.js';
-import { blowQuat, followBlow, reelHit, tickReel } from '../player/model.js';
+import { aimBlow, BLOW_WAY, followBlow, reelHit, tickReel } from '../player/model.js';
 import { clamp, damp, lerp, smoothstep } from '../utils.js';
 
 // Серия ударов в полёте. Каждый удар — отдельный кадр, как в кино:
@@ -12,6 +12,8 @@ import { clamp, damp, lerp, smoothstep } from '../utils.js';
 
 const MAX_HITS = 6;
 const DMG = [34, 40, 48, 58, 70, 120];
+// Удары серии: боковой, прямой, с разворота, плечом. Последний — сверху или снизу, смотря куда смотрит герой
+const KINDS = ['hook', 'straight', 'back', 'shoulder', 'hook'];
 // Узор направлений: удары идут то вправо-вверх, то влево — серия не летит по прямой
 const PATTERN = [[0.5, 0.35], [-0.6, 0.2], [0.3, 0.7], [-0.4, -0.15], [0.6, 0.4]];
 // Куда встаёт камера: вбок, снизу, из-за спины цели. Кулак всегда виден
@@ -23,7 +25,7 @@ const ANGLES = [
 const FINAL_ANGLE = { a: 6.6, b: 0.9, c: -0.4, fov: 34 };
 const UP = new THREE.Vector3(0, 1, 0);
 const _d = new THREE.Vector3(), _v = new THREE.Vector3(), _r = new THREE.Vector3(), _s = new THREE.Vector3(), _cp = new THREE.Vector3();
-const _p0 = new THREE.Vector3(), _q = new THREE.Quaternion();
+const _p0 = new THREE.Vector3(), _f = new THREE.Vector3();
 
 export class Chain {
   constructor(inv) {
@@ -88,7 +90,8 @@ export class Chain {
     if (kin.kind === 'general') this.inv.arenaDir(dir, 0.45);
     const sk = spaceK(kin.pos.y);
     const up = smoothstep(0.4, 0.9, dir.y);
-    const speed = lerp(300, 2400, sk) * (1 + this.n * 0.12) * (1 + up * 2.5 * (1 - sk)) * mul;
+    // В космосе не быстрее, чем в небе над городом: иначе цель за секунду уносит из виду
+    const speed = lerp(300, 420, sk) * (1 + this.n * 0.12) * (1 + up * 2.5 * (1 - sk)) * mul;
     kin.launch(dir, speed, knock);
   }
 
@@ -112,6 +115,8 @@ export class Chain {
     if (kin) {
       if (kin.alive && kin.knock > 0 && !keepKnock) kin.knock = Math.min(kin.knock, 0.3);
       kin.reel.ext = false;
+      // Теперь его очередь: пока собирается и идёт в ответ, простым кулаком новую серию не начать
+      if (kin.kind === 'general') kin.cd.answer = Math.max(kin.knock, 0) + 1.2;
     }
     this.kin = null;
     this.state = null;
@@ -182,7 +187,8 @@ export class Chain {
     this.coilLen = !this.big ? 0.2 : this.final ? 0.68 : 0.5;
     this.driveLen = this.big ? 0.14 : 0.09;
     this.side = -this.side;
-    P.blow = { side: this.side > 0 ? 'R' : 'L', f: 0, k: 0, pitch: 0 };
+    this.kind = this.final ? (this.aim.y > 0.35 ? 'upper' : 'hammer') : this.big ? KINDS[(this.n - 1) % KINDS.length] : this.n % 2 ? 'hook' : 'straight';
+    P.blow = { side: this.side > 0 ? 'R' : 'L', f: 0, k: 0, pitch: 0, kind: this.kind };
     I.timeScale = 0.85;
     _d.subVectors(kin.c, I.heroC).normalize();
     I.fx.chainRush(I.heroC, _d);
@@ -194,13 +200,16 @@ export class Chain {
     if (!kin) { P.driven = null; return; }
     const rdt = I.realDt;
     this.left -= rdt;
-    const c = _s.copy(P.pos).addScaledVector(UP, 1);
+    const c = _s.copy(P.pos).addScaledVector(UP, 1), way = BLOW_WAY[this.kind];
+    // Лицом к цели. Идёт к точке над ней, если бьёт сверху, и под ней, если снизу
+    _f.subVectors(kin.c, c).normalize();
     _d.subVectors(kin.c, c);
+    if (this.phase !== 'rush') _d.y += way.rise;
     const dist = _d.length();
     _d.divideScalar(dist || 1);
-    P.lockDir = (P.lockDir || new THREE.Vector3()).copy(_d);
+    P.lockDir = (P.lockDir || new THREE.Vector3()).copy(_f);
     // До какого зазора дойти к концу этапа. Время считаем настоящее: от замедления рывок не зависит
-    const gap = this.phase === 'rush' ? (this.big ? 13 : 6) : this.phase === 'coil' ? 2.5 : 1.35;
+    const gap = this.phase === 'rush' ? (this.big ? 13 : 6) : this.phase === 'coil' ? way.gap + 1.15 : way.gap;
     const speed = Math.max(0, dist - gap) / Math.max(this.left, 0.02);
     _p0.copy(P.pos);
     P.pos.addScaledVector(_d, Math.min(speed * rdt, Math.max(0, dist - gap)));
@@ -216,21 +225,22 @@ export class Chain {
     if (this.phase === 'coil') {
       b.k = Math.min(1, b.k + rdt / 0.1);
       b.f = clamp(1 - this.left / this.coilLen, 0, 1);
-      this.leanTo(_d, -0.26, rdt, 12);
+      this.leanTo(_f, rdt, 12);
       if (this.left <= 0) {
         this.phase = 'drive';
         this.left = this.driveLen;
         I.timeScale = 0.3;
+        I.fx.play('swing', { gain: 0.95, rate: this.final ? 0.8 : 1 });
       }
     } else if (this.phase === 'drive') {
       b.k = 1;
       b.f = 1 + clamp(1 - this.left / this.driveLen, 0, 1);
-      this.leanTo(_d, 0.42, rdt, 22);
+      this.leanTo(_f, rdt, 22);
       if (this.left <= 0) this.contact();
     } else if (this.phase === 'push') {
       // Кулак вошёл и давит дальше: цель ещё не улетела, тело только складывается
       b.f = 2 + 0.28 * clamp(1 - this.left / this.pushLen, 0, 1);
-      this.leanTo(_d, 0.5, rdt, 10);
+      this.leanTo(_f, rdt, 10);
       if (this.left <= 0) this.release();
     }
   }
@@ -249,11 +259,11 @@ export class Chain {
     I.theme.duck(0.65);
   }
 
-  // Плавно ведём корпус героя: лицом к цели, с наклоном от неё (замах) или в неё (удар)
-  leanTo(dir, lean, rdt, rate) {
+  // Ведём корпус героя: лицом к цели, с наклоном и поворотом, какие нужны этому удару
+  leanTo(dir, rdt, rate) {
     const P = this.inv.player;
     if (!P.poseQ) P.poseQ = P.quat.clone();
-    P.poseQ.slerp(blowQuat(_q, dir, lean), 1 - Math.exp(-rate * rdt));
+    aimBlow(P.poseQ, dir, P.blow, rdt, rate);
   }
 
   // Герой прошивает здания на пути
@@ -274,6 +284,7 @@ export class Chain {
         smashed++;
       }
     }
+    return smashed;
   }
 
   keepAbove(P) {
@@ -291,7 +302,7 @@ export class Chain {
   contact() {
     const I = this.inv, P = I.player, kin = this.kin;
     // Генерал во второй половине боя иногда успевает встретить кулак
-    if (kin.kind === 'general' && kin.alive && Math.random() < kin.tempo.breakChain) {
+    if (kin.kind === 'general' && kin.alive && Math.random() < kin.tempo.breakChain + 0.06 * (this.n - 1)) {
       const k = this.kin;
       P.driven = null;
       this.end();
@@ -301,7 +312,8 @@ export class Chain {
     const i = Math.min(this.n, MAX_HITS - 1);
     this.final = this.n >= MAX_HITS - 1;
     const dmg = DMG[i];
-    const point = P.model.fistWorldPos(P.blow?.side || 'R', new THREE.Vector3());
+    // Плечо бьёт всем телом: удар там, где сошлись корпуса
+    const point = this.kind === 'shoulder' ? new THREE.Vector3().lerpVectors(I.heroC, kin.c, 0.55) : P.model.fistWorldPos(P.blow?.side || 'R', new THREE.Vector3());
     // Куда полетит: взгляд в момент нажатия + узор + клавиши
     const dir = this.pickDir(kin);
     this.hitDir.copy(dir);
@@ -340,7 +352,7 @@ export class Chain {
     I.fx.chainRelease(kin.c, dir, this.n, this.final || this.dead, kin);
     if (this.dead || this.final) {
       // Финальный удар: большой разгон и долгий кадр
-      if (this.dead) kin.launch(dir, lerp(420, 2200, spaceK(kin.pos.y)), kin.kind === 'general' ? 99 : 1.5);
+      if (this.dead) kin.launch(dir, lerp(420, 700, spaceK(kin.pos.y)), kin.kind === 'general' ? 99 : 1.5);
       else {
         kin.go?.('knock');
         this.launch(kin, dir, 1.8, 1.6);
@@ -364,14 +376,23 @@ export class Chain {
     const right = _r.crossVectors(this.aim, UP);
     if (right.lengthSq() < 0.01) right.set(1, 0, 0);
     right.normalize();
-    const [px, py] = PATTERN[this.n % PATTERN.length];
-    d.addScaledVector(right, px * 0.55).addScaledVector(UP, py * 0.55);
+    // Цель уходит туда, куда её толкает удар: боковой гонит поперёк, сверху вниз, снизу вверх
+    const s = this.side > 0 ? -1 : 1, kind = this.kind;
+    if (kind === 'hook') d.addScaledVector(right, s * 0.8).addScaledVector(UP, 0.1);
+    else if (kind === 'back') d.addScaledVector(right, -s * 0.7).addScaledVector(UP, 0.25);
+    else if (kind === 'shoulder') d.addScaledVector(UP, 0.1);
+    else if (kind === 'hammer') d.set(this.aim.x * 0.35, -1, this.aim.z * 0.35);
+    else if (kind === 'upper') d.multiplyScalar(0.35).addScaledVector(UP, 1);
+    else {
+      const [px, py] = PATTERN[this.n % PATTERN.length];
+      d.addScaledVector(right, px * 0.55).addScaledVector(UP, py * 0.55);
+    }
     if (input) {
       d.addScaledVector(right, input.moveX * 1.1).addScaledVector(UP, input.moveY * 1.1);
     }
     d.normalize();
     // У земли и над городом отправляем вниз только сознательно: взгляд вниз или клавиша C
-    if (kin.pos.y - kin.groundY < 80 && this.aim.y > -0.45 && !(input && input.moveY < 0)) d.y = Math.max(d.y, 0.12);
+    if (kind !== 'hammer' && kin.pos.y - kin.groundY < 80 && this.aim.y > -0.45 && !(input && input.moveY < 0)) d.y = Math.max(d.y, 0.12);
     return d.normalize();
   }
 

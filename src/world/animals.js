@@ -568,6 +568,17 @@ export class Animals {
     for (let k = 0; k < 4; k++) M.legs.setMatrixAt(a.slot * 4 + k, _zero);
   }
 
+  // Сцене нужна пустая площадка
+  clearAround(center, r) {
+    for (const a of this.list) {
+      if (a.state === 'none' || a.pos.distanceTo(center) > r) continue;
+      if (a.owner) a.owner.dog = null;
+      a.owner = null;
+      a.state = 'none';
+      this.hide(a);
+    }
+  }
+
   clear() { for (const a of this.list) { if (a.owner) a.owner.dog = null; a.owner = null; a.state = 'none'; this.hide(a); } }
 }
 

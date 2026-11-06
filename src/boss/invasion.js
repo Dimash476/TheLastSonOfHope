@@ -4,6 +4,8 @@ import { Warship, SHIP } from './warship.js';
 import { Soldier, Bolts } from './soldier.js';
 import { Xarg, XARG_HP } from './xarg.js';
 import { Chain } from './chain.js';
+import { Seize } from './seize.js';
+import { Finale } from './finale.js';
 import { Story } from './story.js';
 import { Parley } from './parley.js';
 import { BattleTheme } from './theme.js';
@@ -24,7 +26,7 @@ const ARRIVE = 20;      // с: от края космоса до зависан�
 const WARN_T = 11;
 const SOLDIERS = 10;
 const WAVE_GOAL = 6;    // столько солдат надо вывести из боя: дальше генерал отзывает остальных
-const HERO_HP = 300;    // в этом режиме герой держит втрое больше, чем в бою с Колоссом
+const HERO_HP = 500;    // в этом режиме герой держит впятеро больше, чем в бою с Колоссом
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _p = new THREE.Vector3(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _r = new THREE.Vector3();
@@ -69,6 +71,8 @@ export class Invasion {
     this.prevXarg = new THREE.Vector3();
     this.bolts = new Bolts(scene, this);
     this.chain = new Chain(this);
+    this.seize = new Seize(this);
+    this.finale = new Finale(this);
     this.parley = new Parley(this);
     this.story = new Story(this);
     this.theme = new BattleTheme(world.audio);
@@ -117,6 +121,7 @@ export class Invasion {
     this.active = true;
     this.ended = false;
     this.time = 0;
+    this.fightLen = null;
     this.stage = 'warn';
     this.stageT = 0;
     this.fightOn = false;
@@ -177,6 +182,8 @@ export class Invasion {
     this.camRig.focus = this.focus;
     this.camRig.shot = null;
     this.chain.reset();
+    this.seize.reset();
+    this.finale.reset();
     this.story.reset();
     this.bolts.clear();
     this.parley.cancel();
@@ -214,6 +221,8 @@ export class Invasion {
     if (this.pool) this.hideKin();
     this.bolts.clear();
     this.chain.reset();
+    this.seize.reset();
+    this.finale.reset();
     this.story.stop();
     this.parley.cancel();
     P.punchLen = undefined;
@@ -269,6 +278,7 @@ export class Invasion {
   // Субтитр держится столько, чтобы его успели прочитать; пока он на экране, следующий ждёт очереди.
   // now — важная реплика (конец боя): сразу, очередь сбрасывается
   say(text, t = 0, now = false) {
+    if (this.finale.on && !now) return;
     if (now) this.subQ.length = 0;
     else if (this.subT > 0) {
       if (this.subQ.length >= 2) this.subQ.shift();
@@ -497,15 +507,13 @@ export class Invasion {
     }
   }
 
-  onXargDown() {
+  // Генерал убит. Сцена сама скажет, когда показать итог
+  onXargDown(dir) {
     if (this.endT !== null) return;
-    this.slowFor(0.25, 1.4);
-    this.finishIn(true, 12);
-    this.say('Сорок кораблей… Они… всё равно…', 3.5, true);
-    this.theme.stinger();
-    this.theme.finish(true);
+    this.finishIn(true, 999);
+    this.fightLen = this.time;
+    this.finale.begin(dir);
     for (const s of this.soldiers) s.retreat();
-    if (!this.shipDown) this.shipLeaveT = 2.5;
   }
 
   // Корабль уничтожен: это не обязательно для победы, но такое он запомнит
@@ -523,6 +531,7 @@ export class Invasion {
   onShipHit() {
     if (!this.fightOn) this.onFirstBlood();
     this.el.shipUI.classList.remove('hidden');
+    if (this.stage === 'duel' && this.pool) this.xarg.defendShip();
   }
 
   // Бой тянется к центру города: сильные удары отбрасывают туда, где есть что ломать
@@ -564,7 +573,7 @@ export class Invasion {
     this.ship.setHum(0);
     this.fx.muteLoops();
     this.world.audio?.setLaser(0, 0);
-    const m = Math.floor(this.time / 60), s = Math.floor(this.time % 60);
+    const len = this.fightLen ?? this.time, m = Math.floor(len / 60), s = Math.floor(len % 60);
     const lost = this.world.city.destroyed - this.destroyed0;
     const stats = `Бой длился ${m}:${String(s).padStart(2, '0')} · разрушено зданий: ${lost}`;
     const after = this.shipDown
@@ -578,9 +587,9 @@ export class Invasion {
   // ---------------------------------------------------------------- урон герою
   // knock — вектор скорости отброса (или null), cont — непрерывный урон (луч)
   hurtHero(amount, knock, cont = false, minGap = 0.12) {
-    if (!this.active || this.ended || this.heroDown || !this.fightOn) return;
+    if (!this.active || this.ended || this.heroDown || !this.fightOn || this.finale.on) return;
     const P = this.player, W = this.world;
-    if (P.driven === this.chain.driven) return;   // в рывке серии его не поймать
+    if (P.driven === this.chain.driven || P.driven === this.seize.driven) return;   // в рывке серии и в захвате его не поймать
     if (!cont && this.time - this.lastHurt < minGap) return;
     this.heroHP = Math.max(0, this.heroHP - amount);
     this.lastHurtAny = this.time;
@@ -651,25 +660,31 @@ export class Invasion {
     }
   }
 
-  // Кулак в кулак: оба отлетают, генерал дольше собирается
-  clash(kin) {
+  // Кулак в кулак: оба отлетают, генерал дольше собирается.
+  // big — лобовое столкновение на полном ходу: обоих разносит гораздо дальше
+  clash(kin, big = false) {
     const P = this.player;
     const dir = _v.subVectors(this.heroC, kin.c);
     if (dir.lengthSq() < 0.01) dir.copy(kin.aim).negate();
     dir.normalize();
     const point = _p.lerpVectors(this.heroC, kin.c, 0.5).clone();
-    const sp = lerp(70, 520, spaceK(point.y));
+    const sp = lerp(70, 200, spaceK(point.y)) * (big ? 3.2 : 1);
     P.vel.copy(dir).multiplyScalar(sp);
-    P.knockT = 0.22;
+    P.knockT = big ? 0.55 : 0.22;
     P.grounded = false;
     P.falling = false;
     P.punchT = -1;
     kin.chainEnd();
     kin.launch(dir.clone().negate(), sp * 1.2, 0.55);
     kin.go('knock');
+    if (kin.kind === 'general') kin.cd.answer = 1.5;
     this.counterT = 1;
     this.fx.clash(point, dir);
-    this.slowFor(0.3, 0.3);
+    if (big) {
+      this.fx.play('collide', { pos: point });
+      this.fx.crashZoom(13, 0.3);
+    }
+    this.slowFor(big ? 0.2 : 0.3, big ? 0.5 : 0.3);
   }
 
   // Генерал вырывается, если герой держит его слишком долго
@@ -825,6 +840,8 @@ export class Invasion {
     this.realDt = dt;
     if (!this.active || !this.fightOn || !this.pool) return;
     const P = this.player;
+    // R рядом с врагом запускает сцену захвата. Врага нет — обычный захват: машина или обломок
+    if (input.grab && this.seize.tryStart()) input.grab = false;
     const free = (P.punchT < 0 || P.punchT > (P.punchLen ?? PC.punchDuration) * 0.55) && P.charge <= 0 && !P.slamming && !P.driven;
     if (this.chain.kin) {
       // Идёт серия: нажатие — это следующий удар серии, он дождётся своего кадра
@@ -869,6 +886,7 @@ export class Invasion {
     const started = P.punchT >= 0 && !P.punchHit && P.punchPower === 0 && (this.prevPunchT < 0 || P.punchT < this.prevPunchT);
     this.prevPunchT = P.punchT;
     if (started && !P.driven) {
+      this.fx.play('swing', { gain: 0.7 });
       const t = this.findTarget(45);
       if (t) { this.assistKin = t; this.assistT = P.punchHitAt ?? PC.punchHitTime; }
     }
@@ -911,7 +929,8 @@ export class Invasion {
     this.sideCur += ((C.side || 1) * 1.5 - this.sideCur) * (1 - Math.exp(-5 * realDt));
     if (St.lock) { F.pos.copy(St.lock.pos); F.k += (0.85 - F.k) * (1 - Math.exp(-6 * realDt)); F.rate = 7; F.dist = 7; F.side = 2.2; F.lift = 0.5; F.fov = 48; return; }
     if (St.cutLook > 0 && St.falling) { St.chunkTop(St.falling, F.pos); F.k += (0.75 - F.k) * (1 - Math.exp(-5 * realDt)); F.rate = 5; F.dist = 7; F.side = 1.6; F.fov = 62; return; }
-    if (St.brawlOn && !C.kin) { target = X; want = 0.8; F.rate = 10; F.dist = 4; F.side = 1.4; F.lift = 0.3; F.fov = 46; }
+    if (this.seize.kin) { target = this.seize.kin; want = 0.85; F.rate = 10; F.dist = 6; F.side = 1.8; F.lift = 0.7; F.fov = 58; }
+    else if (St.brawlOn && !C.kin) { target = X; want = 0.8; F.rate = 10; F.dist = 4; F.side = 1.4; F.lift = 0.3; F.fov = 46; }
     else if (C.kin && C.state === 'chase') { target = C.kin; want = 1; F.rate = 16; F.dist = 6; F.side = this.sideCur; F.lift = 0.7; F.fov = 66; }
     else if (C.kin) {
       // Цель улетает: объектив сужается вслед за ней, как у оператора с длинным фокусом
@@ -921,7 +940,7 @@ export class Invasion {
       F.fov = clamp(46 * 120 / Math.max(1, target.c.distanceTo(this.heroC)), 20, 46);
     }
     else if (X && X.state === 'chain' && X.blow) { target = X; want = 0.9; F.rate = 12; F.dist = 3.8; F.side = 1.7; F.lift = 0.4; F.fov = 44; }
-    else if (X && (X.state === 'chain' || X.state === 'carry')) { target = X; want = 0.6; F.rate = 8; F.dist = 5.5; F.side = 1.2; }
+    else if (X && (X.state === 'chain' || X.state === 'carry' || X.state === 'shoulder' || X.state === 'grab')) { target = X; want = 0.6; F.rate = 8; F.dist = 5.5; F.side = 1.2; }
     else if (this.fightOn && this.softLock && !this.heroDown && this.muteT <= 0) {
       this.softT -= realDt;
       if (this.softT <= 0) {
@@ -944,6 +963,14 @@ export class Invasion {
     this.heroC.copy(P.pos).addScaledVector(UP, 1);
     if (this.counterT > 0) this.counterT -= realDt;
     if (P.dashT <= 0) this.dodgeLock = false;
+    // Отбросило и отпустило: резко тормозит корпусом, воздух бьёт вокруг
+    const knocked = P.knockT > 0;
+    if (this.wasKnocked && !knocked && !P.grounded && !P.driven && !P.captured && P.dashT <= 0 && !this.heroDown && this.fightOn) {
+      if (P.speed > 40) W.effects.shockwave(this.heroC.clone(), { type: 'disc', dir: P.vel.clone().normalize(), radius: 10, life: 0.35, opacity: 0.55 });
+      P.vel.multiplyScalar(0.18);
+      this.fx.play('brake');
+    }
+    this.wasKnocked = knocked;
     if (this.slowT > 0) {
       this.slowT -= realDt;
       if (this.slowT <= 0) this.timeScale = this.chain.state === 'window' ? 0.5 : 1;
@@ -969,6 +996,8 @@ export class Invasion {
     this.fx.update(dt, realDt);
     this.stepStage(dt, realDt, input);
     this.chain.update(realDt);
+    this.seize.update(realDt);
+    this.finale.update(realDt);
     this.parley.update(realDt, input);
 
     if (this.fightOn && this.pool && !this.heroDown) {
@@ -987,8 +1016,11 @@ export class Invasion {
       const sp = P.speed;
       if (sp > 140 && this.ramCd <= 0 && !P.driven && !P.captured && P.knockT <= 0) {
         this.each((k) => {
-          if (this.ramCd > 0 || k.c.distanceTo(this.heroC) > 2.6 + sp * realDt) return;
+          // Оба шли на полном ходу навстречу: никто никого не пробил, столкнулись
+          const headOn = k === this.xarg && (k.state === 'shoulder' || k.state === 'grab' || (k.state === 'chain' && k.chainStep === 'rush')) && P.vel.dot(k.vel) < 0;
+          if (this.ramCd > 0 || k.c.distanceTo(this.heroC) > 2.6 + (sp + (headOn ? k.vel.length() : 0)) * realDt) return;
           this.ramCd = 0.5;
+          if (headOn) { this.clash(k, true); return; }
           const dir = P.vel.clone().normalize();
           k.receive('ram', clamp(sp / 900, 0, 1), k.c.clone(), dir);
           P.vel.multiplyScalar(0.45);
@@ -1106,7 +1138,7 @@ export class Invasion {
         break;
       }
       case 'duel': {
-        if (this.pendingClimb && !this.chain.kin && X.state === 'neutral') {
+        if (this.pendingClimb && !this.chain.kin && ['neutral', 'recover', 'regain'].includes(X.state)) {
           this.pendingClimb = false;
           if (X.startClimb()) this.story.radio('ОРБИТАЛЬНЫЙ МОНИТОРИНГ: Цель уходит вертикально вверх. Покидает атмосферу.');
         }

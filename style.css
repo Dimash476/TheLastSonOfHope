@@ -193,6 +193,8 @@ kbd {
 
 #map-fade { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity 0.8s ease-out; }
 #map-fade.black { opacity: 1; transition: none; }
+#inv-fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; }
+#inv-fade.on { opacity: 1; transition: opacity 2.6s ease-in; }
 #hurt-flash { position: absolute; inset: 0; opacity: 0; pointer-events: none; background: radial-gradient(ellipse at center, rgba(255, 0, 0, 0) 45%, rgba(200, 20, 10, 0.55) 100%); }
 
 /* ---------- Вторжение ---------- */

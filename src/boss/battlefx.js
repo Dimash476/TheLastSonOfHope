@@ -96,44 +96,142 @@ function rubble(c, dest, n, t, span, count, gain, lo, hi) {
   }
 }
 
-// Удар кулака: щелчок кости, перегруженное тело, провал суба, низкий металл, хвост
-function hitSound(c, d, n, b, p) {
-  const hard = drive(c, 4.4, d), soft = drive(c, 2, d);
-  nburst(c, hard, n, 0, 0.012, 1, { type: 'highpass', freq: 3000 });
-  nburst(c, d, n, 0, 0.03, 0.45, { type: 'bandpass', freq: 5200, q: 0.7 });
-  sweep(c, hard, 0, 0.26, 300 * p, 62 * p, 1, 'triangle', 0.3);
-  nburst(c, hard, n, 0, 0.16, 1, { freq: 2400 * p, to: 180 });
-  sweep(c, soft, 0, 1.2, 135 * p, 30 * p, 1, 'sine', 0.22);
-  sweep(c, soft, 0.012, 0.8, 70 * p, 26, 0.8, 'sine', 0.4);
-  clang(c, d, 0, 92 * p, 0.2, 0.6);
-  nburst(c, d, b, 0.01, 1.4, 0.85, { freq: 360, to: 50, attack: 0.01 });
+// Воздух рвётся вокруг тела на сверхзвуке: полоса шума идёт вверх и вниз, поток бьётся турбулентностью, снизу давит пила
+function superWhoosh(c, d, n, t, dur, gain, from = 180, peak = 900, to = 120) {
+  const s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain(), lfo = c.createOscillator(), depth = c.createGain();
+  s.buffer = n;
+  s.loop = true;
+  f.type = 'bandpass';
+  f.Q.value = 0.85;
+  f.frequency.setValueAtTime(from, t);
+  f.frequency.exponentialRampToValueAtTime(peak, t + dur * 0.55);
+  f.frequency.exponentialRampToValueAtTime(to, t + dur);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(gain, t + dur * 0.5);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  lfo.type = 'triangle';
+  lfo.frequency.setValueAtTime(18, t);
+  lfo.frequency.linearRampToValueAtTime(40, t + dur * 0.55);
+  lfo.frequency.linearRampToValueAtTime(20, t + dur);
+  depth.gain.setValueAtTime(0, t);
+  depth.gain.linearRampToValueAtTime(gain * 0.45, t + dur * 0.5);
+  depth.gain.linearRampToValueAtTime(0, t + dur);
+  lfo.connect(depth).connect(g.gain);
+  s.connect(f).connect(g).connect(d);
+  s.start(t, Math.random());
+  s.stop(t + dur + 0.02);
+  lfo.start(t);
+  lfo.stop(t + dur + 0.02);
+  const lp = c.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 240;
+  lp.connect(d);
+  sweep(c, lp, t + dur * 0.25, dur * 0.7, 58, 38, gain * 0.5, 'sawtooth', 1);
 }
 
-// Удар серии в полёте: два удара подряд, как один — кость и всё тело, потом суб держит пол
+// Две массы встретились на сверхзвуке: ударная волна щёлкает дважды, тело перегружено и падает вниз,
+// искажённый бас, короткий металл, а следом идёт волна давления
+function impact(c, d, n, b, p) {
+  const crack = drive(c, 6, d), body = drive(c, 5.5, d), bass = drive(c, 3.4, d);
+  nburst(c, crack, n, 0, 0.014, 1, { type: 'highpass', freq: 2400 });
+  nburst(c, crack, n, 0.028, 0.016, 0.85, { type: 'highpass', freq: 1500 });
+  nburst(c, d, n, 0, 0.05, 0.5, { type: 'bandpass', freq: 4200, q: 0.7 });
+  sweep(c, body, 0, 0.34, 420 * p, 55 * p, 1, 'sawtooth', 0.24);
+  sweep(c, body, 0.006, 0.42, 260 * p, 48 * p, 0.9, 'triangle', 0.3);
+  nburst(c, body, n, 0, 0.12, 1, { freq: 3000 * p, to: 220 });
+  sweep(c, bass, 0.01, 0.9, 110 * p, 28, 1, 'sawtooth', 0.3);
+  sweep(c, bass, 0.012, 1.3, 88 * p, 26, 1, 'sine', 0.3);
+  clang(c, d, 0, 180 * p, 0.16, 0.7);
+  nburst(c, d, b, 0.06, 1.2, 0.8, { freq: 520, to: 70, attack: 0.09 });
+  nburst(c, d, n, 0.06, 0.7, 0.16, { type: 'bandpass', freq: 380, to: 120, q: 0.6, attack: 0.08 });
+}
+
+// Обычный удар
+function hitSound(c, d, n, b, p) {
+  impact(c, d, n, b, p);
+  nburst(c, d, b, 0.01, 1.4, 0.85, { freq: 300, to: 44, attack: 0.01 });
+}
+
+// Удар серии в полёте: ещё один удар всем телом вслед за первым, потом суб держит пол, рокот и щебень
 function chainSound(c, d, n, b, p) {
+  impact(c, d, n, b, p * 0.92);
   const hard = drive(c, 5.4, d), mid = drive(c, 2.6, d);
-  nburst(c, mid, n, 0, 0.018, 1, { type: 'highpass', freq: 1800 });
-  sweep(c, hard, 0, 0.24, 420 * p, 70 * p, 1, 'triangle', 0.22);
-  nburst(c, hard, n, 0, 0.1, 1, { freq: 3400 * p, to: 260 });
-  sweep(c, hard, 0.028, 0.5, 190 * p, 44 * p, 1, 'sawtooth', 0.3);
-  nburst(c, hard, b, 0.028, 0.4, 1, { freq: 900, to: 120 });
-  sweep(c, mid, 0.01, 1.9, 120 * p, 24, 1, 'sine', 0.22);
-  sweep(c, mid, 0.03, 1.4, 62 * p, 22, 0.9, 'sine', 0.4);
-  clang(c, mid, 0, 84 * p, 0.34, 1.1);
+  sweep(c, hard, 0.032, 0.5, 190 * p, 44 * p, 1, 'sawtooth', 0.3);
+  nburst(c, hard, b, 0.03, 0.4, 1, { freq: 900, to: 120 });
+  sweep(c, mid, 0.01, 2, 96 * p, 24, 1, 'sine', 0.22);
+  sweep(c, mid, 0.03, 1.5, 58 * p, 22, 0.9, 'sine', 0.4);
+  clang(c, mid, 0, 110 * p, 0.3, 1.2);
   groan(c, d, 0.03, 1.1, 46 * p, 0.2);
-  nburst(c, d, b, 0.04, 2.6, 1, { freq: 480, to: 40, attack: 0.01 });
-  rubble(c, d, n, 0.08, 1.2, 16, 0.12, 200, 1400);
+  nburst(c, d, b, 0.04, 2.8, 1, { freq: 480, to: 36, attack: 0.01 });
+  rubble(c, d, n, 0.08, 1.2, 14, 0.1, 200, 1400);
 }
 
 const SOUNDS = {
-  hit0: { sec: 2, wet: 0.2, build: (c, d, n, b) => hitSound(c, d, n, b, 1) },
-  hit1: { sec: 2, wet: 0.2, build: (c, d, n, b) => hitSound(c, d, n, b, 0.86) },
-  hit2: { sec: 2, wet: 0.2, build: (c, d, n, b) => hitSound(c, d, n, b, 1.14) },
-  chain0: { sec: 3.4, wet: 0.32, build: (c, d, n, b) => chainSound(c, d, n, b, 1) },
-  chain1: { sec: 3.4, wet: 0.32, build: (c, d, n, b) => chainSound(c, d, n, b, 0.88) },
-  chain2: { sec: 3.4, wet: 0.32, build: (c, d, n, b) => chainSound(c, d, n, b, 1.1) },
+  hit0: { sec: 2.4, wet: 0.28, sat: 1.5, build: (c, d, n, b) => hitSound(c, d, n, b, 1) },
+  hit1: { sec: 2.4, wet: 0.28, sat: 1.5, build: (c, d, n, b) => hitSound(c, d, n, b, 0.86) },
+  hit2: { sec: 2.4, wet: 0.28, sat: 1.5, build: (c, d, n, b) => hitSound(c, d, n, b, 1.14) },
+  chain0: { sec: 3.6, wet: 0.42, sat: 1.6, build: (c, d, n, b) => chainSound(c, d, n, b, 1) },
+  chain1: { sec: 3.6, wet: 0.42, sat: 1.6, build: (c, d, n, b) => chainSound(c, d, n, b, 0.88) },
+  chain2: { sec: 3.6, wet: 0.42, sat: 1.6, build: (c, d, n, b) => chainSound(c, d, n, b, 1.1) },
+  // Кулак режет воздух: короткий глубокий свист перед самым ударом
+  swing: { sec: 0.8, wet: 0.18, sat: 1.3, build(c, d, n, b) {
+    superWhoosh(c, d, n, 0, 0.5, 1, 140, 640, 90);
+    nburst(c, d, b, 0, 0.45, 0.9, { freq: 260, to: 80, attack: 0.18 });
+  } },
+  // Сверхзвуковой хлопок и раскат: гром катится ещё несколько секунд
+  sonicBoom: { sec: 5, wet: 0.7, sat: 1.5, build(c, d, n, b) {
+    const dr = drive(c, 4.5, d);
+    for (const t of [0, 0.11]) {
+      nburst(c, dr, n, t, 0.03, 1, { type: 'highpass', freq: 900 });
+      sweep(c, dr, t, 0.9, 150, 26, 1, 'sine', 0.25);
+      sweep(c, dr, t, 0.22, 320, 60, 0.8, 'sawtooth', 0.4);
+    }
+    nburst(c, d, b, 0.1, 4.4, 1, { freq: 520, to: 30, attack: 0.05 });
+    for (let t = 0.3; t < 2.6; t += 0.16 + Math.random() * 0.3) sweep(c, d, t, 1, 46 + Math.random() * 24, 24, 0.35 * (1 - t / 3), 'sine', 0.4);
+  } },
+  // Резкий тормоз в воздухе: поток упирается в корпус
+  brake: { sec: 1.1, wet: 0.25, sat: 1.3, build(c, d, n, b) {
+    superWhoosh(c, d, n, 0, 0.6, 1, 900, 420, 110);
+    sweep(c, drive(c, 2.6, d), 0.03, 0.5, 90, 30, 0.9, 'sine', 0.3);
+    nburst(c, d, b, 0, 0.8, 0.8, { freq: 360, to: 60, attack: 0.02 });
+  } },
+  // Лобовое столкновение: два удара серии разом и хлопок
+  collide: { sec: 4.6, wet: 0.6, sat: 1.7, build(c, d, n, b) {
+    chainSound(c, d, n, b, 0.72);
+    const dr = drive(c, 4.5, d);
+    nburst(c, dr, n, 0.018, 0.03, 1, { type: 'highpass', freq: 900 });
+    sweep(c, dr, 0.018, 1.4, 130, 22, 1, 'sine', 0.25);
+    clang(c, d, 0, 96, 0.4, 2.2);
+    nburst(c, d, b, 0.05, 3.8, 1, { freq: 520, to: 30, attack: 0.03 });
+  } },
+  // Тело прошло сквозь обшивку корабля: металл рвётся, корпус отвечает стоном
+  shipRam: { sec: 5.5, wet: 0.7, sat: 1.6, build(c, d, n, b) {
+    const dr = drive(c, 5, d);
+    sweep(c, dr, 0, 0.5, 240, 40, 1, 'sawtooth', 0.3);
+    nburst(c, dr, n, 0, 0.35, 1, { freq: 2600, to: 180 });
+    sweep(c, dr, 0, 2.2, 74, 18, 1, 'sine', 0.3);
+    clang(c, d, 0, 70, 0.5, 2.4);
+    clang(c, d, 0.06, 140, 0.35, 1.6);
+    for (let i = 0; i < 18; i++) {
+      const t = Math.pow(Math.random(), 1.5) * 1.1;
+      sweep(c, d, t, 0.16, 1400 + Math.random() * 2200, 400, 0.1, 'sawtooth', 1);
+    }
+    groan(c, d, 0.1, 3.6, 40, 0.5);
+    nburst(c, d, b, 0, 4.6, 1, { freq: 420, to: 32, attack: 0.02 });
+    rubble(c, d, n, 0.1, 3, 40, 0.2, 180, 1400);
+  } },
+  // Раскрутка перед броском: обороты всё чаще, воздух всё выше
+  whirl: { sec: 1.6, wet: 0.2, sat: 1.3, build(c, d, n, b) {
+    let t = 0, step = 0.34;
+    while (t < 1) {
+      superWhoosh(c, d, n, t, step * 1.25, 0.5 + 0.5 * t, 200 + t * 300, 700 + t * 900, 160);
+      t += step;
+      step = Math.max(0.1, step * 0.72);
+    }
+    nburst(c, d, b, 0, 1.2, 0.9, { freq: 240, to: 420, attack: 0.8 });
+  } },
   // Последний удар серии: ломается всё сразу, дальше долгий обвал воздуха
-  chainFinal: { sec: 7, wet: 0.6, build(c, d, n, b) {
+  chainFinal: { sec: 7, wet: 0.65, sat: 1.7, build(c, d, n, b) {
     chainSound(c, d, n, b, 0.8);
     const dr = drive(c, 3.4, d);
     sweep(c, dr, 0.02, 3.4, 92, 17, 1, 'sine', 0.3);
@@ -147,18 +245,18 @@ const SOUNDS = {
     nburst(c, d, n, 0, 0.62, 0.6, { type: 'bandpass', freq: 520, q: 0.7, attack: 0.58 });
     nburst(c, d, b, 0, 0.62, 1, { freq: 300, attack: 0.56 });
   } },
-  // Рывок на сверхскорости: хлопок воздуха, двойной удар и гул следом
-  rush: { sec: 2.8, wet: 0.35, build(c, d, n, b) {
+  // Рывок на сверхскорости: хлопок воздуха, двойной удар, рвущийся поток и гул следом
+  rush: { sec: 2.8, wet: 0.35, sat: 1.4, build(c, d, n, b) {
     const dr = drive(c, 3.2, d);
     for (const t of [0, 0.07]) {
       nburst(c, dr, n, t, 0.05, 1, { type: 'highpass', freq: 600 });
       sweep(c, dr, t, 0.8, 125, 28, 0.95, 'sine', 0.3);
     }
-    nburst(c, dr, n, 0.03, 0.7, 0.8, { type: 'bandpass', freq: 800, to: 200, q: 0.8, attack: 0.02 });
+    superWhoosh(c, d, n, 0, 1.3, 1, 260, 1100, 140);
     nburst(c, d, b, 0.03, 2.3, 1, { freq: 420, to: 60, attack: 0.03 });
   } },
   // Сверхзвуковой хлопок: двойной удар воздуха и долгий гул
-  bigBoom: { sec: 5.5, wet: 0.6, build(c, d, n, b) {
+  bigBoom: { sec: 5.5, wet: 0.6, sat: 1.4, build(c, d, n, b) {
     const dr = drive(c, 3.4, d);
     for (const t of [0, 0.085]) {
       nburst(c, dr, n, t, 0.06, 1, { type: 'highpass', freq: 400 });
@@ -182,14 +280,15 @@ const SOUNDS = {
     clang(c, d, 0.02, 70, 0.22, 1.3);
     groan(c, d, 0.12, 2.4, 50, 0.3);
   } },
-  // Пролёт рядом: только воздух, без роста тона
-  flyby: { sec: 1.8, wet: 0.3, build(c, d, n, b) {
-    nburst(c, d, n, 0, 1.3, 0.55, { type: 'bandpass', freq: 380, to: 1100, q: 0.9, attack: 0.46 });
+  // Пролёт рядом: рвущийся поток воздуха
+  flyby: { sec: 1.8, wet: 0.3, sat: 1.3, build(c, d, n, b) {
+    superWhoosh(c, d, n, 0, 1.4, 0.9, 220, 1000, 130);
     nburst(c, d, b, 0, 1.45, 1, { freq: 260, to: 110, attack: 0.5 });
   } },
-  // Кулак в кулак: низкий металлический удар
-  clash: { sec: 3.2, wet: 0.5, build(c, d, n, b) {
+  // Кулак в кулак: щелчок ударной волны и низкий металлический удар
+  clash: { sec: 3.2, wet: 0.5, sat: 1.5, build(c, d, n, b) {
     const dr = drive(c, 4, d);
+    nburst(c, dr, n, 0.026, 0.016, 0.8, { type: 'highpass', freq: 1500 });
     sweep(c, dr, 0, 1.1, 140, 26, 1, 'sine', 0.26);
     sweep(c, dr, 0, 0.26, 330, 70, 1, 'sawtooth', 0.26);
     nburst(c, dr, n, 0, 0.06, 1, { type: 'highpass', freq: 900 });
@@ -303,9 +402,15 @@ async function renderSound(def) {
   }
   conv.buffer = ir;
   wet.gain.value = def.wet;
-  inp.connect(c.destination);
-  inp.connect(conv).connect(wet).connect(c.destination);
   // Всё вместе ещё раз через насыщение: удары плотные, без пустот между слоями
+  let out = c.destination;
+  if (def.sat) {
+    out = c.createGain();
+    out.gain.value = 0.6;
+    out.connect(drive(c, def.sat, c.destination));
+  }
+  inp.connect(out);
+  inp.connect(conv).connect(wet).connect(out);
   def.build(c, inp, noiseBuf(c, 2), noiseBuf(c, 3, true));
   let buf = await c.startRendering();
   if (def.loop) {
@@ -1018,20 +1123,18 @@ export class BattleFX {
   // Последний удар боя
   finalBlow(point, dir) {
     const W = this.W, I = this.inv;
-    W.effects.shockwave(point.clone(), { type: 'disc', dir: dir.clone(), radius: 90, life: 1, opacity: 1, color: 0xfff0d8 });
-    W.effects.shockwave(point.clone(), { type: 'sphere', radius: 50, life: 0.8, opacity: 0.55, color: 0xffd0a0 });
+    // Время сразу вязнет: всё это повисает в кадре, поэтому ни пыли, ни сферы, которые закрыли бы сам удар
+    W.effects.shockwave(point.clone(), { type: 'disc', dir: dir.clone(), radius: 90, life: 1, opacity: 0.7, color: 0xfff0d8 });
     W.effects.flash(point, 90);
-    W.effects.impactFX(1, point, 0.95, 26);
+    W.effects.impactFX(1, point, 0.6, 26);
     I.player.hitstop = Math.max(I.player.hitstop, 0.42);
-    W.sparks.burst(point, 90, { size: [0.4, 1.8], speed: 80, life: [0.2, 1], color: 0xffdcae });
-    W.dust.burst(point, 40, { size: [8, 24], speed: 60, life: [2, 5], color: 0xa89f92 });
+    W.sparks.burst(point, 90, { size: [0.15, 0.7], speed: 80, life: [0.2, 1], color: 0xffdcae });
     this.play('chainFinal');
     this.play('bigBoom');
     this.play('clash', { rate: 0.7 });
     I.theme.duck(1);
     this.crashZoom(18, 0.7);
     this.cineFor(4);
-    if (point.y < 700) for (const s of W.city.sphereQuery(point, 90, this.hits)) W.city.shatterWindows(s, point, dir);
   }
 
   // ---------------------------------------------------------------- кадр

@@ -2,23 +2,28 @@ import * as THREE from 'three';
 import { Kin, spaceK } from './kin.js';
 import { EyeLaser } from '../player/laser.js';
 import { PLAYER as P } from '../config.js';
-import { blowQuat, followBlow, reelHit } from '../player/model.js';
+import { aimBlow, BLOW_WAY, blowQuat, followBlow, reelHit, whirlPose } from '../player/model.js';
 import { lerp, clamp, smoothstep } from '../utils.js';
 
 // Генерал Ксарг: тот же размер и те же способности, что у героя — удары, заряженный удар, рывок,
 // лазер, удар о землю, захват, полёт на сверхскорости и серия ударов в полёте.
 // Движется как герой: бегает по земле, приседает перед взлётом, тормозит корпусом, садится на колено.
 // Между атаками держит режим: давит, кружит, отступает и заходит на пролёт, догоняет, идёт пешком.
-// Реагирует на героя: уходит от заряда и луча. Сам открывается после своих атак — это окно для контратаки.
+// Он пришёл драться: хватает и швыряет, бьёт сериями и плечом с разгона, а отлетев от удара, резко
+// тормозит и сразу идёт в ответ. Сам открывается после своих атак — это окно для контратаки.
 
 export const XARG_HP = 1000;
-const DMG = { jab: 7, last: 9, heavy: 18, dive: 14, hurl: 16, chain: [8, 9, 10, 13] };
-// По фазам: задержка замаха, шанс блока/уклонения, пауза между решениями
+const DMG = { jab: 7, last: 10, heavy: 22, dive: 14, hurl: 24, shoulder: 16, chain: [10, 12, 14, 18] };
+// По фазам: задержка замаха, шанс блока/уклонения, пауза между решениями, ударов в серии, как часто хватает,
+// сколько секунд переводит дух после атаки
 const TEMPO = [null,
-  { windup: 0.46, guard: 0.5, think: [0.45, 1.0], strikes: 2, breakChain: 0 },
-  { windup: 0.4, guard: 0.62, think: [0.3, 0.75], strikes: 3, breakChain: 0.1 },
-  { windup: 0.34, guard: 0.72, think: [0.18, 0.5], strikes: 4, breakChain: 0.2 },
+  { windup: 0.46, guard: 0.5, think: [0.25, 0.6], strikes: 2, breakChain: 0.12, hits: 2, grabCd: 7, rest: 1 },
+  { windup: 0.4, guard: 0.62, think: [0.18, 0.45], strikes: 3, breakChain: 0.22, hits: 3, grabCd: 6, rest: 0.85 },
+  { windup: 0.34, guard: 0.72, think: [0.1, 0.3], strikes: 4, breakChain: 0.32, hits: 4, grabCd: 5, rest: 0.7 },
 ];
+const ATTACKS = ['chain', 'shoulder', 'grab', 'carry', 'combo', 'heavy', 'dive', 'hurl', 'laser', 'tackle'];
+// Удары его серии по порядку. Последний всегда сверху: в землю
+const KINDS = ['hook', 'straight', 'back'];
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _d = new THREE.Vector3(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _p = new THREE.Vector3();
@@ -67,6 +72,10 @@ export class Xarg extends Kin {
     this.punchHitAt = 0.2;
     this.carryDir = new THREE.Vector3(0, 0, 1);
     this.flyDir = new THREE.Vector3(0, 0, 1);
+    this.throwDir = new THREE.Vector3(0, 0, 1);
+    this.shot = { pos: new THREE.Vector3(), look: new THREE.Vector3(), fov: 50 };
+    this.shotS = new THREE.Vector3(1, 0, 0);
+    this.shotT = 0;
 
     // Свечение кулака на зарядке
     this.fist = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10), new THREE.MeshBasicMaterial({
@@ -86,7 +95,7 @@ export class Xarg extends Kin {
     this.t = 0;
     this.place(at, face);
     this.root.visible = false;
-    this.cd = { laser: 3, heavy: 2, dive: 5, grab: 6, taunt: 6, hurl: 6 };
+    this.cd = { laser: 3, heavy: 2, dive: 5, grab: 3, taunt: 6, hurl: 6, shoulder: 2, ship: 0, chase: 0, answer: 0, rest: 0 };
     this.mode = null;
     this.modeT = 0;
     this.modeS = 0;
@@ -109,9 +118,11 @@ export class Xarg extends Kin {
     this.model.setEyeGlow?.(0);
     this.fist.visible = false;
     this.laser.group.visible = false;
+    this.clearShot();
   }
 
   go(state) {
+    if (ATTACKS.includes(this.state) && !ATTACKS.includes(state)) this.cd.rest = this.tempo.rest + Math.random() * 0.4;
     this.state = state;
     this.t = 0;
     if (state !== 'chain' && this.blow && this.blow.f < 2) { this.blow = null; this.poseQ = null; }
@@ -121,7 +132,7 @@ export class Xarg extends Kin {
   get tempo() { return TEMPO[this.phase]; }
 
   // Открыт для удара: не блокирует и не уклоняется
-  get open() { return ['stun', 'down', 'knock', 'recover', 'laser', 'heavy', 'held', 'dive', 'hurl', 'brawl', 'cut'].includes(this.state); }
+  get open() { return this.cd.answer <= 0 && ['stun', 'down', 'knock', 'regain', 'recover', 'laser', 'heavy', 'held', 'seized', 'dive', 'hurl', 'brawl', 'cut'].includes(this.state); }
 
   // ---------------------------------------------------------------- попадания героя
   // kind: punch | heavy | slam | ram | laser | throw | car; power 0..1
@@ -129,7 +140,7 @@ export class Xarg extends Kin {
     if (!this.alive || this.state === 'wait' || this.state === 'descend') return false;
     const I = this.inv, W = this.W;
     // Сцены идут своим ходом: удар там решает другое
-    if (this.state === 'scene' || this.state === 'meteor' || this.state === 'beamlock') return true;
+    if (this.state === 'scene' || this.state === 'meteor' || this.state === 'beamlock' || this.state === 'seized') return true;
     if (['stand', 'watch', 'approach'].includes(this.state)) {
       // Пока не вступил в бой: отбрасывает легко и презрительно
       if (this.state === 'stand' || this.state === 'approach') I.onFirstBlood(this);
@@ -158,6 +169,12 @@ export class Xarg extends Kin {
       this.vel.addScaledVector(dir, 16);
       return true;
     }
+    // Простым кулаком его не остановить, когда он сам пошёл в атаку или только что вышел из-под серии и идёт в ответ.
+    // Против этого есть рывок и заряженный удар
+    if (kind === 'punch' && (this.cd.answer > 0 || ['chain', 'shoulder', 'grab'].includes(this.state))) {
+      this.parry(point, dir);
+      return true;
+    }
     const punchLike = kind === 'punch';
     const canDefend = !this.open && !I.counterT && ['neutral', 'guard', 'evade'].includes(this.state);
     if (punchLike && canDefend && Math.random() < T.guard) {
@@ -181,7 +198,7 @@ export class Xarg extends Kin {
       if (!I.chain.open(this, dir, kind, power)) {
         this.chainEnd();
         this.go('knock');
-        this.launch(dir, lerp(150, 900, spaceK(this.pos.y)), 0.5);
+        this.launch(dir, lerp(150, 420, spaceK(this.pos.y)), 0.5);
       }
     } else {
       // Короткая заминка: на земле серия из трёх ударов подбрасывает его
@@ -195,12 +212,16 @@ export class Xarg extends Kin {
   dashCdOk() { return !this.evadeCd || this.evadeCd <= 0; }
 
   block(point, dir) {
-    const W = this.W;
     this.go('guard');
     this.guardT = 0.45;
     this.guardK = 1;
     this.guarded++;
     this.vel.addScaledVector(dir, 10);
+    this.parry(point, dir);
+  }
+
+  parry(point, dir) {
+    const W = this.W;
     W.sparks.burst(point, 12, { size: [0.15, 0.5], speed: 16, life: [0.1, 0.3], color: 0xffe6c0 });
     W.effects.shockwave(point.clone(), { type: 'disc', dir: dir.clone(), radius: 2.6, life: 0.2, opacity: 0.5 });
     this.inv.fx.play('clash', { gain: 0.4, pos: point, rate: 1.25 }) || W.audio?.metal(0.35, point.clone());
@@ -243,12 +264,9 @@ export class Xarg extends Kin {
     this.lasering = false;
     this.charge = 0;
     this.fist.visible = false;
-    this.model.setRage(0);
     this.releaseHero();
     this.go('dead');
-    this.launch(_d.copy(dir).normalize(), lerp(220, 1200, spaceK(this.pos.y)), 99);
-    this.inv.fx.finalBlow(this.c.clone(), dir.clone().normalize());
-    this.inv.onXargDown();
+    this.inv.onXargDown(dir);
   }
 
   // Самому герою: удар долетел? Рывок даёт неуязвимость, встречный удар — столкновение кулаков
@@ -313,8 +331,7 @@ export class Xarg extends Kin {
           rate = 7;
           if (this.vel.length() < 60 || this.modeS > this.flyTime + 0.45) {
             this.setMode('press');
-            this.startCombo();
-            this.strikeT *= 0.7;
+            this.strike();
             return;
           }
         }
@@ -367,7 +384,7 @@ export class Xarg extends Kin {
     const r = Math.random();
     this.modeT = m === 'press' ? 1.4 + r * 1.2 : m === 'circle' ? 1 + r * 1.4 : m === 'backoff' ? 0.7 + r * 0.35 : m === 'ground' ? 2.5 + r * 2 : 3;
     // Кружит не просто так: сначала выбирает момент
-    if (m === 'circle') this.thinkT = Math.max(this.thinkT, 0.6 + r * 0.8);
+    if (m === 'circle') this.thinkT = Math.max(this.thinkT, 0.3 + r * 0.4);
   }
 
   // Как двигаться дальше: смотрит, что делает герой
@@ -377,13 +394,14 @@ export class Xarg extends Kin {
     if (low && d < 220 && H.speed < 60) this.setMode('ground');
     else if (H.speed > 170 && d > 40) this.setMode('chase');
     else if (d > 110) this.setMode('press');
-    else this.setMode(r < 0.36 ? 'press' : r < 0.68 ? 'circle' : 'backoff');
+    else this.setMode(r < 0.7 ? 'press' : r < 0.85 ? 'circle' : 'backoff');
   }
 
   // Отошёл: заряд, луч или заход на пролёт со сверхскорости
   afterBackoff() {
     const I = this.inv, d = this.dist, r = Math.random();
     this.setMode('press');
+    if (this.cd.rest > 0) return;
     if (r < 0.33 && this.cd.heavy <= 0) { this.startHeavy(); return; }
     if (r < 0.55 && this.cd.laser <= 0) { this.startLaser(); return; }
     this.flySpeed = lerp(340, 2800, spaceK(this.pos.y));
@@ -397,30 +415,42 @@ export class Xarg extends Kin {
     this.W.effects.shockwave(this.c.clone(), { type: 'disc', dir: this.flyDir.clone(), radius: 9, life: 0.3, opacity: 0.6 });
   }
 
-  // Какой приём сейчас
+  // Какой приём сейчас. Герой в досягаемости — значит, атака есть всегда, вопрос только какая
   decide() {
     const H = this.inv.player, d = this.dist, r = Math.random();
-    if (this.mode === 'backoff' || this.mode === 'flyby') return;
-    if (d > 140) {
-      if (this.cd.laser <= 0 && r < 0.4) this.startLaser();
+    if (this.mode === 'backoff' || this.mode === 'flyby' || this.cd.rest > 0) return;
+    if (d > 320) {
+      if (this.cd.laser <= 0 && r < 0.5) this.startLaser();
       return;
     }
-    if (this.mode === 'circle' && r < 0.35) return;
+    if (this.mode === 'circle' && r < 0.2) return;
     // Бежит к нему: до удара ещё далеко
     if (this.mode === 'ground' && d > 14 && r > 0.25) return;
+    if (this.cd.grab <= 0) { this.startGrab(); return; }
+    if (this.cd.shoulder <= 0 && d > 24 && r < 0.45) { this.startShoulder(); return; }
+    if (H.grounded && this.cd.dive <= 0 && r < 0.3) { this.startDive(); return; }
+    if (this.cd.laser <= 0 && d > 60 && r < 0.3) { this.startLaser(); return; }
     if (this.cd.hurl <= 0 && d > 34 && r < 0.3 && this.startHurl()) return;
-    if (d > 26) {
-      if (H.grounded && this.cd.dive <= 0 && r < 0.3) { this.startDive(); return; }
-      if (this.cd.laser <= 0 && r < 0.5) { this.startLaser(); return; }
-      if (this.cd.heavy <= 0 && r < 0.7) { this.startHeavy(); return; }
-      this.startCombo();
-      return;
-    }
-    if (this.phase >= 2 && this.cd.grab <= 0 && r < 0.2) { this.startGrab(); return; }
-    if (this.cd.heavy <= 0 && r < 0.42) { this.startHeavy(); return; }
+    if (this.cd.heavy <= 0 && r < 0.3) { this.startHeavy(); return; }
     // Финт: рывок вбок и удар оттуда
-    if (this.phase >= 2 && r < 0.52 && this.dashCdOk()) { this.startEvade(this.aim); return; }
-    this.startCombo();
+    if (this.phase >= 2 && d < 26 && r < 0.12 && this.dashCdOk()) { this.startEvade(this.aim); return; }
+    // После серии даёт герою собраться: иначе из-под неё не выбраться вообще
+    if (this.cd.chase > 0 && !H.grounded) return;
+    this.strike();
+  }
+
+  // В воздухе бьёт сериями, на земле обычными ударами
+  strike() {
+    if (this.grounded && this.inv.player.grounded) this.startCombo();
+    else this.startChain();
+  }
+
+  // Трогают его корабль: бросает всё и летит наперехват
+  defendShip() {
+    if (this.cd.ship > 0 || (this.state !== 'neutral' && this.state !== 'recover')) return;
+    this.cd.ship = 9;
+    this.inv.say(Math.random() < 0.5 ? 'Оставь корабль!' : 'Отойди от него!', 1.8);
+    this.startChain();
   }
 
   // Что он успевает заметить: заряд, луч, удар сверху, рывок
@@ -452,8 +482,7 @@ export class Xarg extends Kin {
     }
     if (H.dashT > 0 && d < 12 && this.phase >= 2 && Math.random() < 0.4) {
       this.reactCd = 0.8;
-      this.startCombo();
-      this.strikeT *= 0.6;
+      this.strike();
       return true;
     }
     return false;
@@ -499,9 +528,9 @@ export class Xarg extends Kin {
     const res = this.tryHit(3.6);
     if (res === 'hit') {
       const kn = _v.copy(this.aim).setY(Math.max(this.aim.y, last ? 0.22 : 0.05)).normalize();
-      I.hurtHero(last ? DMG.last : DMG.jab, kn.clone().multiplyScalar(last ? 130 : 24), false, 0.14);
+      I.hurtHero(last ? DMG.last : DMG.jab, kn.clone().multiplyScalar(last ? 220 : 24), false, 0.14);
       this.hitFX(_p.copy(I.heroC), this.aim, last ? 0.8 : 0.45);
-      if (last && this.phase >= 2 && Math.random() < 0.4) { this.startChain(); return; }
+      if (last && Math.random() < 0.5) { this.startChain(); return; }
     }
     if (res === 'dodge' || res === 'clash') return;
     this.strikes--;
@@ -547,9 +576,9 @@ export class Xarg extends Kin {
     const at = I.heroC.clone();
     if (res === 'hit') {
       const dir = _v.copy(this.aim).setY(Math.max(this.aim.y, 0.18)).normalize().clone();
-      I.hurtHero(DMG.heavy, dir.clone().multiplyScalar(lerp(270, 1500, spaceK(this.pos.y))), false, 0);
+      I.hurtHero(DMG.heavy, dir.clone().multiplyScalar(lerp(270, 700, spaceK(this.pos.y))), false, 0);
       this.bigHitFX(at, dir, 1);
-      if (!I.player.grounded && this.phase >= 2) { this.startChain(); return; }
+      if (!I.player.grounded) { this.startChain(); return; }
     } else if (res === 'miss') {
       // Промах: кулак уходит в пустоту и бьёт по всему, что рядом
       const c = _p.copy(this.c).addScaledVector(this.aim, 5).clone();
@@ -646,35 +675,109 @@ export class Xarg extends Kin {
 
   startGrab() {
     this.go('grab');
-    this.cd.grab = 13 - this.phase * 2;
+    this.cd.grab = this.tempo.grabCd + Math.random() * 2.5;
+    this.grabbing = false;
   }
 
+  // Короткий замах и бросок на героя со сверхскорости: уйти можно рывком, а встречный удар его отбивает
   grab(dt) {
     const I = this.inv, H = I.player;
     this.anim.lift = Math.min(0.75, this.t * 3);
-    if (this.t < 0.32) { this.vel.multiplyScalar(Math.exp(-5 * dt)); return; }
+    if (this.t < 0.22) { this.vel.multiplyScalar(Math.exp(-5 * dt)); return; }
     const d = this.dist;
+    if (!this.grabbing) {
+      this.grabbing = true;
+      this.W.effects.shockwave(this.c.clone(), { type: 'disc', dir: this.aim.clone(), radius: 12, life: 0.35, opacity: 0.7 });
+      I.fx.play('rush', { gain: 0.85, pos: this.c });
+    }
     this.grounded = false;
-    this.vel.copy(this.aim).multiplyScalar(Math.max(60, Math.min(d / 0.1, 520)));
-    if (d < 2.7) {
-      if (H.dashT > 0) { I.onDodge(this); return; }
+    this.boosting = true;
+    this.vel.copy(this.aim).multiplyScalar(Math.max(90, Math.min(d / 0.1, lerp(1000, 3200, spaceK(this.pos.y)))));
+    if (d < 3.2) {
+      const res = this.tryHit(3.2);
+      if (res !== 'hit') return;
       this.anim.lift = 0;
-      this.beginCarry(this.pos.y < 500 && Math.random() < 0.6 ? 'ram' : 'up');
+      const r = Math.random();
+      this.beginCarry(r < 0.7 ? 'spin' : this.pos.y < 500 ? 'ram' : 'up');
       I.hurtHero(3, null, false, 0);
       I.fx.thud(0.7);
       return;
     }
-    if (this.t > 0.85) { this.anim.lift = 0; this.go('recover'); this.recoverT = 0.7; }
+    if (this.t > 1.2) { this.anim.lift = 0; this.vel.multiplyScalar(0.2); this.go('recover'); this.recoverT = 0.6; }
   }
 
-  // Герой пойман: ram — тащит его перед собой к центру города сквозь дома, up — уносит вверх
+  // Плечом с разгона: разворот боком и удар всем телом на полной скорости
+  startShoulder() {
+    this.go('shoulder');
+    this.cd.shoulder = 7 - this.phase + Math.random() * 2;
+    this.blow = { side: Math.random() < 0.5 ? 'R' : 'L', f: 0, k: 0, pitch: 0, kind: 'shoulder' };
+    this.poseQ = this.quat.clone();
+    this.rushing = false;
+  }
+
+  shoulder(dt) {
+    const I = this.inv, rdt = I.realDt, b = this.blow, sk = spaceK(this.pos.y), d = this.dist;
+    if (!b) { this.go('neutral'); return; }
+    this.grounded = false;
+    b.k = Math.min(1, b.k + rdt / 0.1);
+    b.f = Math.min(1.8, this.t / 0.24);
+    aimBlow(this.poseQ, this.aim, b, rdt, 14);
+    if (this.t < 0.24) { this.vel.multiplyScalar(Math.exp(-8 * dt)); return; }
+    if (!this.rushing) {
+      this.rushing = true;
+      this.W.effects.shockwave(this.c.clone(), { type: 'disc', dir: this.aim.clone(), radius: 14, life: 0.4, opacity: 0.75 });
+      I.fx.play('rush', { pos: this.c });
+      I.fx.play('swing', { gain: 0.8, pos: this.c, rate: 0.8 });
+    }
+    this.boosting = true;
+    this.vel.copy(this.aim).multiplyScalar(Math.max(260, Math.min(d / 0.08, lerp(1100, 4200, sk))));
+    if (d > 3.4 && this.t < 1.2) return;
+    const res = this.tryHit(4.2);
+    if (res === 'dodge' || res === 'clash') return;
+    this.vel.multiplyScalar(0.15);
+    b.f = 2;
+    if (res === 'hit') {
+      const kick = _v.copy(this.aim).addScaledVector(UP, 0.18).normalize().clone();
+      reelHit(I.player.reel, 1.2, 0);
+      I.hurtHero(DMG.shoulder, kick.clone().multiplyScalar(lerp(560, 900, sk)), false, 0);
+      I.fx.chainHit(I.heroC.clone(), kick, 3, false, I.heroBody);
+      I.fx.chainRelease(I.heroC, kick, 3, false, I.heroBody);
+      I.slowFor(0.25, 0.35);
+      if (Math.random() < 0.55) { this.startChain(); return; }
+    }
+    this.go('recover');
+    this.recoverT = res === 'hit' ? 0.35 : 0.7;
+  }
+
+  // Куда швырнуть героя: в ближайший дом, нет домов — в землю
+  throwAim(out) {
+    const city = this.W.city, c = this.c;
+    if (c.y < 700) {
+      const near = city.sphereQuery(c, 170, this.hits);
+      let bd = Infinity;
+      for (const s of near) {
+        if (!s.alive) continue;
+        city.closestPoint(s, c, _p);
+        const dd = _p.distanceToSquared(c);
+        if (dd > 16 * 16 && dd < bd) { bd = dd; _v2.copy(_p); }
+      }
+      if (bd < Infinity) return out.subVectors(_v2, c).normalize();
+    }
+    if (c.y - this.groundY > 25) return out.set(this.aimFlat.x * 0.6, -1, this.aimFlat.z * 0.6).normalize();
+    return out.copy(this.aimFlat).setY(0.08).normalize();
+  }
+
+  // Герой пойман: spin — раскручивает на вытянутой руке и швыряет, ram — тащит перед собой сквозь дома, up — уносит вверх
   beginCarry(mode) {
     const I = this.inv, H = I.player;
+    if (I.chain.kin) I.chain.end();
     H.captured = this;
     H.punchT = -1;
     H.vel.set(0, 0, 0);
     H.grounded = false;
     H.falling = false;
+    H.blow = null;
+    H.poseQ = null;
     this.grounded = false;
     this.go('carry');
     this.struggleN = 0;
@@ -685,12 +788,58 @@ export class Xarg extends Kin {
       else this.carryDir.set(-this.pos.x, 0, -this.pos.z).normalize();
       this.carryY = clamp(this.pos.y, 26, 64);
       this.carryT = clamp(r / 340, 1.6, 3.4);
+    } else if (mode === 'spin') {
+      this.carryT = this.carryAll = 0.95;
+      this.throwAim(this.throwDir);
+      // Сколько крутить, чтобы к концу рука шла ровно по линии броска: от одного до двух оборотов
+      const s = this.whirlS = Math.random() < 0.5 ? -1 : 1, T = this.throwDir;
+      this.whirlA = Math.atan2(I.heroC.z - this.c.z, I.heroC.x - this.c.x);
+      const end = Math.atan2(-T.x * s, T.z * s);
+      this.whirlD = Math.PI * 2 + ((((end - this.whirlA) * s) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+      this.blow = { side: 'R', f: 1.99, k: 1, pitch: 0, kind: 'straight' };
+      this.poseQ = this.quat.clone();
+      H.poseQ = H.quat.clone();
+      H.knockT = 0.5;
+      H.hitstop = Math.max(H.hitstop, 0.06);
+      I.slowFor(0.5, 0.95);
+      I.fx.play('whirl');
+      I.theme.duck(0.7);
+      this.startShot(8, 1.4);
+      I.sayOnce('Думал, ты один так умеешь?', 2.4);
+      return;
     } else this.carryT = 1.9;
     I.sayOnce('Дёргайся. Это всё, что тебе осталось.', 2.6);
   }
 
+  // Раскрутка на вытянутой руке, каждый оборот быстрее предыдущего. В конце рука просто разжимается
+  whirl() {
+    const I = this.inv, H = I.player, rdt = I.realDt;
+    this.carryT -= rdt;
+    const k = 1 - clamp(this.carryT / this.carryAll, 0, 1), a = this.whirlA + this.whirlS * this.whirlD * k * k;
+    this.vel.multiplyScalar(Math.exp(-8 * rdt));
+    whirlPose(this.c, a, 2.7, 0.1, _p, H.poseQ, this.poseQ);
+    H.pos.copy(_p).addScaledVector(UP, -1);
+    H.vel.set(-Math.sin(a), 0, Math.cos(a)).multiplyScalar(this.whirlS * 70 * k);
+    if (this.carryT > 0) return;
+    const sk = spaceK(this.pos.y), dir = this.throwDir.clone();
+    this.releaseHero();
+    reelHit(H.reel, 1.2, 2);
+    I.hurtHero(DMG.hurl, dir.clone().multiplyScalar(lerp(640, 900, sk)), false, 0);
+    I.fx.chainRelease(I.heroC, dir, 4, false, I.heroBody);
+    I.fx.play('sonicBoom', { gain: 0.85 });
+    I.fx.crashZoom(10, 0.25);
+    I.slowFor(0.35, 0.3);
+    if (this.blow) this.blow.f = 2;
+    this.boosting = false;
+    // Чаще всего летит следом и добивает
+    if (Math.random() < 0.55) { this.startChain(); return; }
+    this.go('recover');
+    this.recoverT = 0.4;
+  }
+
   carry(dt) {
     const I = this.inv, H = I.player;
+    if (this.carryMode === 'spin') { this.whirl(); return; }
     this.carryT -= dt;
     this.anim.lift = 1;
     const sk = spaceK(this.pos.y);
@@ -717,7 +866,7 @@ export class Xarg extends Kin {
     const dir = this.carryMode === 'ram'
       ? _v.copy(this.carryDir).multiplyScalar(0.9).setY(-0.3).normalize().clone()
       : _v.copy(this.facing).multiplyScalar(0.55).setY(-1).normalize().clone();
-    I.hurtHero(DMG.hurl, dir.clone().multiplyScalar(lerp(420, 1700, sk)), false, 0);
+    I.hurtHero(DMG.hurl, dir.clone().multiplyScalar(lerp(420, 800, sk)), false, 0);
     this.bigHitFX(I.heroC.clone(), dir, 0.9);
     this.startPunch(1);
     this.go('recover');
@@ -745,7 +894,7 @@ export class Xarg extends Kin {
 
   releaseHero() {
     const H = this.inv.player;
-    if (H.captured === this) H.captured = null;
+    if (H.captured === this) { H.captured = null; H.poseQ = null; }
     this.anim.lift = 0;
   }
 
@@ -837,13 +986,60 @@ export class Xarg extends Kin {
   // Герой отлетает, генерал догоняет его на сверхскорости. Ударить в момент касания — перехват.
   startChain() {
     this.go('chain');
+    this.blow = null;
+    this.poseQ = null;
     this.chainN = 0;
-    this.chainPause = 0.32;
+    this.chainMax = this.tempo.hits;
+    this.chainPause = 0.12;
     this.chainStep = 'pause';
   }
 
+  // Его удар виден сбоку: в кадре оба тела, и замах, и как героя уносит
+  startShot(dist = 6.5, life = 1.1) {
+    const I = this.inv, city = this.W.city, R = I.camRig, S = this.shotS;
+    if (R.shot) return;
+    _lc.lerpVectors(this.c, I.heroC, 0.5);
+    S.subVectors(I.heroC, this.c).cross(UP);
+    if (S.lengthSq() < 0.01) S.set(1, 0, 0);
+    S.normalize();
+    if (Math.random() < 0.5) S.negate();
+    if (city.isInside(_ls.copy(_lc).addScaledVector(S, dist))) {
+      S.negate();
+      if (city.isInside(_ls.copy(_lc).addScaledVector(S, dist))) return;
+    }
+    this.shotDist = dist;
+    this.shotT = life;
+    this.shot.pos.copy(_ls).addScaledVector(UP, 0.8);
+    this.shot.look.copy(_lc);
+    this.shot.fov = 50;
+    R.shot = this.shot;
+  }
+
+  updateShot(rdt) {
+    const I = this.inv, S = this.shot;
+    this.shotT -= rdt;
+    if (this.shotT <= 0) { this.clearShot(); return; }
+    const close = this.state === 'carry' || this.chainStep === 'coil' || this.chainStep === 'drive';
+    _lc.lerpVectors(this.c, I.heroC, close ? 0.5 : 0.85);
+    S.look.lerp(_lc, 1 - Math.exp(-12 * rdt));
+    if (close) {
+      _ls.copy(_lc).addScaledVector(this.shotS, this.shotDist).addScaledVector(UP, 0.8);
+      S.pos.lerp(_ls, 1 - Math.exp(-6 * rdt));
+    }
+    const gy = this.W.city.groundHeightAt(S.pos.x, S.pos.z, S.pos.y + 1) + 0.6;
+    if (S.pos.y < gy) S.pos.y = gy;
+    // Героя уносит: объектив сужается вслед за ним
+    S.fov = clamp(50 * 14 / Math.max(1, S.pos.distanceTo(I.heroC)), 16, 50) - I.fx.zoom * 0.5;
+  }
+
+  clearShot() {
+    this.shotT = 0;
+    const R = this.inv.camRig;
+    if (R && R.shot === this.shot) R.shot = null;
+  }
+
   // Те же кадры, что у серии героя: рывок, долгий замах в замедлении, кулак, стоп-кадр.
-  // На замахе есть время ответить: рывок уводит, встречный удар разбивает серию о кулак
+  // На замахе есть время ответить: рывок уводит, встречный удар может разбить серию о кулак
   chain(dt) {
     const I = this.inv, H = I.player, d = this.dist, rdt = I.realDt;
     this.grounded = false;
@@ -855,6 +1051,8 @@ export class Xarg extends Kin {
         this.rushLeft = Math.max(0.2, Math.min(0.4, d / 1100));
         this.W.effects.shockwave(this.c.clone(), { type: 'disc', dir: this.aim.clone(), radius: 12, life: 0.4, opacity: 0.8 });
         I.fx.play('rush') || this.W.audio?.whoosh(1);
+        // Издалека идёт на сверхзвуке: хлопок доходит раньше него
+        if (d > 100) I.fx.play('sonicBoom', { gain: 0.55, pos: this.c });
         I.theme.duck(0.35);
       }
       return;
@@ -867,63 +1065,108 @@ export class Xarg extends Kin {
       this.chainStep = 'coil';
       this.boosting = false;
       this.coilLeft = this.coilAll = 0.46;
-      this.blow = { side: this.chainN % 2 ? 'L' : 'R', f: 0, k: 0, pitch: 0 };
+      const closing = this.chainN >= this.chainMax - 1;
+      this.blow = { side: this.chainN % 2 ? 'L' : 'R', f: 0, k: 0, pitch: 0, kind: closing ? 'hammer' : KINDS[this.chainN % KINDS.length] };
       this.poseQ = this.quat.clone();
       I.timeScale = 0.3;
       I.fx.play('preHit', { rate: 0.62 / 0.56 });
       I.theme.duck(0.65);
+      if (this.chainN === 0 || closing) this.startShot();
       return;
     }
-    const ts = Math.max(I.timeScale, 0.05);
+    const ts = Math.max(I.timeScale, 0.05), b = this.blow, way = BLOW_WAY[b.kind];
+    // Идёт к точке над героем, если бьёт сверху
+    _d.subVectors(I.heroC, this.c);
+    _d.y += way.rise;
+    const g = _d.length();
+    _d.divideScalar(g || 1);
     if (this.chainStep === 'coil') {
       this.coilLeft -= rdt;
-      const b = this.blow;
       b.k = Math.min(1, b.k + rdt / 0.1);
       b.f = clamp(1 - this.coilLeft / this.coilAll, 0, 1);
-      this.poseQ.slerp(blowQuat(_q, this.aim, -0.26), 1 - Math.exp(-12 * rdt));
-      this.vel.copy(this.aim).multiplyScalar(Math.max(0, d - 2.5) / (Math.max(this.coilLeft, 0.02) * ts));
-      if (this.coilLeft <= 0) { this.chainStep = 'drive'; this.coilLeft = 0.11; I.timeScale = 0.4; }
+      aimBlow(this.poseQ, this.aim, b, rdt, 12);
+      this.vel.copy(_d).multiplyScalar(Math.max(0, g - way.gap - 1.15) / (Math.max(this.coilLeft, 0.02) * ts));
+      if (this.coilLeft <= 0) {
+        this.chainStep = 'drive';
+        this.coilLeft = 0.11;
+        I.timeScale = 0.4;
+        I.fx.play('swing', { gain: 0.95, pos: this.c, rate: b.kind === 'hammer' ? 0.8 : 1 });
+      }
       return;
     }
     this.coilLeft -= rdt;
-    this.blow.f = 1 + clamp(1 - this.coilLeft / 0.11, 0, 1);
-    this.poseQ.slerp(blowQuat(_q, this.aim, 0.42), 1 - Math.exp(-22 * rdt));
-    this.vel.copy(this.aim).multiplyScalar(Math.max(0, d - 1.35) / (Math.max(this.coilLeft, 0.02) * ts));
+    b.f = 1 + clamp(1 - this.coilLeft / 0.11, 0, 1);
+    aimBlow(this.poseQ, this.aim, b, rdt, 22);
+    this.vel.copy(_d).multiplyScalar(Math.max(0, g - way.gap) / (Math.max(this.coilLeft, 0.02) * ts));
     if (this.coilLeft > 0) return;
     // Касание
     this.vel.multiplyScalar(0.05);
     if (H.dashT > 0) { this.chainEnd(); I.onDodge(this); return; }
-    if (H.punchT >= 0 && H.punchT < (H.punchHitAt ?? P.punchHitTime) + 0.16) { this.chainEnd(); I.clash(this); return; }
-    const n = this.chainN++;
-    // Новое направление каждый раз; последний — вниз, в землю
-    const lastHit = n >= DMG.chain.length - 1;
+    if (H.punchT >= 0 && H.punchT < (H.punchHitAt ?? P.punchHitTime) + 0.16 && Math.random() < 0.5) { this.chainEnd(); I.clash(this); return; }
+    const n = this.chainN++, lastHit = n >= this.chainMax - 1;
+    // Героя уносит туда, куда толкает удар: боковой поперёк, с разворота в другую сторону, сверху в землю
+    const s = b.side === 'R' ? -1 : 1;
+    _v2.crossVectors(this.aim, UP);
+    if (_v2.lengthSq() < 0.01) _v2.set(1, 0, 0);
+    _v2.normalize();
     _v.copy(this.aim);
-    if (lastHit) _v.set(this.aim.x * 0.4, -1, this.aim.z * 0.4).normalize();
-    else {
-      _v2.crossVectors(this.aim, UP).normalize().multiplyScalar((n % 2 ? -1 : 1) * 0.55);
-      _v.add(_v2).addScaledVector(UP, 0.35).normalize();
-    }
+    if (b.kind === 'hammer') _v.set(this.aim.x * 0.4, -1, this.aim.z * 0.4);
+    else if (b.kind === 'hook') _v.addScaledVector(_v2, s * 0.8).addScaledVector(UP, 0.1);
+    else if (b.kind === 'back') _v.addScaledVector(_v2, -s * 0.7).addScaledVector(UP, 0.25);
+    else _v.addScaledVector(UP, 0.35);
+    _v.normalize();
     const sk = spaceK(this.pos.y);
     I.timeScale = 1;
     reelHit(H.reel, lastHit ? 1.3 : 1.05, n % 3);
     const kick = _v.clone();
-    I.hurtHero(DMG.chain[n], kick.clone().multiplyScalar(lerp(lastHit ? 620 : 340, 2600, sk)), false, 0);
+    I.hurtHero(lastHit ? DMG.chain[3] : DMG.chain[n], kick.clone().multiplyScalar(lerp(lastHit ? 640 : 420, 900, sk)), false, 0);
     I.fx.chainHit(I.heroC.clone(), kick, 2 + n, lastHit, I.heroBody);
     I.fx.chainRelease(I.heroC, kick, 2 + n, lastHit, I.heroBody);
     I.slowFor(0.22, 0.42);
     if (lastHit || !I.heroAlive) { this.chainEnd(); return; }
-    this.chainPause = 0.5;
+    this.chainPause = 0.35;
     this.chainStep = 'pause';
   }
 
   chainEnd() {
     this.boosting = false;
     if (this.state === 'chain') {
-      if (this.chainStep === 'coil' || this.chainStep === 'drive') { this.inv.timeScale = 1; this.blow = null; this.poseQ = null; }
+      // Удар сорвался на замахе: кадр больше незачем держать
+      if (this.chainStep === 'coil' || this.chainStep === 'drive') { this.inv.timeScale = 1; this.blow = null; this.poseQ = null; this.clearShot(); }
       this.chainStep = null;
+      this.cd.chase = 2.2 - this.phase * 0.4;
       this.go('recover');
-      this.recoverT = 0.7;
+      this.recoverT = 0.45;
     }
+  }
+
+  // Собрался в воздухе: резко тормозит корпусом, миг висит на месте и сразу идёт в ответ
+  startRegain() {
+    this.knock = 0;
+    if (this.grounded || this.pos.y - this.groundY < 1.5) {
+      this.go('neutral');
+      this.thinkT = 0.1;
+      return;
+    }
+    this.go('regain');
+    this.regainT = 0.38 - this.phase * 0.07 + Math.random() * 0.1;
+    this.W.effects.shockwave(this.c.clone(), { type: 'disc', dir: _v.copy(this.vel).normalize().clone(), radius: 10, life: 0.35, opacity: 0.55 });
+    this.inv.fx.play('brake', { pos: this.c });
+  }
+
+  regain(dt) {
+    this.vel.multiplyScalar(Math.exp(-14 * dt));
+    this.braking = this.vel.length() > 12;
+    this.regainT -= dt;
+    if (this.regainT > 0) return;
+    this.go('neutral');
+    this.setMode('press');
+    this.thinkT = lerp(this.tempo.think[0], this.tempo.think[1], Math.random());
+    if (this.dist > 700 || this.cd.rest > 0) return;
+    const r = Math.random();
+    if (this.cd.grab <= 0 && r < 0.35) this.startGrab();
+    else if (this.cd.shoulder <= 0 && this.dist > 24 && r < 0.6) this.startShoulder();
+    else this.strike();
   }
 
   // ---------------------------------------------------------------- подъём: зовёт бой наверх
@@ -934,7 +1177,7 @@ export class Xarg extends Kin {
     this.grounded = false;
     this.lasering = false;
     this.charge = 0;
-    this.climbY = Math.max(36000, this.pos.y + 20000);
+    this.climbY = Math.max(24000, this.pos.y + 20000);
     return true;
   }
 
@@ -944,17 +1187,20 @@ export class Xarg extends Kin {
     const above = this.pos.y >= this.climbY - 200;
     this.boosting = !above;
     this.faceTarget = above;
+    // Герой летит следом: держится впереди на виду и ведёт его за собой
+    const follows = H.vel.y > 150;
     if (!above) {
+      const top = lerp(1500, 7000, sk);
       _d.set(0, 1, 0);
-      this.vel.lerp(_d.multiplyScalar(lerp(1500, 7000, sk)), 1 - Math.exp(-2 * dt));
+      this.vel.lerp(_d.multiplyScalar(follows ? clamp(H.vel.y + (500 - this.dist) * 1.5, 200, top) : top), 1 - Math.exp(-2 * dt));
       this.grounded = false;
     } else {
       this.vel.multiplyScalar(Math.exp(-3 * dt));
-      if (this.dist < 800) { this.go('neutral'); this.thinkT = 0.4; return; }
+      if (this.dist < 3000) { this.go('neutral'); this.thinkT = 0.4; return; }
     }
+    if (follows) this.t = Math.min(this.t, 8);
     // Не полетел следом: падает на него сам, с самого верха
     if (this.t > 16) I.story.startMeteor();
-    void H;
   }
 
   // ---------------------------------------------------------------- последний размен
@@ -1025,6 +1271,7 @@ export class Xarg extends Kin {
     if (this.evadeCd > 0) this.evadeCd -= dt;
     this.dist = this.lookAtPoint(I.heroC);
     followBlow(this, I.realDt || dt);
+    if (this.shotT > 0) this.updateShot(I.realDt || dt);
     this.faceTarget = true;
     this.boosting = false;
     this.braking = false;
@@ -1087,6 +1334,9 @@ export class Xarg extends Kin {
       case 'tackle': this.tackle(dt); break;
       case 'hurl': this.hurl(dt); break;
       case 'chain': this.chain(dt); break;
+      case 'shoulder': this.shoulder(dt); break;
+      case 'regain': this.regain(dt); break;
+      case 'seized': break;
       case 'climb': this.climb(dt); break;
       case 'brawl': this.brawl(dt); break;
       case 'meteor': I.story.meteorTick(dt); break;
@@ -1095,7 +1345,7 @@ export class Xarg extends Kin {
         this.vel.multiplyScalar(Math.exp(-6 * dt));
         if (this.t > 0.4) {
           // Два-три блока подряд — и он отвечает сам
-          if (this.guarded >= 2) { this.guarded = 0; this.guardK = 0; this.startCombo(); this.strikeT *= 0.55; }
+          if (this.guarded >= 2) { this.guarded = 0; this.guardK = 0; this.strike(); }
           else this.go('neutral');
         }
         break;
@@ -1108,7 +1358,7 @@ export class Xarg extends Kin {
           this.vel.multiplyScalar(0.25);
           // Уход с линии — и сразу ответ
           if (this.evadeThen === 'laser') { this.evadeThen = null; this.startLaser(); }
-          else if (this.dist < 34 && Math.random() < 0.7) { this.startCombo(); this.strikeT *= 0.7; }
+          else if (this.dist < 60 && this.cd.rest <= 0 && Math.random() < 0.7) this.strike();
           else this.go('neutral');
         }
         break;
@@ -1134,13 +1384,7 @@ export class Xarg extends Kin {
         this.vel.multiplyScalar(Math.exp(-1.5 * dt));
         this.vel.y -= 14 * (1 - spaceK(this.pos.y)) * dt;
         this.faceTarget = false;
-        if (this.knock <= 0) {
-          this.knock = 0;
-          this.vel.multiplyScalar(0.2);
-          this.W.effects.shockwave(this.c.clone(), { type: 'disc', dir: this.aim.clone(), radius: 7, life: 0.3, opacity: 0.5 });
-          this.go('neutral');
-          this.thinkT = 0.25;
-        }
+        if (this.knock <= 0) this.startRegain();
         break;
       case 'down':
         this.downT -= dt;
@@ -1190,5 +1434,6 @@ export class Xarg extends Kin {
     this.fist.visible = false;
     this.laser.group.visible = false;
     this.lasering = false;
+    this.clearShot();
   }
 }
