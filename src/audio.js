@@ -6,6 +6,8 @@
 //  3) расстояние — далёкий звук тише, глуше и приходит с задержкой (скорость звука).
 
 const SPEED_OF_SOUND = 343;
+// Громкость своей музыки из music/: идёт мимо общего выхода, поэтому равняется на эффекты отдельно
+export const MUSIC_VOLUME = 0.7;
 // Дистанции «шин»: звук идёт в ближайшую по расстоянию (постоянные каналы, без лишних узлов)
 const BUS_DIST = [0, 30, 70, 150, 300, 600, 1200, 2500];
 const MAX_VOICES = 200;
@@ -293,8 +295,9 @@ export class GameAudio {
     buzz[0].type = 'sawtooth'; buzz[1].type = 'sawtooth'; buzz[2].type = 'sawtooth'; buzz[3].type = 'square';
     buzz[0].frequency.value = 41; buzz[1].frequency.value = 41.6; buzz[2].frequency.value = 82.3; buzz[3].frequency.value = 27.5;
     const fm = ctx.createOscillator(); fm.frequency.value = 13;
-    const fmDepth = ctx.createGain(); fmDepth.gain.value = 3;
+    const fmDepth = this.plasmaFm = ctx.createGain(); fmDepth.gain.value = 3;
     fm.connect(fmDepth); for (const o of buzz) fmDepth.connect(o.frequency);
+    this.plasmaOsc = buzz;
     const drive = ctx.createWaveShaper(); drive.curve = softClipCurve(7); drive.oversample = '2x';
     this.plasmaFilter = ctx.createBiquadFilter(); this.plasmaFilter.type = 'lowpass'; this.plasmaFilter.frequency.value = 300; this.plasmaFilter.Q.value = 4;
     this.buzzGain = ctx.createGain(); this.buzzGain.gain.value = 0;
@@ -332,7 +335,40 @@ export class GameAudio {
     const hhp = ctx.createBiquadFilter(); hhp.type = 'highpass'; hhp.frequency.value = 4500;
     this.hissGain = ctx.createGain(); this.hissGain.gain.value = 0;
     hs.connect(hhp).connect(this.hissGain).connect(this.laserOut); hs.start();
+    // --- усиление: слой ниже основного. Пилы и квадрат на сильном перегрузе, рваные на 33 Гц
+    const grind = [31, 31.5, 46.5, 62.4].map((f, i) => {
+      const o = ctx.createOscillator();
+      o.type = i === 2 ? 'square' : 'sawtooth';
+      o.frequency.value = f;
+      return o;
+    });
+    const gfm = ctx.createOscillator(); gfm.type = 'sawtooth'; gfm.frequency.value = 19;
+    const gfmDepth = ctx.createGain(); gfmDepth.gain.value = 5;
+    gfm.connect(gfmDepth); for (const o of grind) gfmDepth.connect(o.frequency);
+    const gmix = ctx.createGain(); gmix.gain.value = 0.5;
+    for (const o of grind) { o.connect(gmix); o.start(); }
+    gfm.start();
+    const gdrive = ctx.createWaveShaper(); gdrive.curve = softClipCurve(16); gdrive.oversample = '2x';
+    const glp = ctx.createBiquadFilter(); glp.type = 'lowpass'; glp.frequency.value = 1500; glp.Q.value = 1.5;
+    const gtear = ctx.createGain(); gtear.gain.value = 0.7;
+    const gtearLfo = ctx.createOscillator(); gtearLfo.type = 'square'; gtearLfo.frequency.value = 33;
+    const gtearDepth = ctx.createGain(); gtearDepth.gain.value = 0.3;
+    gtearLfo.connect(gtearDepth).connect(gtear.gain); gtearLfo.start();
+    this.grindGain = ctx.createGain(); this.grindGain.gain.value = 0;
+    gmix.connect(gdrive).connect(glp).connect(gtear).connect(this.grindGain).connect(this.laserOut);
+    // --- и под ним плотный гул: глубокий шум и суб
+    const rumble = ctx.createBufferSource(); rumble.buffer = this.brown; rumble.loop = true;
+    const rlp = ctx.createBiquadFilter(); rlp.type = 'lowpass'; rlp.frequency.value = 110;
+    const rumDrive = ctx.createWaveShaper(); rumDrive.curve = softClipCurve(4);
+    this.rumbleGain = ctx.createGain(); this.rumbleGain.gain.value = 0;
+    rumble.connect(rlp).connect(rumDrive).connect(this.rumbleGain).connect(this.laserOut); rumble.start();
+    const bsub = ctx.createOscillator(); bsub.frequency.value = 29;
+    this.boostSubGain = ctx.createGain(); this.boostSubGain.gain.value = 0;
+    bsub.connect(this.boostSubGain).connect(this.laserOut); bsub.start();
   }
+
+  // Усиление луча 0..1: основной рёв садится ниже и грязнее, снизу добавляется свой слой
+  setLaserBoost(k) { this.laserBoost = k; }
 
   setLaser(charge, power) {
     if (!this.ctx) return;
@@ -346,13 +382,18 @@ export class GameAudio {
     this.chgLfo.frequency.setTargetAtTime(5 + 32 * charge * charge, t, k);
     this.chgGain.gain.setTargetAtTime(charge * charge * 0.1 * (1 - power * 0.85), t, k);
     this.chgSubGain.gain.setTargetAtTime(charge * 0.26 * (1 - power * 0.6), t, k);
-    const rel = power > 0.01 ? 0.05 : 0.12;
+    const rel = power > 0.01 ? 0.05 : 0.12, b = this.laserBoost || 0;
     this.buzzGain.gain.setTargetAtTime(power * 0.26, t, rel);
-    this.plasmaFilter.frequency.setTargetAtTime(300 + 1500 * power, t, 0.08);
-    this.roarGain.gain.setTargetAtTime(power * 0.42, t, rel);
-    this.midGain.gain.setTargetAtTime(power * 0.075, t, rel);
-    this.crackGain.gain.setTargetAtTime(power * 0.3, t, 0.06);
+    this.plasmaFilter.frequency.setTargetAtTime(300 + (1500 + 1100 * b) * power, t, 0.08);
+    this.plasmaFm.gain.setTargetAtTime(3 + 9 * b, t, 0.08);
+    for (const o of this.plasmaOsc) o.detune.setTargetAtTime(-350 * b, t, 0.08);
+    this.roarGain.gain.setTargetAtTime(power * 0.42 * (1 + 0.3 * b), t, rel);
+    this.midGain.gain.setTargetAtTime(power * 0.075 * (1 + 1.2 * b), t, rel);
+    this.crackGain.gain.setTargetAtTime(power * 0.3 * (1 + 0.6 * b), t, 0.06);
     this.hissGain.gain.setTargetAtTime(power * 0.012, t, 0.08);
+    this.grindGain.gain.setTargetAtTime(power * b * 0.26, t, rel);
+    this.rumbleGain.gain.setTargetAtTime(power * b * 0.5, t, rel);
+    this.boostSubGain.gain.setTargetAtTime(power * b * 0.3, t, rel);
   }
 
   // Вспышка выстрела: тяжёлый хлопок, тон обрушивается вниз
@@ -362,6 +403,15 @@ export class GameAudio {
     this.noiseBurst({ dur: 0.5, freq: 3200, sweepTo: 180, type: 'lowpass', gain: 0.4, attack: 0.003 });
     this.tone({ dur: 0.45, from: 200, to: 32, gain: 0.34, type: 'sawtooth' });
     this.tone({ dur: 0.7, from: 70, to: 28, gain: 0.45 });
+  }
+
+  // Включение усиления: короткий тяжёлый удар, тон проваливается на самое дно
+  laserBoostHit() {
+    if (!this.ctx) return;
+    this.boom(0.4);
+    this.noiseBurst({ dur: 0.35, freq: 2200, sweepTo: 120, type: 'lowpass', gain: 0.35, attack: 0.002 });
+    this.tone({ dur: 0.4, from: 140, to: 26, gain: 0.34, type: 'sawtooth' });
+    this.tone({ dur: 0.55, from: 60, to: 24, gain: 0.42 });
   }
 
   // Данные о месте: urban 0..1 (центр города у земли — 1), park 0..1 (пригород/зелень), night, rain
@@ -458,9 +508,15 @@ export class GameAudio {
     if (!this.tracks.length) return;
     this.trackIndex = (i + this.tracks.length) % this.tracks.length;
     if (this.music) this.music.pause();
-    this.music = new Audio(this.tracks[this.trackIndex]);
-    this.music.volume = 0.35;
-    this.music.addEventListener('ended', () => this.playTrack(this.trackIndex + 1));
+    // У каждого трека свой плеер: он помнит, где остановился, и продолжит с того же места
+    const url = this.tracks[this.trackIndex];
+    this.players ||= {};
+    if (!this.players[url]) {
+      const m = this.players[url] = new Audio(url);
+      m.volume = MUSIC_VOLUME;
+      m.addEventListener('ended', () => { m.currentTime = 0; this.playTrack(this.trackIndex + 1); });
+    }
+    this.music = this.players[url];
     if (this.musicOn && !this.musicHold) this.music.play().catch(() => {});
   }
 
@@ -472,9 +528,14 @@ export class GameAudio {
     else if (this.musicOn) this.music.play().catch(() => {});
   }
 
-  // M: следующий трек; если треков нет — ничего
+  // M: следующий трек; единственный трек ставит на паузу и снимает с неё; если треков нет — ничего
   nextTrack() {
     if (!this.tracks.length) return null;
+    if (this.tracks.length === 1 && this.music && !this.music.paused) {
+      this.musicOn = false;
+      this.music.pause();
+      return 'Пауза';
+    }
     this.musicOn = true;
     this.musicHold = false;
     this.playTrack(this.trackIndex + 1);

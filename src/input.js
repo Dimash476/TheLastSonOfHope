@@ -23,7 +23,10 @@ export function createInputState() {
     slam: false,     // удар о землю (один кадр)
     slamHeld: false, // X удерживается: пике продолжается, отпустили — остановка
     laser: false,    // лазер из глаз (пока удерживается Z)
+    lmbHeld: false,  // ЛКМ удерживается
+    laserBoost: false, // усиление лазера (Z + ЛКМ)
     grab: false,     // схватить / бросить (один кадр)
+    spin: false,     // F: раскрутить и швырнуть (один кадр)
     dash: false,     // рывок (один кадр)
     reset: false,    // восстановить город (один кадр)
     toggleHelp: false,
@@ -55,6 +58,7 @@ export class KeyboardMouseSource {
       if (e.code === 'KeyK') state.reset = true;
       if (e.code === 'KeyH') state.toggleHelp = true;
       if (e.code === 'KeyR') state.grab = true;
+      if (e.code === 'KeyF' && !e.shiftKey) state.spin = true;
       if (e.code === 'KeyB') state.punch = true;
       if (e.code === 'KeyY') state.dash = true;
       if (e.code === 'KeyT') state.cycleTime = true;
@@ -70,31 +74,50 @@ export class KeyboardMouseSource {
       if ((e.code === 'ControlLeft' || e.code === 'ControlRight') && this.ctrlSolo) state.toggleControl = true;
       this.ctrlSolo = false;
     });
-    window.addEventListener('blur', () => this.keys.clear());
+    window.addEventListener('blur', () => { this.keys.clear(); state.lmbHeld = false; });
 
     domElement.addEventListener('mousedown', (e) => {
       if (!this.locked) return;
-      if (e.button === 0) state.punch = true;
+      if (e.button === 0) {
+        state.lmbHeld = true;
+        // С зажатым Z это не удар, а усиление лазера
+        if (!this.keys.has('KeyZ')) state.punch = true;
+      }
       if (e.button === 2) state.heavyHeld = true;
     });
     window.addEventListener('mouseup', (e) => {
+      if (e.button === 0) state.lmbHeld = false;
       if (e.button === 2) state.heavyHeld = false;
     });
     window.addEventListener('contextmenu', (e) => e.preventDefault());
 
+    // Chrome на Windows в захвате мыши иногда присылает один огромный скачок, и камера дёргается сама.
+    // Одиночный скачок намного больше обычного движения выкидываем; если такие идут подряд, это настоящий рывок мышью
+    this.lookAvg = 0;
+    this.lookSpikes = 0;
     document.addEventListener('mousemove', (e) => {
       if (!this.locked) return;
+      const m = Math.abs(e.movementX) + Math.abs(e.movementY);
+      if (m > 250 && m > this.lookAvg * 6 + 60 && this.lookSpikes < 1) { this.lookSpikes++; return; }
+      this.lookSpikes = 0;
+      this.lookAvg += (m - this.lookAvg) * 0.25;
       state.lookDX += e.movementX;
       state.lookDY += e.movementY;
     });
 
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === this.dom;
-      if (!this.locked) { this.keys.clear(); state.heavyHeld = false; }
+      if (!this.locked) { this.keys.clear(); state.heavyHeld = false; state.lmbHeld = false; }
     });
   }
 
-  requestLock() { this.dom.requestPointerLock(); }
+  // Сырое движение мыши без ускорения Windows: с ним Chrome не шлёт ложных скачков. Где его нет — обычный захват
+  requestLock() {
+    let p;
+    try { p = this.dom.requestPointerLock({ unadjustedMovement: true }); }
+    catch { this.dom.requestPointerLock(); return; }
+    if (p && p.catch) p.catch(() => this.dom.requestPointerLock());
+  }
 
   update() {
     const k = this.keys, s = this.state;
@@ -110,6 +133,7 @@ export class KeyboardMouseSource {
     s.moveY = (k.has('Space') ? 1 : 0) - (k.has('KeyC') ? 1 : 0);
     s.slamHeld = k.has('KeyX');
     s.laser = k.has('KeyZ');
+    s.laserBoost = s.laser && s.lmbHeld;
     s.boostK = null;
   }
 }
@@ -254,6 +278,7 @@ export function endFrame(state) {
   state.reset = false;
   state.toggleHelp = false;
   state.grab = false;
+  state.spin = false;
   state.dash = false;
   state.cycleTime = false;
   state.cycleWeather = false;

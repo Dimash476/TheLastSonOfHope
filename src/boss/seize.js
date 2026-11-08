@@ -2,28 +2,31 @@ import * as THREE from 'three';
 import { blowQuat, reelHit, whirlPose } from '../player/model.js';
 import { clamp } from '../utils.js';
 
-// Захват на R. Это не «взял и держишь», а сцена из трёх кадров: рывок к цели в замедлении, рука на горле,
-// и дальше бросок. Над городом герой сперва тащит генерала перед собой сквозь дома, потом раскручивает
-// на вытянутой руке и швыряет туда, куда смотрит; цель уносит, и её можно догнать серией ударов.
-// Генерал может успеть встретить: тогда столкновение, и он сразу отвечает. Солдат просто швыряет.
+// Захват на R, как с предметами, только одной рукой за шею. Подлетать самому не надо: дальность та же, что у серии ударов.
+// Рука на горле, и дальше управление у игрока: герой несёт цель куда хочет, дома ломаются об неё.
+// R отпускает, ЛКМ или B швыряет туда, куда смотрит камера, F раскручивает на вытянутой руке и швыряет.
+// F издалека сразу идёт в раскрутку. Сам генерал из хватки не вырывается.
+// Он может успеть встретить руку: тогда столкновение, и он сразу отвечает.
 
-const RANGE = 60;
-const SOLDIER_RANGE = 34;
-const COOLDOWN = 6;     // с: столько нельзя снова хватать генерала, пока он не открылся сам
+const COOLDOWN = 3;     // с: столько нельзя снова хватать генерала, пока он не открылся сам
+const NECK = 0.56;      // м: от центра тела до шеи
+const THROAT = 0.2;     // м: от оси тела до горла
+const DRAG_SPEED = 60;  // м/с: с такой скорости цель в руке ломает дома
 const SHOT = 8;         // м: кадр раскрутки сбоку, обе фигуры целиком
-const CLOSED = ['wait', 'descend', 'stand', 'watch', 'approach', 'scene', 'meteor', 'beamlock', 'cut', 'brawl', 'climb', 'carry', 'dead', 'seized', 'held'];
+const CLOSED = ['wait', 'descend', 'stand', 'watch', 'approach', 'scene', 'meteor', 'beamlock', 'cut', 'brawl', 'climb', 'carry', 'tackle', 'dead', 'seized', 'held'];
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _d = new THREE.Vector3(), _s = new THREE.Vector3(), _v = new THREE.Vector3(), _cp = new THREE.Vector3();
-const _p0 = new THREE.Vector3(), _k0 = new THREE.Vector3(), _r = new THREE.Vector3();
-const _q = new THREE.Quaternion();
+const _p0 = new THREE.Vector3(), _r = new THREE.Vector3(), _x = new THREE.Vector3(), _y = new THREE.Vector3(), _z = new THREE.Vector3();
+const _q = new THREE.Quaternion(), _m = new THREE.Matrix4();
 
 export class Seize {
   constructor(inv) {
     this.inv = inv;
     this.hits = [];
-    this.dir = new THREE.Vector3(0, 0, 1);
     this.throwDir = new THREE.Vector3(0, 0, 1);
+    this.holdVel = new THREE.Vector3();
+    this.holdPrev = new THREE.Vector3();
     this.camS = new THREE.Vector3(1, 0, 0);
     this.shot = { pos: new THREE.Vector3(), look: new THREE.Vector3(), fov: 50 };
     this.driven = () => this.tick();
@@ -33,27 +36,34 @@ export class Seize {
   reset() {
     const P = this.inv.player;
     if (P.driven === this.driven) P.driven = null;
+    if (this.kin) this.kin.anim.choke = 0;
+    P.gripping = false;
     this.kin = null;
     this.state = null;
+    this.whirlNow = false;
     this.readyAt = 0;
     this.watch = null;
     this.watchT = 0;
     this.clearShot();
   }
 
-  // Нажата R. Цель в конусе взгляда; нет цели — обычный захват (машина, обломок)
-  tryStart() {
+  // Цель уже в руке, и герой летает сам
+  get holding() { return this.state === 'hold'; }
+
+  // Нажата R. Цель в поле зрения; смотрит мимо и рядом есть что взять — обычный захват (машина, обломок).
+  // whirl (нажата F): сразу в раскрутку
+  tryStart(whirl = false) {
     const I = this.inv, P = I.player;
     if (this.kin || P.held || P.driven || P.captured || P.knockT > 0 || P.charge > 0 || I.story.lock) return false;
-    const t = I.findTarget(RANGE);
+    const far = I.chain.far, t = I.findTarget(far) || (P.canGrab() ? null : I.nearestTarget(far));
     if (!t || CLOSED.includes(t.state)) return false;
     const d = t.c.distanceTo(I.heroC);
-    if (t.kind === 'soldier' && d > SOLDIER_RANGE) return false;
     if (t.kind === 'general' && !t.open && I.time < this.readyAt) return false;
     if (I.chain.kin) I.chain.end(true);
     this.kin = t;
     this.state = 'rush';
-    this.left = clamp(d / 420, 0.14, 0.32);
+    this.whirlNow = whirl;
+    this.left = clamp(d / 700, 0.18, 0.5);
     this.all = this.left;
     P.driven = this.driven;
     P.punchT = -1;
@@ -78,7 +88,6 @@ export class Seize {
     if (!this.kin) { I.player.driven = null; return; }
     this.left -= rdt;
     if (this.state === 'rush') this.rush(rdt);
-    else if (this.state === 'drag') this.drag(rdt);
     else this.spin(rdt);
   }
 
@@ -131,66 +140,106 @@ export class Seize {
     reelHit(kin.reel, 1, 1);
     _d.subVectors(kin.c, I.heroC).normalize();
     I.fx.hit(_v.lerpVectors(I.heroC, kin.c, 0.6).clone(), _d.clone(), 0.85);
-    const aim = I.camRig.direction;
-    if (kin.kind === 'general' && this.wallAhead(aim)) this.startDrag(aim);
-    else this.startSpin();
+    // Рука на горле: стоп-кадр, объектив наезжает, дальше кадр идёт как в кино
+    P.hitstop = Math.max(P.hitstop, 0.12);
+    I.fx.crashZoom(9, 0.2);
+    if (this.whirlNow) {
+      I.fx.cineFor(2.6);
+      this.startSpin();
+    } else this.startHold();
   }
 
-  // Впереди дом, а они оба ещё не выше крыш: будет чем его бить
-  wallAhead(aim) {
-    const kin = this.kin, city = this.inv.world.city, c = kin.c;
-    if (c.y - kin.groundY > 240) return false;
-    _r.set(aim.x, 0, aim.z);
-    if (_r.lengthSq() < 0.04) return false;
-    _r.normalize();
-    for (const s of city.sphereQuery(c, 230, this.hits)) {
-      if (!s.alive) continue;
-      city.closestPoint(s, c, _cp).sub(c);
-      const l = _cp.length();
-      if (l > 6 && _cp.dot(_r) / l > 0.8) return true;
-    }
-    return false;
-  }
-
-  startDrag(aim) {
+  // Управление возвращается к игроку, рука остаётся на шее
+  startHold() {
     const I = this.inv, P = I.player, kin = this.kin;
-    this.state = 'drag';
-    this.left = 1.25;
-    this.speed = 120;
-    this.dir.set(aim.x, 0, aim.z).normalize();
-    this.dragY = Math.max(P.pos.y, kin.groundY + 8);
+    this.state = 'hold';
+    if (P.driven === this.driven) P.driven = null;
+    P.blow = null;
+    P.poseQ = null;
+    P.lockDir = null;
+    P.boosting = false;
+    P.gripping = true;
+    P.vel.multiplyScalar(0.35);
     I.timeScale = 1;
-    I.fx.play('rush');
-    I.fx.cineFor(2.8);
-    I.theme.duck(0.5);
+    kin.knock = 0;
+    kin.anim.choke = 1;
+    this.holdVel.copy(P.vel);
+    this.holdPrev.copy(kin.pos);
   }
 
-  // Несёт его перед собой на вытянутой руке, и дома ломаются об него
-  drag(rdt) {
-    const I = this.inv, P = I.player, kin = this.kin, city = I.world.city;
-    this.speed = Math.min(380, this.speed + 900 * rdt);
-    const gy = city.groundHeightAt(P.pos.x, P.pos.z, P.pos.y + 0.5);
-    _d.copy(this.dir);
-    _d.y = clamp((Math.max(this.dragY, gy + 6) - P.pos.y) * 0.03, -0.5, 0.5);
-    _d.normalize();
-    _p0.copy(P.pos);
-    P.pos.addScaledVector(_d, this.speed * rdt);
-    P.vel.copy(_d).multiplyScalar(this.speed);
-    _k0.copy(kin.pos);
-    kin.pos.copy(P.pos).addScaledVector(_d, 1.9);
-    I.chain.ram(_p0, P.pos, this.speed);
-    const smashed = I.chain.ram(_k0, kin.pos, this.speed);
-    if (smashed) {
-      kin.damage(6 * smashed, kin.c.clone(), _d.clone(), 'ram');
-      reelHit(kin.reel, 0.9);
-      P.hitstop = Math.max(P.hitstop, 0.035);
-      this.speed *= 0.93;
+  // Каждый кадр, уже после хода цели: её шея там, где кулак героя. На ходу тело тянется следом
+  holdTick(rdt) {
+    const I = this.inv, P = I.player, kin = this.kin;
+    if (rdt > 0) this.holdVel.lerp(P.vel, 1 - Math.exp(-7 * rdt));
+    // Шея сверху, ноги висят и отстают от хода
+    _y.copy(this.holdVel).clampLength(0, 130).multiplyScalar(0.8).addScaledVector(UP, 60).normalize();
+    _z.subVectors(I.heroC.copy(P.pos).addScaledVector(UP, 1), P.model.fistWorldPos('R', _cp));
+    _z.addScaledVector(_y, -_z.dot(_y));
+    if (_z.lengthSq() < 1e-4) _z.set(P.facing.x, 0, P.facing.z).negate();
+    _z.normalize();
+    _x.crossVectors(_y, _z);
+    _q.setFromRotationMatrix(_m.makeBasis(_x, _y, _z));
+    kin.poseQ.slerp(_q, rdt > 0 ? 1 - Math.exp(-9 * rdt) : 0);
+    // Центр тела ниже кулака вдоль его собственной оси и дальше от героя: кулак на горле спереди
+    _s.set(0, NECK, THROAT).applyQuaternion(kin.poseQ);
+    kin.pos.copy(_cp).sub(_s).addScaledVector(UP, -1);
+    // У самой земли ноги волочатся по ней, а не уходят под асфальт
+    kin.pos.y = Math.max(kin.pos.y, I.world.city.groundHeightAt(kin.pos.x, kin.pos.z, kin.pos.y + 1));
+    kin.vel.set(0, 0, 0);
+    kin.grounded = false;
+    kin.orient(rdt);
+    // Цель — таран: дома лопаются об неё, ей это тоже больно
+    const sp = P.speed;
+    if (sp > DRAG_SPEED && Math.min(this.holdPrev.y, kin.pos.y) < 700) {
+      const smashed = I.chain.ram(this.holdPrev, kin.pos, sp);
+      if (smashed) {
+        _d.copy(P.vel).normalize();
+        if (kin.kind === 'general') kin.damage(6 * smashed, kin.c.clone(), _d.clone(), 'ram');
+        else {
+          kin.hp -= 12 * smashed;
+          if (kin.hp <= 0) I.onSoldierDown(kin);
+        }
+        reelHit(kin.reel, 0.9);
+        P.hitstop = Math.max(P.hitstop, 0.035);
+      }
     }
-    I.chain.keepAbove(P);
-    P.lockDir.copy(_d);
-    blowQuat(P.poseQ, _d, 0.35);
-    blowQuat(kin.poseQ, _v.copy(_d).negate(), -0.25);
-    if (this.left <= 0) this.startSpin();
+    this.holdPrev.copy(kin.pos);
+  }
+
+  // R: просто разжимает руку
+  drop() {
+    const P = this.inv.player, kin = this.kin;
+    this.finish();
+    kin.poseQ = null;
+    kin.knock = 0;
+    kin.grounded = false;
+    kin.vel.copy(P.vel).multiplyScalar(0.6);
+    if (kin.kind === 'general') { kin.go('recover'); kin.recoverT = 0.45; }
+    else kin.state = 'fight';
+  }
+
+  // ЛКМ или B: швыряет не останавливаясь, рука уходит в удар
+  hurl() {
+    const I = this.inv, P = I.player;
+    this.throwAim(this.throwDir);
+    P.blow = { side: 'R', f: 1.75, k: 1, pitch: 0, kind: 'straight' };
+    P.poseQ = P.quat.clone();
+    I.fx.play('swing', { gain: 0.95, rate: 0.8 });
+    this.release(false);
+  }
+
+  // F: рука с целью уходит в раскрутку прямо из хватки
+  spinFromHold() {
+    const I = this.inv, P = I.player;
+    P.gripping = false;
+    this.kin.anim.choke = 0;
+    P.driven = this.driven;
+    P.boosting = false;
+    P.blow = { side: 'R', f: 1.99, k: 1, pitch: 0, kind: 'straight' };
+    P.poseQ = P.quat.clone();
+    P.lockDir = new THREE.Vector3(0, 0, 1);
+    I.fx.cineFor(2.6);
+    this.startSpin();
   }
 
   // Раскрутка. К концу рука идёт ровно по линии броска, поэтому цель уходит туда, куда он смотрит
@@ -250,12 +299,12 @@ export class Seize {
     if (this.left <= 0) this.release();
   }
 
-  // Рука разжимается: цель уносит, и начинается окно серии
-  release() {
+  // Рука разжимается: цель уносит, и начинается окно серии. После раскрутки герой гасит ход, на лету летит дальше
+  release(stop = true) {
     const I = this.inv, P = I.player, kin = this.kin, dir = this.throwDir.clone();
     this.finish();
     if (P.blow) P.blow.f = 2;
-    P.vel.copy(dir).multiplyScalar(-8);
+    if (stop) P.vel.copy(dir).multiplyScalar(-8);
     kin.poseQ = null;
     kin.knock = 0;
     kin.grounded = false;
@@ -268,12 +317,16 @@ export class Seize {
     kin.receive('throw', 1, kin.c.clone(), dir);
     I.fx.chainRelease(kin.c, dir, 4, false, kin);
     I.fx.play('sonicBoom', { gain: 0.9 });
-    I.fx.crashZoom(12, 0.3);
+    I.fx.crashZoom(14, 0.4);
+    I.fx.airRing(kin.c, dir, 34, 0.6, 0.5);
+    I.theme.duck(0.9);
   }
 
   finish() {
     const I = this.inv, P = I.player;
     if (P.driven === this.driven) P.driven = null;
+    if (this.kin) this.kin.anim.choke = 0;
+    P.gripping = false;
     P.lockDir = null;
     P.boosting = false;
     I.timeScale = 1;
@@ -318,7 +371,12 @@ export class Seize {
   // Каждый кадр в реальном времени
   update(rdt) {
     const I = this.inv, S = this.shot;
-    if (this.kin && (I.player.driven !== this.driven || I.heroDown)) this.abort();
+    if (this.holding) {
+      // Цель забрала сцена, или герой упал: рука разжимается
+      const kin = this.kin;
+      if (I.heroDown || I.story.lock || I.story.brawlOn || I.finale.on || !kin.alive || (kin.state !== 'seized' && kin.state !== 'held')) this.abort();
+      else this.holdTick(rdt);
+    } else if (this.kin && (I.player.driven !== this.driven || I.heroDown)) this.abort();
     if (!this.shotOn) return;
     if (this.kin) {
       _v.copy(I.heroC).addScaledVector(this.camS, SHOT).addScaledVector(UP, 2.2);

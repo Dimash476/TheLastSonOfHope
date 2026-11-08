@@ -95,10 +95,10 @@ composer.addPass(godRays);
 const impactPass = new ShaderPass({
   uniforms: {
     tDiffuse: { value: null }, uImpact: { value: 0 }, uCenter: { value: new THREE.Vector2(0.5, 0.5) },
-    uSpeed: { value: 0 }, uFlash: { value: 0 }, uCharge: { value: 0 },
+    uSpeed: { value: 0 }, uFlash: { value: 0 }, uCharge: { value: 0 }, uSlow: { value: 0 },
   },
   vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-  fragmentShader: `uniform sampler2D tDiffuse; uniform float uImpact, uSpeed, uFlash, uCharge; uniform vec2 uCenter; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float uImpact, uSpeed, uFlash, uCharge, uSlow; uniform vec2 uCenter; varying vec2 vUv;
     void main() {
       vec4 base = texture2D(tDiffuse, vUv);
       vec2 dir = vUv - uCenter;
@@ -113,7 +113,9 @@ const impactPass = new ShaderPass({
         col.b = mix(col.b, texture2D(tDiffuse, vUv - dir * ca).b, 0.7);
       }
       float r = length((vUv - 0.5) * vec2(1.6, 1.0));
-      col *= 1.0 - (uSpeed * 0.45 + uImpact * 0.25 + uCharge * 0.4) * smoothstep(0.35, 1.0, r);
+      col *= 1.0 - (uSpeed * 0.45 + uImpact * 0.25 + uCharge * 0.4 + uSlow * 0.5) * smoothstep(0.35, 1.0, r);
+      // Время вязнет: цвет уходит и холодеет, остаётся только сам удар
+      col = mix(col, dot(col, vec3(0.3, 0.59, 0.11)) * vec3(0.93, 0.98, 1.08), uSlow * 0.38);
       col += uFlash * vec3(1.0, 0.96, 0.9);
       gl_FragColor = vec4(col, base.a);
     }`,
@@ -472,7 +474,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'KeyN' && !paused) {
-    if (invasion.active && invasion.theme.playing) hud.toast(invasion.theme.toggle() ? 'ТЕМА БОЯ: ВКЛ' : 'ТЕМА БОЯ: ВЫКЛ');
+    if (invasion.active) hud.toast(invasion.theme.toggle() ? 'ТЕМА БОЯ: ВКЛ' : 'ТЕМА БОЯ: ВЫКЛ');
     else hud.toast(soundscape.toggleScore() ? 'МУЗЫКА: ВКЛ' : 'МУЗЫКА: ВЫКЛ');
   }
   if (e.code === 'KeyG' && !paused) { qualityIndex = (qualityIndex + 1) % QUALITY.length; hud.toast(applyQuality(qualityIndex)); }
@@ -541,7 +543,7 @@ function step(dt, active) {
     if (input.cycleTime && env.cycleTime) hud.toast(env.cycleTime());
     if (input.cycleWeather && env.cycleWeather) hud.toast(env.cycleWeather());
     if (input.nextTrack) {
-      if (invasion.active && invasion.theme.playing) hud.toast(invasion.theme.next(), 2.6);
+      if (invasion.active) hud.toast(invasion.theme.next(), 2.6);
       else {
         const name = audio.nextTrack();
         hud.toast(name ? `♪ ${name}` : 'Положите mp3 в папку music/');
@@ -557,7 +559,7 @@ function step(dt, active) {
     // Вторжение само замедляет время: окно серии, уклонение, финальный удар
     if (invasion.active) gdt *= invasion.timeScale;
     // Замедление: мир медленнее, герой в своём темпе
-    slow.k += ((slow.on ? 0.05 : 1) - slow.k) * Math.min(1, dt * 6);
+    slow.k += ((slow.on ? 0.25 : 1) - slow.k) * Math.min(1, dt * 6);
     const pdt = gdt;
     gdt *= slow.k;
 
@@ -578,7 +580,7 @@ function step(dt, active) {
     fire.update(gdt);
     dust.update(gdt);
     sparks.update(gdt);
-    effects.update(gdt, player);
+    effects.update(gdt, player, invasion.active ? dt : gdt);
     air.update(gdt, player, camera.position, env.night, env.W.rain);
     hud.update(dt, player, city);
   }
@@ -616,6 +618,7 @@ function step(dt, active) {
   impactPass.uniforms.uCenter.value.copy(effects.impactCenter);
   impactPass.uniforms.uFlash.value = effects.screenFlash;
   impactPass.uniforms.uCharge.value = effects.chargeK;
+  impactPass.uniforms.uSlow.value = invasion.active ? invasion.fx.slowK : 0;
   impactPass.uniforms.uSpeed.value = THREE.MathUtils.smoothstep(player.vel.length(), 150, 3000) * (1 - env.altitudeK * 0.6);
   camRig.extraFov = effects.fovKick - effects.chargeK * 9 - (invasion.active ? invasion.fx.zoom : 0);
   updateCinematic({ env, camera, godRays, grade, dt, quality: qualityIndex });

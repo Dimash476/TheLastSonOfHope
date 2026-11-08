@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { MUSIC_VOLUME } from './audio.js';
 import { BIG_PARK, POND, RIVER_Z, RIVER_HALF_W, PLANE_HALF, HALF, DISTRICTS, BLOCK, blockAt, forestMask, sampleTerrain, islandSample } from './world/layout.js';
 
 // Живые голоса мира поверх soundscape: всё синтезируется, без файлов.
@@ -356,7 +357,7 @@ export class WildSound {
     // Замедление времени (V) тянет и музыку — ниже и медленнее
     T.el.playbackRate = Math.max(0.5, Math.min(1, slow));
     // Своя музыка (M) отходит на второй план
-    if (this.a.music) this.a.music.volume = 0.35 * (1 - 0.95 * T.k);
+    if (this.a.music) this.a.music.volume = MUSIC_VOLUME * (1 - 0.95 * T.k);
     // Удары баса: всплеск энергии низов над средним уровнем
     let kick = false;
     if (!T.el.paused) {

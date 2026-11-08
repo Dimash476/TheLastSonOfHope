@@ -66,9 +66,10 @@ export class Soundscape {
     this.spaceGain = gain();
     const sp = filt('lowpass', 300);
     for (const f of [55, 82.4, 110.3]) osc('sine', f).connect(gain(0.3)).connect(sp);
-    const spLfo = osc('sine', 0.07), spDepth = gain(0.5);
-    spLfo.connect(spDepth).connect(this.spaceGain.gain);
-    sp.connect(this.spaceGain).connect(a.ambBus);
+    // Волна отдельным узлом: приходя прямо в spaceGain, она качала громкость и там, где гула быть не должно
+    const spSwell = gain(0.7), spLfo = osc('sine', 0.07), spDepth = gain(0.3);
+    spLfo.connect(spDepth).connect(spSwell.gain);
+    sp.connect(spSwell).connect(this.spaceGain).connect(a.ambBus);
 
     // --- гомон толпы: три «форманты» шума со случайным движением
     this.murmurGain = gain();

@@ -829,7 +829,8 @@ export class Warship {
       lp.type = 'lowpass'; lp.frequency.value = 130;
       const a = ctx.createOscillator(), b = ctx.createOscillator();
       a.type = b.type = 'sawtooth';
-      a.frequency.value = 33; b.frequency.value = 33.45;
+      // Ровно октава: близкие частоты дали бы биения, гул ходил бы волнами
+      a.frequency.value = 33; b.frequency.value = 66;
       a.connect(lp); b.connect(lp);
       const rum = ctx.createBufferSource();
       rum.buffer = A.brown; rum.loop = true;
@@ -838,7 +839,7 @@ export class Warship {
       a.start(); b.start(); rum.start();
       this.hum = { out, nodes: [a, b, rum] };
     }
-    this.hum.out.gain.setTargetAtTime(k * 0.3, ctx.currentTime, k > 0 ? 0.6 : 0.2);
+    this.hum.out.gain.setTargetAtTime(k * 0.12, ctx.currentTime, k > 0 ? 0.6 : 0.2);
   }
 
   update(dt, listener, audio) {

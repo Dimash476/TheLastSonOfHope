@@ -376,11 +376,15 @@ const SOUNDS = {
   } },
   // Город вокруг боя: низкий гул, глухие далёкие удары, осыпающийся камень. Без сирен и гудков
   warBed: { sec: 18, loop: true, wet: 0.9, build(c, d, n, b) {
-    nburst(c, d, b, 0, 19, 0.5, { freq: 150, to: 150, attack: 1 });
-    for (let t = 0.4; t < 18; t += 1.2 + Math.random() * 3) {
-      sweep(c, d, t, 1.6, 52 + Math.random() * 18, 22, 0.32 + Math.random() * 0.3, 'sine', 0.4);
-      nburst(c, d, b, t, 2.6, 0.5, { freq: 240, to: 50, attack: 0.05 });
-    }
+    // Ровный низ без накатов: раскаты поверх него ходили по бою волнами гула
+    const s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    s.buffer = b;
+    s.loop = true;
+    f.type = 'lowpass';
+    f.frequency.value = 150;
+    g.gain.value = 0.2;
+    s.connect(f).connect(g).connect(d);
+    s.start(0);
     rubble(c, d, n, 0.5, 17, 70, 0.05, 240, 1300);
   } },
 };
@@ -442,25 +446,31 @@ async function renderBank() {
 }
 
 // ---------------------------------------------------------------- след в полёте
-// Лента за телом на большой скорости: один объект, одна отрисовка
+// Тонкая струя воздуха за телом на большой скорости: один объект, одна отрисовка.
+// Сужается к хвосту, края мягкие: сзади не должна читаться как полоса
 const RIB = 30;
+const RIB_LEN = 70;    // м: длина струи на любой скорости
+const RIB_LIFE = 0.34;
 class Ribbon {
   constructor(scene, color) {
     this.pts = Array.from({ length: RIB }, () => new THREE.Vector3());
     this.ages = new Float32Array(RIB).fill(9);
     this.pos = new Float32Array(RIB * 6);
     this.alpha = new Float32Array(RIB * 2);
+    this.side = new Float32Array(RIB * 2);
+    for (let i = 0; i < RIB; i++) { this.side[i * 2] = 1; this.side[i * 2 + 1] = -1; }
     const idx = [];
     for (let i = 0; i < RIB - 1; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('aA', new THREE.BufferAttribute(this.alpha, 1).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('aS', new THREE.BufferAttribute(this.side, 1));
     g.setIndex(idx);
     const m = new THREE.ShaderMaterial({
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, toneMapped: false,
       uniforms: { uColor: { value: color } },
-      vertexShader: 'attribute float aA; varying float vA; void main() { vA = aA; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: 'uniform vec3 uColor; varying float vA; void main() { gl_FragColor = vec4(uColor * vA, vA); }',
+      vertexShader: 'attribute float aA; attribute float aS; varying float vA; varying float vS; void main() { vA = aA; vS = aS; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform vec3 uColor; varying float vA; varying float vS; void main() { float e = 1.0 - abs(vS); float a = vA * e * e; gl_FragColor = vec4(uColor * a, a); }',
     });
     this.mesh = new THREE.Mesh(g, m);
     this.mesh.frustumCulled = false;
@@ -486,20 +496,117 @@ class Ribbon {
     this.pts[0].copy(p);
     for (let i = 0; i < RIB; i++) this.ages[i] += dt;
     const k = smoothstep(170, 620, speed);
-    let any = false;
+    let any = false, run = 0;
     for (let i = 0; i < RIB; i++) {
       const a = this.pts[i], b = this.pts[Math.min(RIB - 1, i + 1)];
       _a.subVectors(cam, a);
-      _b.subVectors(b, a).cross(_a);
+      _b.subVectors(b, a);
+      const seg = _b.length();
+      _b.cross(_a);
       if (_b.lengthSq() < 1e-6) _b.set(0, 0.01, 0); else _b.normalize();
-      const fade = Math.max(0, 1 - this.ages[i] / 0.34) * (1 - i / (RIB - 1));
-      const w = (0.16 + 0.75 * k) * (0.35 + 0.65 * fade);
+      // Длина по телу струи, а не по числу точек: на сверхскорости хвост не растягивается на сотни метров
+      const tail = Math.max(0, 1 - run / RIB_LEN);
+      run += seg;
+      const fade = Math.max(0, 1 - this.ages[i] / RIB_LIFE) * tail;
+      const w = (0.1 + 0.1 * k) * fade;
       this.pos[i * 6] = a.x + _b.x * w; this.pos[i * 6 + 1] = a.y + _b.y * w; this.pos[i * 6 + 2] = a.z + _b.z * w;
       this.pos[i * 6 + 3] = a.x - _b.x * w; this.pos[i * 6 + 4] = a.y - _b.y * w; this.pos[i * 6 + 5] = a.z - _b.z * w;
-      const al = fade * (0.28 + 0.5 * k);
+      const al = fade * (0.2 + 0.25 * k);
       this.alpha[i * 2] = al;
       this.alpha[i * 2 + 1] = al;
       if (al > 0.01) any = true;
+    }
+    this.mesh.visible = any;
+    if (any) {
+      this.mesh.geometry.attributes.position.needsUpdate = true;
+      this.mesh.geometry.attributes.aA.needsUpdate = true;
+    }
+  }
+}
+
+// След генерала: долгий и видный издалека, дуга его полёта остаётся висеть в небе.
+// Ширина растёт с расстоянием до камеры: след не пропадает и на другом конце города
+const ARC = 200;
+const ARC_STEP = 0.03;  // с между точками
+const ARC_LIFE = 3;
+class ArcTrail {
+  constructor(scene, color) {
+    this.pts = Array.from({ length: ARC }, () => new THREE.Vector3());
+    this.ages = new Float32Array(ARC).fill(9);
+    this.pos = new Float32Array(ARC * 6);
+    this.alpha = new Float32Array(ARC * 2);
+    this.side = new Float32Array(ARC * 2);
+    for (let i = 0; i < ARC; i++) { this.side[i * 2] = 1; this.side[i * 2 + 1] = -1; }
+    const idx = [];
+    for (let i = 0; i < ARC - 1; i++) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(this.pos, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('aA', new THREE.BufferAttribute(this.alpha, 1).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('aS', new THREE.BufferAttribute(this.side, 1));
+    g.setIndex(idx);
+    const m = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
+      uniforms: { uColor: { value: color } },
+      vertexShader: 'attribute float aA; attribute float aS; varying float vA; varying float vS; void main() { vA = aA; vS = aS; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform vec3 uColor; varying float vA; varying float vS; void main() { float e = 1.0 - abs(vS); gl_FragColor = vec4(uColor, vA * e * e * (3.0 - 2.0 * e)); }',
+    });
+    this.mesh = new THREE.Mesh(g, m);
+    this.mesh.frustumCulled = false;
+    this.mesh.visible = false;
+    this.mesh.renderOrder = 3;
+    scene.add(this.mesh);
+    this.acc = 0;
+    this.life = ARC_LIFE;
+    this.width = 1;
+    // Издалека от тела остаётся точка: голову кометы видно за километры
+    this.head = new THREE.Mesh(new THREE.SphereGeometry(1, 12, 8), new THREE.MeshBasicMaterial({
+      color: new THREE.Color(4, 1.7, 0.6), transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
+    }));
+    this.head.frustumCulled = false;
+    this.head.visible = false;
+    this.head.renderOrder = 4;
+    scene.add(this.head);
+  }
+
+  clear() {
+    this.ages.fill(99);
+    this.mesh.visible = false;
+    this.head.visible = false;
+  }
+
+  // lens — тангенс половины угла камеры: толщина на экране одна и та же и в длинном объективе, и в широком
+  update(dt, p, speed, cam, lens) {
+    this.acc += dt;
+    if (this.acc > ARC_STEP) {
+      this.acc = 0;
+      for (let i = ARC - 1; i > 0; i--) { this.pts[i].copy(this.pts[i - 1]); this.ages[i] = this.ages[i - 1]; }
+      this.ages[0] = speed > 120 ? 0 : 99;
+    }
+    this.pts[0].copy(p);
+    const fromCam = p.distanceTo(cam), glow = speed > 120 ? smoothstep(160, 600, fromCam) : 0;
+    this.head.visible = glow > 0.01;
+    if (this.head.visible) {
+      this.head.position.copy(p);
+      this.head.scale.setScalar(fromCam * lens * 0.02);
+      this.head.material.opacity = glow;
+    }
+    for (let i = 0; i < ARC; i++) this.ages[i] += dt;
+    let any = false;
+    for (let i = 0; i < ARC; i++) {
+      const a = this.pts[i], b = this.pts[Math.min(ARC - 1, i + 1)];
+      _a.subVectors(cam, a);
+      const far = _a.length();
+      _b.subVectors(b, a).cross(_a);
+      if (_b.lengthSq() < 1e-6) _b.set(0, 0.01, 0); else _b.normalize();
+      const fade = Math.max(0, 1 - this.ages[i] / this.life), head = Math.min(1, (i + 0.5) / 5);
+      const w = Math.max(0.3, far * lens * 0.016 * this.width) * (0.45 + 0.55 * fade) * head;
+      this.pos[i * 6] = a.x + _b.x * w; this.pos[i * 6 + 1] = a.y + _b.y * w; this.pos[i * 6 + 2] = a.z + _b.z * w;
+      this.pos[i * 6 + 3] = a.x - _b.x * w; this.pos[i * 6 + 4] = a.y - _b.y * w; this.pos[i * 6 + 5] = a.z - _b.z * w;
+      // Следующая точка мертва: от неё след не тянется, там старое место, где он был раньше
+      const al = this.ages[Math.min(ARC - 1, i + 1)] >= this.life ? 0 : fade * fade * 0.85;
+      this.alpha[i * 2] = al;
+      this.alpha[i * 2 + 1] = al;
+      if (al > 0.005) any = true;
     }
     this.mesh.visible = any;
     if (any) {
@@ -645,7 +752,7 @@ class Slab {
 
     // Герой: рывок уводит от него, удар в нужный момент разбивает
     const H = I.player, d = _c.subVectors(I.heroC, p).length();
-    if (d < 7.5 && H.punchT >= 0 && H.punchT < 0.36) {
+    if (d < 7.5 && ((H.punchT >= 0 && H.punchT < 0.36) || I.chain.striking)) {
       I.fx.hit(p.clone(), this.vel.clone().normalize(), 0.8);
       W.debris.explode(p, 16, 40);
       this.reset();
@@ -717,10 +824,12 @@ export class BattleFX {
     this.zoomT = 0;
     this.zoomHold = 0;
     this.gradeK = 0;
+    this.slowK = 0;
     this.columns = [];
     this.bank = null;
     this.ribHero = new Ribbon(inv.scene, new THREE.Color(0.85, 0.95, 1.4));
     this.ribXarg = new Ribbon(inv.scene, new THREE.Color(1.5, 0.55, 0.18));
+    this.arcXarg = new ArcTrail(inv.scene, new THREE.Color(1, 0.5, 0.2));
     this.ash = new Ash(inv.scene);
     this.slab = new Slab(inv);
     this.hits = [];
@@ -748,9 +857,11 @@ export class BattleFX {
     this.zoomT = 0;
     this.zoomHold = 0;
     this.gradeK = 0;
+    this.slowK = 0;
     this.columns.length = 0;
     this.ribHero.clear();
     this.ribXarg.clear();
+    this.arcXarg.clear();
     this.ash.u.uK.value = 0;
     this.ash.points.visible = false;
     this.slab.reset();
@@ -1043,7 +1154,7 @@ export class BattleFX {
     W.dust.burst(_a, Math.round(14 + 14 * k), { size: [4, 12], speed: 10 + 16 * k, life: [1.2, 3], dir: _b.copy(dir).multiplyScalar(-0.8).clone(), color: 0xa89f92 });
     _a.copy(point).addScaledVector(dir, 6);
     W.dust.burst(_a, Math.round(20 + 18 * k), { size: [5, 15], speed: 18 + 26 * k, life: [1.4, 3.4], dir: dir.clone(), color: 0xa89f92 });
-    W.effects.shockwave(point.clone(), { type: 'disc', dir: dir.clone(), radius: 12 + 14 * k, life: 0.45, opacity: 0.7, color: 0xe8dccb });
+    this.airRing(point, dir, 8 + 10 * k, 0.4, 0.4, 0xe8dccb);
     W.effects.flash(point, 16 + 12 * k);
     W.sparks.burst(point, 20, { size: [0.4, 1.2], speed: 30, life: [0.2, 0.6], color: 0xffd28a });
     W.debris.explode(point, 18, 26 + 16 * k);
@@ -1157,11 +1268,19 @@ export class BattleFX {
       this.cineT -= realDt;
       if (this.cineT <= 0 && !I.el.hud.classList.contains('cine')) I.el.bars.classList.remove('on');
     }
+    // Время вязнет: зрение меняется вместе с ним. Входит быстро, отпускает плавно
+    const slowT = I.fightOn ? smoothstep(0.75, 0.2, I.timeScale) : 0;
+    this.slowK += (slowT - this.slowK) * (1 - Math.exp(-(slowT > this.slowK ? 12 : 5) * realDt));
 
     if (I.pool) {
       this.ribHero.update(realDt, I.heroC, P.driven || P.knockT > 0 ? Math.max(P.speed, 200) : P.speed, cam);
-      if (X.root.visible) this.ribXarg.update(realDt, X.c, X.vel.length(), cam);
-      else if (this.ribXarg.mesh.visible) this.ribXarg.clear();
+      if (X.root.visible) {
+        this.ribXarg.update(realDt, X.c, X.vel.length(), cam);
+        this.arcXarg.update(realDt, X.c, X.vel.length(), cam, Math.tan(I.camera.fov * Math.PI / 360));
+      } else if (this.ribXarg.mesh.visible) {
+        this.ribXarg.clear();
+        this.arcXarg.clear();
+      }
     }
 
     // Столбы дыма
@@ -1251,7 +1370,8 @@ export class BattleFX {
     const I = this.inv, W = this.W, cam = I.camera.position;
     const want = fight ? 0.34 + 0.66 * smoothstep(0, 40, lost) : 0;
     this.smog += (want - this.smog) * Math.min(1, realDt * (fight ? 0.14 : 0.5));
-    this.setLoop('warBed', fight && I.endT === null ? low * (0.16 + 0.42 * this.smog) : 0, 1.2);
+    // Корабль лежит: ему гудеть больше нечем
+    this.setLoop('warBed', fight && I.endT === null && !I.shipDown ? low * (0.16 + 0.42 * this.smog) : 0, 1.2);
     for (let i = this.frags.length - 1; i >= 0; i--) {
       const f = this.frags[i];
       f.t += dt;

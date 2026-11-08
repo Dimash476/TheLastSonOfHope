@@ -128,7 +128,6 @@ export class Invasion {
     this.heroHP = HERO_HP;
     this.heroDown = false;
     this.subQ = [];
-    this.punchBuf = 0;
     this.recoverCd = 0;
     this.shipDown = false;
     this.prevHero.copy(P.pos);
@@ -175,6 +174,7 @@ export class Invasion {
     // В этом бою каждый удар идёт всем телом
     P.punchLen = 0.72;
     P.punchHitAt = 0.2;
+    P.onHeavy = (c) => this.chain.releaseHeavy(c);
     P.knockT = 0;
     P.driven = null;
     P.lockDir = null;
@@ -227,6 +227,7 @@ export class Invasion {
     this.parley.cancel();
     P.punchLen = undefined;
     P.punchHitAt = undefined;
+    P.onHeavy = null;
     P.blow = null;
     P.poseQ = null;
     P.knockT = 0;
@@ -482,6 +483,7 @@ export class Invasion {
   beginDuel() {
     const X = this.xarg;
     this.chain.end();
+    if (this.seize.kin) this.seize.abort();
     this.setStage('duel');
     this.duelT = null;
     for (const s of this.soldiers) s.retreat();
@@ -589,7 +591,7 @@ export class Invasion {
   hurtHero(amount, knock, cont = false, minGap = 0.12) {
     if (!this.active || this.ended || this.heroDown || !this.fightOn || this.finale.on) return;
     const P = this.player, W = this.world;
-    if (P.driven === this.chain.driven || P.driven === this.seize.driven) return;   // в рывке серии и в захвате его не поймать
+    if (P.driven === this.seize.driven || (P.driven === this.chain.driven && this.chain.safe)) return;   // в серии и в захвате его не поймать
     if (!cont && this.time - this.lastHurt < minGap) return;
     this.heroHP = Math.max(0, this.heroHP - amount);
     this.lastHurtAny = this.time;
@@ -599,6 +601,8 @@ export class Invasion {
       reelHit(P.reel, clamp(amount / 14, 0.4, 1), -1);
       W.effects.impactFX(0.6, null, 0.08, 6);
     }
+    // Сбили на первом ударе: он сорвался
+    if (knock && this.chain.kin && !this.chain.safe) this.chain.end();
     // Пока идёт серия, героя можно задеть, но не сбить с неё
     if (knock && !this.chain.active) {
       const sp = knock.length();
@@ -674,11 +678,13 @@ export class Invasion {
     P.grounded = false;
     P.falling = false;
     P.punchT = -1;
+    if (this.chain.kin) this.chain.end();
     kin.chainEnd();
     kin.launch(dir.clone().negate(), sp * 1.2, 0.55);
     kin.go('knock');
-    if (kin.kind === 'general') kin.cd.answer = 1.5;
-    this.counterT = 1;
+    // Размен: оба отлетели, и первым успевает тот, кто ударит первым. Сам он сразу не пойдёт
+    if (kin.kind === 'general') kin.cd.rest = Math.max(kin.cd.rest, 1.3);
+    this.counterT = 1.5;
     this.fx.clash(point, dir);
     if (big) {
       this.fx.play('collide', { pos: point });
@@ -834,26 +840,39 @@ export class Invasion {
     return best;
   }
 
-  // Перед ходом героя. Нажатие удара не теряется: пока кулак занят или идёт хит-стоп, оно ждёт четверть секунды.
-  // Рывок выводит из отброса. Заряженный удар отпущен — рывок к цели, чтобы он не ушёл в пустоту
+  // Ближайшая цель в любой стороне
+  nearestTarget(range) {
+    let best = null, bd = range;
+    this.each((k) => {
+      if (k.state === 'watch') return;
+      const d = k.c.distanceTo(this.heroC);
+      if (d < bd) { bd = d; best = k; }
+    });
+    return best;
+  }
+
+  // Перед ходом героя. Нажатие — один удар: герой сам идёт к цели, удар ведёт Chain. Бить некого — обычный кулак.
+  // В сценах, в чужой хватке и с вещью в руках нажатие идёт туда, куда шло. Рывок выводит из отброса
   preUpdate(input, dt) {
     this.realDt = dt;
     if (!this.active || !this.fightOn || !this.pool) return;
-    const P = this.player;
-    // R рядом с врагом запускает сцену захвата. Врага нет — обычный захват: машина или обломок
-    if (input.grab && this.seize.tryStart()) input.grab = false;
-    const free = (P.punchT < 0 || P.punchT > (P.punchLen ?? PC.punchDuration) * 0.55) && P.charge <= 0 && !P.slamming && !P.driven;
-    if (this.chain.kin) {
-      // Идёт серия: нажатие — это следующий удар серии, он дождётся своего кадра
-      if (input.punch) this.chain.queued = true;
+    const P = this.player, Z = this.seize;
+    this.flyAway(input);
+    if (Z.holding) {
+      // Цель в руке: R отпускает, ЛКМ или B швыряет, F раскручивает. Заряжать удар нечем: рука занята
+      input.heavyHeld = false;
+      if (input.spin) Z.spinFromHold();
+      else if (input.grab) Z.drop();
+      else if (input.punch) Z.hurl();
+      input.grab = false;
       input.punch = false;
-      this.punchBuf = 0;
-    } else if (P.captured || P.held) this.punchBuf = 0;
-    else if (input.punch) this.punchBuf = free ? 0 : 0.25;
-    else if (this.punchBuf > 0) {
-      this.punchBuf -= dt;
-      if (free) { input.punch = true; this.punchBuf = 0; }
+    } else {
+      // R хватает. Врага нет — обычный захват: машина или обломок. F сразу раскручивает
+      if (input.grab && Z.tryStart()) input.grab = false;
+      if (input.spin) Z.tryStart(true);
     }
+    if (input.punch && (!P.driven || P.driven === this.chain.driven) && !P.captured && !P.held && this.chain.press(input)) input.punch = false;
+    this.chain.tick(dt);
     this.recoverCd -= dt;
     if (input.dash && P.knockT > 0 && this.recoverCd <= 0 && !P.driven && !P.captured && !this.heroDown) {
       this.recoverCd = 1.2;
@@ -862,8 +881,28 @@ export class Invasion {
       P.vel.multiplyScalar(0.15);
       this.world.effects.shockwave(this.heroC.clone(), { type: 'sphere', radius: 9, life: 0.3, opacity: 0.45 });
     }
-    if (input.heavyHeld || P.charge <= 0.12 || P.driven || P.captured) return;
-    const t = this.findTarget(34);
+  }
+
+  // Нажат полёт (Shift и W): что бы ни шло сейчас, герой улетает сам. Только большие сцены идут своим ходом
+  flyAway(input) {
+    const P = this.player, X = this.xarg, Z = this.seize, C = this.chain;
+    const fly = input.boost && input.moveZ > 0, edge = fly && !this.flyHeld;
+    this.flyHeld = fly;
+    if (!fly || this.heroDown || this.finale.on || this.story.lock || this.story.brawlOn) return;
+    // Клавиши уже зажаты, а его только что ударили или схватили: миг держит, потом герой всё равно уходит
+    if (P.captured === X && !X.opening && X.t > 0.35) X.breakFree();
+    if (P.knockT > 0 && !P.captured && !P.driven && this.time - this.lastHurt > 0.25) P.knockT = 0;
+    if (!edge) return;
+    if (Z.kin && !Z.holding) Z.abort();
+    if (C.kin && C.state !== 'tail') C.end();
+    else if (C.kin) C.clearShot();
+    this.slowT = 0;
+    this.timeScale = 1;
+  }
+
+  // Заряженный удар без серии (последний размен): рывок к цели, чтобы он не ушёл в пустоту
+  snapHeavy() {
+    const P = this.player, t = this.findTarget(34);
     if (!t) return;
     _v.subVectors(t.c, _p.copy(P.pos).addScaledVector(UP, 1));
     const d = _v.length();
@@ -880,7 +919,7 @@ export class Invasion {
     W.audio?.whoosh(0.9);
   }
 
-  // Удар рукой притягивает героя к цели — как во всех боевиках: промахнуться в воздухе почти невозможно
+  // Обычный кулак притягивает героя к цели: в последнем размене промахнуться почти невозможно
   trackPunch(dt) {
     const P = this.player;
     const started = P.punchT >= 0 && !P.punchHit && P.punchPower === 0 && (this.prevPunchT < 0 || P.punchT < this.prevPunchT);
@@ -929,7 +968,7 @@ export class Invasion {
     this.sideCur += ((C.side || 1) * 1.5 - this.sideCur) * (1 - Math.exp(-5 * realDt));
     if (St.lock) { F.pos.copy(St.lock.pos); F.k += (0.85 - F.k) * (1 - Math.exp(-6 * realDt)); F.rate = 7; F.dist = 7; F.side = 2.2; F.lift = 0.5; F.fov = 48; return; }
     if (St.cutLook > 0 && St.falling) { St.chunkTop(St.falling, F.pos); F.k += (0.75 - F.k) * (1 - Math.exp(-5 * realDt)); F.rate = 5; F.dist = 7; F.side = 1.6; F.fov = 62; return; }
-    if (this.seize.kin) { target = this.seize.kin; want = 0.85; F.rate = 10; F.dist = 6; F.side = 1.8; F.lift = 0.7; F.fov = 58; }
+    if (this.seize.kin && !this.seize.holding) { target = this.seize.kin; want = 0.85; F.rate = 10; F.dist = 6; F.side = 1.8; F.lift = 0.7; F.fov = 58; }
     else if (St.brawlOn && !C.kin) { target = X; want = 0.8; F.rate = 10; F.dist = 4; F.side = 1.4; F.lift = 0.3; F.fov = 46; }
     else if (C.kin && C.state === 'chase') { target = C.kin; want = 1; F.rate = 16; F.dist = 6; F.side = this.sideCur; F.lift = 0.7; F.fov = 66; }
     else if (C.kin) {
@@ -939,9 +978,10 @@ export class Invasion {
       F.rate = 12; F.dist = 5.2; F.side = this.sideCur; F.lift = 0.7;
       F.fov = clamp(46 * 120 / Math.max(1, target.c.distanceTo(this.heroC)), 20, 46);
     }
+    // Он идёт на героя: длинный объектив, и видно, как он растёт в кадре
     else if (X && X.state === 'chain' && X.blow) { target = X; want = 0.9; F.rate = 12; F.dist = 3.8; F.side = 1.7; F.lift = 0.4; F.fov = 44; }
     else if (X && (X.state === 'chain' || X.state === 'carry' || X.state === 'shoulder' || X.state === 'grab')) { target = X; want = 0.6; F.rate = 8; F.dist = 5.5; F.side = 1.2; }
-    else if (this.fightOn && this.softLock && !this.heroDown && this.muteT <= 0) {
+    else if (this.fightOn && this.softLock && !this.heroDown && !this.seize.holding && this.muteT <= 0) {
       this.softT -= realDt;
       if (this.softT <= 0) {
         this.softT = 0.25;
@@ -949,6 +989,8 @@ export class Invasion {
       }
       if (this.softKin && this.softKin.alive) { target = this.softKin; want = 0.35; }
     }
+    // Игрок сам ведёт мышью: камера к цели почти не тянет, чтобы не спорить с рукой
+    if (this.muteT > 0 && !St.lock) want *= 0.4;
     if (target) F.pos.copy(target.c);
     F.k += (want - F.k) * (1 - Math.exp(-10 * realDt));
   }
@@ -973,7 +1015,7 @@ export class Invasion {
     this.wasKnocked = knocked;
     if (this.slowT > 0) {
       this.slowT -= realDt;
-      if (this.slowT <= 0) this.timeScale = this.chain.state === 'window' ? 0.5 : 1;
+      if (this.slowT <= 0) this.timeScale = this.chain.state === 'window' && !this.chain.film ? 0.5 : 1;
     }
 
     this.ship.update(dt, cam, W.audio);
@@ -1016,9 +1058,14 @@ export class Invasion {
       const sp = P.speed;
       if (sp > 140 && this.ramCd <= 0 && !P.driven && !P.captured && P.knockT <= 0) {
         this.each((k) => {
+          // Того, кого несёт в руке, он не таранит
+          if (k === this.seize.kin) return;
           // Оба шли на полном ходу навстречу: никто никого не пробил, столкнулись
           const headOn = k === this.xarg && (k.state === 'shoulder' || k.state === 'grab' || (k.state === 'chain' && k.chainStep === 'rush')) && P.vel.dot(k.vel) < 0;
           if (this.ramCd > 0 || k.c.distanceTo(this.heroC) > 2.6 + (sp + (headOn ? k.vel.length() : 0)) * realDt) return;
+          // Он догнал героя сзади или уже обошёл: это не герой в него влетел
+          _v.subVectors(k.c, this.heroC);
+          if (_v.dot(P.vel) < 0 || _v.dot(P.vel) < _v.dot(k.vel)) return;
           this.ramCd = 0.5;
           if (headOn) { this.clash(k, true); return; }
           const dir = P.vel.clone().normalize();
@@ -1138,9 +1185,16 @@ export class Invasion {
         break;
       }
       case 'duel': {
-        if (this.pendingClimb && !this.chain.kin && ['neutral', 'recover', 'regain'].includes(X.state)) {
-          this.pendingClimb = false;
-          if (X.startClimb()) this.story.radio('ОРБИТАЛЬНЫЙ МОНИТОРИНГ: Цель уходит вертикально вверх. Покидает атмосферу.');
+        if (this.pendingClimb) {
+          // Он уже решил идти наверх: серия на этом заканчивается, иначе подъём можно пропустить совсем
+          if (this.chain.state === 'window') this.chain.windowLen = Math.min(this.chain.windowLen, this.chain.windowT + 0.3);
+          const going = ['neutral', 'recover', 'regain'].includes(X.state);
+          // Первый удар ещё не дошёл: он не ждёт
+          if (going && this.chain.kin === X && this.chain.fresh) this.chain.end();
+          if (going && !this.chain.kin) {
+            this.pendingClimb = false;
+            if (X.startClimb()) this.story.radio('ОРБИТАЛЬНЫЙ МОНИТОРИНГ: Цель уходит вертикально вверх. Покидает атмосферу.');
+          }
         }
         // Музыка следует за боем: в космосе барабаны уходят
         const y = this.camera.position.y;

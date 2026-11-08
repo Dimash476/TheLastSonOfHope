@@ -4,6 +4,7 @@ import { BODIES } from './world/bodies.js';
 
 const _b = new THREE.Vector3();
 const _f = new THREE.Vector3();
+const TURN_MAX = 4.5;   // рад/с: быстрее камера сама к цели не поворачивает
 
 // Камера от третьего лица: вращение мышью, отдаление и FOV растут со скоростью,
 // не проваливается в здания, под землю и под поверхность Луны и планет.
@@ -34,8 +35,10 @@ export class ThirdPersonCamera {
       let dy = tYaw - this.yaw;
       dy = Math.atan2(Math.sin(dy), Math.cos(dy));
       const r = (1 - Math.exp(-(F.rate ?? 9) * dt)) * fk;
-      this.yaw += dy * r;
-      this.pitch = clamp(this.pitch + (tPitch - this.pitch) * r, -1.45, 1.45);
+      // Доворот к цели плавный: даже если она за спиной, не быстрее TURN_MAX, чтобы экран не дёргало
+      const lim = TURN_MAX * dt;
+      this.yaw += clamp(dy * r, -lim, lim);
+      this.pitch = clamp(this.pitch + clamp((tPitch - this.pitch) * r, -lim, lim), -1.45, 1.45);
     }
 
     const cp = Math.cos(this.pitch);
@@ -94,6 +97,7 @@ export class ThirdPersonCamera {
     if (this.shot) {
       this.camera.position.copy(this.shot.pos);
       this.camera.lookAt(this.shot.look);
+      if (this.shot.roll) this.camera.rotateZ(this.shot.roll);
       this.camera.fov = this.shot.fov ?? this.camera.fov;
     }
     this.camera.updateProjectionMatrix();

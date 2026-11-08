@@ -234,11 +234,12 @@ export class Effects {
     this.glow.scale.setScalar(0.6 + k * 2.2 + Math.sin(this.time * 40) * 0.15 * k);
   }
 
-  update(dt, player) {
+  update(dt, player, realDt = dt) {
     this.time += dt;
-    this.impact *= Math.exp(-dt * 5);
-    this.screenFlash *= Math.exp(-dt * 9);
-    this.fovKick *= Math.exp(-dt * 6);
+    // Экран живёт в настоящем времени: при замедлении удар не должен висеть размытым пятном
+    this.impact *= Math.exp(-realDt * 5);
+    this.screenFlash *= Math.exp(-realDt * 9);
+    this.fovKick *= Math.exp(-realDt * 6);
 
     // Волны
     for (let i = this.waves.length - 1; i >= 0; i--) {
@@ -282,7 +283,7 @@ export class Effects {
       }
     }
     const m = speed / MACH;
-    const peak = smoothstep(0.85, 1.0, m) * (1 - smoothstep(1.05, 1.6, m) * 0.75);
+    const peak = player.captured ? 0 : smoothstep(0.85, 1.0, m) * (1 - smoothstep(1.05, 1.6, m) * 0.75);
     this.coneMat.uniforms.uOpacity.value = peak * 0.55;
     this.coneMat.uniforms.uTime.value = this.time;
     this.cone.visible = peak > 0.01;

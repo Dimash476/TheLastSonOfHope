@@ -826,6 +826,15 @@ export class City {
 
   isInside(p) { return this.segAt(p) !== null; }
 
+  // Точка в падающем куске здания (грубо, без наклона)
+  inFalling(p, pad = 0) {
+    for (const f of this.falling) {
+      const y0 = f.base.y0 + f.drop;
+      if (Math.abs(p.x - f.b.x) < f.base.w / 2 + pad && Math.abs(p.z - f.b.z) < f.base.d / 2 + pad && p.y > y0 - pad && p.y < y0 + f.height + pad) return true;
+    }
+    return false;
+  }
+
   isGlass(s) { return this.buildings[s.b].glass; }
 
   // ================================================================ урон

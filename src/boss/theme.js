@@ -768,7 +768,7 @@ export class BattleTheme {
     this.audio = audio;
     this.buffers = null;
     this.playing = false;
-    this.muted = false;
+    this.muted = true;
     this.section = null;
     this.wantStart = null;
     this.gains = {};
@@ -813,6 +813,11 @@ export class BattleTheme {
     if (!this.bus) this.buildGraph();
     const ctx = A.ctx;
     this.playing = true;
+    // Своя тема молчит, пока её не попросят: играет с партитурой на беззвучной шине, чтобы N включила её вовремя
+    if (this.muted) {
+      this.bus.gain.cancelScheduledValues(ctx.currentTime);
+      this.bus.gain.value = 0;
+    }
     this.t0 = ctx.currentTime + 0.12;
     this.sources = Object.keys(STEMS).map((k) => {
       const s = ctx.createBufferSource();
@@ -822,7 +827,6 @@ export class BattleTheme {
       s.start(this.t0);
       return s;
     });
-    A.holdMusic(true);
     A.themeOn = true;
     this.section = null;
     this.setSection(section, true);
@@ -915,45 +919,37 @@ export class BattleTheme {
     this.applyVolume();
   }
 
-  // M: тема → свои треки из music/ по очереди → снова тема. Возвращает текст подсказки
+  // M: свой трек играет — пауза, не играет — трек с места, где остановился, а тема боя уходит. Возвращает текст подсказки
   next() {
     const A = this.audio;
-    if (!A.tracks.length) return 'Положите файлы в папку music/ — пока играет тема боя';
-    if (!this.muted) {
-      this.muted = true;
-      this.trackPos = 0;
-      A.themeOn = false;
-      this.applyVolume();
-      A.musicOn = true;
-      A.musicHold = false;
-      A.playTrack(0);
-      return `♪ ${decodeURIComponent(A.tracks[0].split('/').pop())}`;
+    if (!A.tracks.length) return 'Положите файлы в папку music/';
+    if (A.music && !A.music.paused) {
+      A.musicOn = false;
+      A.music.pause();
+      return '♪ Пауза';
     }
-    if (this.trackPos < A.tracks.length - 1) {
-      this.trackPos++;
-      A.playTrack(this.trackPos);
-      return `♪ ${decodeURIComponent(A.tracks[this.trackPos].split('/').pop())}`;
-    }
-    this.muted = false;
-    A.holdMusic(true);
-    A.themeOn = true;
+    this.muted = true;
     this.applyVolume();
-    return '♪ Тема боя';
+    A.musicOn = true;
+    A.musicHold = false;
+    A.playTrack(A.trackIndex);
+    return `♪ ${decodeURIComponent(A.tracks[A.trackIndex].split('/').pop())}`;
   }
 
-  // N: выключить или вернуть тему
+  // N: тема боя звучит только по этой клавише. Свой трек на это время встаёт на паузу
   toggle() {
     this.muted = !this.muted;
-    this.audio.themeOn = !this.muted;
+    this.audio.holdMusic(!this.muted);
+    if (!this.muted && !this.playing) this.start('wave');
     this.applyVolume();
     return !this.muted;
   }
 
   stop() {
     const A = this.audio;
-    if (!this.playing) { this.wantStart = null; return; }
+    this.muted = true;
+    if (!this.playing) { this.wantStart = null; A.holdMusic(false); return; }
     this.playing = false;
-    this.muted = false;
     this.paused = false;
     this.section = null;
     const t = A.ctx.currentTime;

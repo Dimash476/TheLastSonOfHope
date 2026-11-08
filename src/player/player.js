@@ -46,7 +46,7 @@ export class Player {
     this.dashDir = new THREE.Vector3();
     this.ghostT = 0;
     this.held = null; // { kind, sys, ref }
-    this.laser = new EyeLaser(scene, world);
+    this.laser = new EyeLaser(scene, world, { orange: true });
     this.lasering = false;
     this.braking = false;
     this.latAccel = new THREE.Vector3();
@@ -176,9 +176,9 @@ export class Player {
       if (this.speed < 30) this.vel.addScaledVector(camDir, 10);
     }
 
-    // Лазер из глаз (удерживать Z): бьёт туда, куда смотрит камера
+    // Лазер из глаз (удерживать Z, вместе с ЛКМ — усиленный): бьёт туда, куда смотрит камера
     this.lasering = input.laser && !this.slamming && !this.held && this.charge <= 0;
-    this.laser.update(dt, this.lasering, this.laserAim || camDir, this);
+    this.laser.update(dt, this.lasering, this.laserAim || camDir, this, input.laserBoost);
 
     // Погладить собаку или кошку: рядом с животным ПКМ гладит, а не заряжает удар
     this.petTarget = this.grounded && !this.held && !this.lasering && this.charge <= 0 ? W.animals?.findPettable(this.pos, 2.4) : null;
@@ -217,7 +217,11 @@ export class Player {
     if (input.heavyHeld && !this.slamming && !this.held && !this.petting) {
       this.charge = Math.min(P.heavyMaxCharge, this.charge + dt);
     } else if (this.charge > 0) {
-      if (this.charge > 0.12) this.heavyPunch(camDir, this.charge / P.heavyMaxCharge);
+      if (this.charge > 0.12) {
+        const c = this.charge / P.heavyMaxCharge;
+        // В бою удар сперва доходит до цели: момент попадания решает режим
+        if (this.onHeavy) this.onHeavy(c); else this.heavyPunch(camDir, c);
+      }
       this.charge = 0;
     }
 
@@ -716,6 +720,11 @@ export class Player {
   }
 
   // ------------------------------------------------ захват и бросок
+  canGrab() {
+    const W = this.world, c = this.center;
+    return !!(W.traffic?.findGrabbable(c, P.grabRange) || W.people?.findGrabbable(c, P.grabRange) || W.debris.findGrabbable(c, P.grabRange));
+  }
+
   tryGrab() {
     const W = this.world, c = this.center;
     const opts = [];
@@ -906,7 +915,7 @@ export class Player {
       const lat = this.latAccel.dot(x);
       this.roll = damp(this.roll, -clamp(lat / 350, -1.25, 1.25), 6, dt);
       if (!Number.isFinite(this.roll)) this.roll = 0;
-      flyQ.multiply(new THREE.Quaternion().setFromAxisAngle(UP, this.roll));
+      flyQ.multiply(new THREE.Quaternion().setFromAxisAngle(UP, this.roll + (this.barrel || 0)));
       // Воздушное торможение: корпус выпрямляется навстречу потоку
       if (this.braking) flyK *= 0.3;
     } else if (!this.grounded && !acting && !this.slamming && !this.falling) {
@@ -984,12 +993,13 @@ export class Player {
     a.lift = damp(a.lift, this.held && this.held.kind !== 'person' ? 1 : 0, 10, dt);
     a.brake = damp(a.brake || 0, this.braking && !this.grounded ? 1 : 0, 6, dt);
     a.carry = damp(a.carry || 0, this.held && this.held.kind === 'person' ? 1 : 0, 10, dt);
+    a.grip = damp(a.grip || 0, this.gripping ? 1 : 0, 14, dt);
     a.pet = damp(a.pet || 0, this.petting || this.helpT > 0 ? 1 : 0, 7, dt);
     a.wave = damp(a.wave || 0, this.waveT > 0 ? 1 : 0, 8, dt);
     a.throwT = this.throwT >= 0 ? this.throwT / 0.65 : -1;
 
     // Покой на земле дольше 3 с — руки на пояс
-    const busy = hs > 1 || this.punchT >= 0 || this.charge > 0 || this.held || this.lasering || this.petting || this.landT > 0 || this.waveT > 0 || this.throwT >= 0 || this.helpT > 0 || this.downK > 0;
+    const busy = hs > 1 || this.punchT >= 0 || this.charge > 0 || this.held || this.gripping || this.lasering || this.petting || this.landT > 0 || this.waveT > 0 || this.throwT >= 0 || this.helpT > 0 || this.downK > 0;
     this.idleT = this.grounded && !busy ? (this.idleT || 0) + dt : 0;
     a.idle = damp(a.idle || 0, this.idleT > 3 ? 1 : 0, 3, dt);
     // Полёт: крен, сила встречного ветра, набор/снижение, гиперскорость
