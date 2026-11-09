@@ -14,6 +14,7 @@ const PALETTE = [
   0xe8e4dc,                     // белый
 ];
 const GLASS = new Set([0x7d93ad, 0x5a7896, 0x40566e]);
+const TOWER_GLASS = [...GLASS];
 const HOUSE_PALETTE = [0xe9dcc4, 0xd7c3a3, 0xc9d3d8, 0xe6d2b5, 0xb9c4a8, 0xd9b8a0, 0xf0ece4];
 const ROOF_PALETTE = [0x7a3b2e, 0x5d4a3f, 0x3e464f, 0x6b5a4a, 0x8a4a36];
 const OLD_PALETTE = [0x9c5b45, 0x8a4f3c, 0xa86a50, 0x7e4636, 0x94503a, 0xc9bba3, 0xd6c6a6];
@@ -25,7 +26,7 @@ const STUCCO_PALETTE = [0xd9c7a8, 0xc9b49a, 0xe3d9c6, 0xb7a58e, 0xcfc4b3, 0xa9b4
 const CAMPUS_PALETTE = [0x9c5b45, 0x8a4f3c, 0xa86a50, 0xd6c6a6, 0xc9b48f];
 
 const CELL = 50;  // ячейка пространственной сетки
-const CHUNK = 600;  // участок, рисуемый одним вызовом на материал (крупнее — меньше вызовов)
+const CHUNK = 800;  // участок, рисуемый одним вызовом на материал (крупнее — меньше вызовов)
 const ATTACH_CHUNK = 400; // детали на зданиях: скрываются по расстоянию, участки мельче
 const _m = new THREE.Matrix4();
 const _m2 = new THREE.Matrix4();
@@ -102,6 +103,8 @@ export class City {
         else this.fillUrbanBlock(bx, bz, rnd, 1);
       } else if (type === BLOCK.SUBURB) {
         if (rndShape() < 0.045) addGeometricBlock(this, bx, bz, rndShape, true);
+        // Ближний пригород: среди частных домов — малоэтажные жилые корпуса
+        else if (Math.max(Math.abs(cx), Math.abs(cz)) < CITY.urbanHalf + 600 && rndShape() < 0.35) this.fillLowriseBlock(bx, bz, rnd);
         else this.fillSuburbBlock(bx, bz, rnd);
       }
       else if (type === BLOCK.INDUSTRIAL) this.fillIndustrialBlock(bx, bz, rnd);
@@ -220,7 +223,7 @@ export class City {
   fillPerimeterBlock(bx, bz, rnd) {
     const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2;
     const x0 = bx + margin, z0 = bz + margin, dep = 13 + rnd() * 3;
-    const n = 3 + Math.floor(rnd() * 2), H = 15 + rnd() * 9;
+    const n = 3 + Math.floor(rnd() * 2), H = 18 + rnd() * 12;
     const house = (x, z, w, d) => this.addBuilding({
       x, z, w: w - 0.4, d: d - 0.4, h: H * (0.85 + rnd() * 0.3),
       color: STUCCO_PALETTE[Math.floor(rnd() * STUCCO_PALETTE.length)], glass: false, roof: rnd() < 0.5 ? 'box' : null,
@@ -239,6 +242,23 @@ export class City {
     }
     const cx = bx + CITY.block / 2, cz = bz + CITY.block / 2;
     for (let k = 0, m = 2 + Math.floor(rnd() * 3); k < m; k++) this.yardTrees.push([cx + (rnd() - 0.5) * 30, cz + (rnd() - 0.5) * 30]);
+  }
+
+  // Ближний пригород: два-три жилых корпуса в 4–6 этажей вдоль улиц, между ними двор с деревьями
+  fillLowriseBlock(bx, bz, rnd) {
+    const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2, e = lot / 2;
+    const cx = bx + CITY.block / 2, cz = bz + CITY.block / 2;
+    const alongX = rnd() < 0.5, n = rnd() < 0.6 ? 2 : 3, dep = 12 + rnd() * 2;
+    for (let k = 0; k < n; k++) {
+      if (k > 0 && rnd() < 0.15) continue;
+      const v = n === 2 ? (k ? 1 : -1) * (e - dep / 2 - 1) : (k - 1) * (e - dep / 2 - 1);
+      const len = lot - 6 - rnd() * 14, h = (4 + Math.floor(rnd() * 3)) * 3.1;
+      this.addBuilding({
+        x: cx + (alongX ? 0 : v), z: cz + (alongX ? v : 0), w: alongX ? len : dep, d: alongX ? dep : len, h,
+        color: STUCCO_PALETTE[Math.floor(rnd() * STUCCO_PALETTE.length)], glass: false, roof: rnd() < 0.6 ? 'box' : null,
+      }, rnd);
+    }
+    if (n === 2) for (let k = 0, m = 2 + Math.floor(rnd() * 3); k < m; k++) this.yardTrees.push([cx + (rnd() - 0.5) * 40, cz + (rnd() - 0.5) * 40 * (alongX ? 0.3 : 1)]);
   }
 
   // Старый город: плотная кирпичная застройка по периметру квартала, двор внутри
@@ -370,7 +390,7 @@ export class City {
       const bx = t.x - half + i * CITY.block, bz = t.z - half + j * CITY.block;
       const d = Math.max(Math.abs(bx + 50 - t.x), Math.abs(bz + 50 - t.z)) / half;
       if (rnd() < 0.08) continue;
-      if (d < 0.45) this.fillUrbanBlock(bx, bz, rnd, 0.3);
+      if (d < 0.45) this.fillUrbanBlock(bx, bz, rnd, 0.24);
       else this.fillSuburbBlock(bx, bz, rnd);
     }
   }
@@ -379,21 +399,25 @@ export class City {
   fillUrbanBlock(bx, bz, rnd, heightScale) {
     const margin = CITY.road / 2 + CITY.sidewalk, lot = CITY.block - margin * 2;
     const cx = bx + CITY.block / 2, cz = bz + CITY.block / 2;
-    const core = heightScale === 1 ? skylineAt(cx, cz) : 0.35;
-    const hMax = lerp(22, CITY.maxHeight * heightScale, core);
+    const town = heightScale !== 1;
+    const core = town ? 0.35 : skylineAt(cx, cz);
+    const hMax = lerp(town ? 22 : CITY.baseHeight, CITY.maxHeight * heightScale, core);
     const nx = core > 0.6 ? (rnd() < 0.5 ? 1 : 2) : 2 + Math.floor(rnd() * 2);
     const nz = core > 0.6 ? (rnd() < 0.5 ? 1 : 2) : 2 + Math.floor(rnd() * 2);
     const cw = lot / nx, cd = lot / nz;
     const gasSlot = rnd() < 0.03 && nx * nz >= 4 ? Math.floor(rnd() * nx * nz) : -1;
+    // Вдали от делового центра иногда встаёт отдельная стеклянная башня 90–190 м
+    const towerSlot = !town && core < 0.35 && rnd() < 0.07 ? Math.floor(rnd() * nx * nz) : -1;
 
     for (let a = 0; a < nx; a++) for (let b = 0; b < nz; b++) {
       const x = bx + margin + cw * (a + 0.5), z = bz + margin + cd * (b + 0.5);
       if (a * nz + b === gasSlot) { this.gasSpots.push({ x, z, w: cw - 4, d: cd - 4 }); continue; }
-      if (rnd() < 0.06) continue;
+      const tower = a * nz + b === towerSlot;
+      if (!tower && rnd() < 0.06) continue;
       const gap = 3 + rnd() * 5;
       const w = cw - gap - rnd() * cw * 0.25, d = cd - gap - rnd() * cd * 0.25;
-      const h = Math.max(8, hMax * (0.3 + 0.7 * rnd() ** 1.5) * (0.85 + rnd() * 0.3));
-      const color = PALETTE[Math.floor(rnd() * PALETTE.length)];
+      const h = tower ? 90 + rnd() * 100 : Math.max(8, hMax * (0.3 + 0.7 * rnd() ** 1.5) * (0.85 + rnd() * 0.3));
+      const color = tower ? TOWER_GLASS[Math.floor(rnd() * TOWER_GLASS.length)] : PALETTE[Math.floor(rnd() * PALETTE.length)];
       // Ступенчатая верхушка у высоких зданий
       const step = h > 70 && rnd() < 0.45 ? { at: h * (0.55 + rnd() * 0.25), k: 0.55 + rnd() * 0.25 } : null;
       this.addBuilding({ x, z, w, d, h, color, glass: GLASS.has(color), step, roof: rnd() < 0.7 ? 'box' : null }, rnd);

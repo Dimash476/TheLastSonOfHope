@@ -209,6 +209,14 @@ export class Trees {
     });
   }
 
+  // Обрушение горы: деревья не ломаются и не летят — уходят вместе со склоном,
+  // если земля под ними опустилась (ground(x, z) — новая высота)
+  bury(x, z, radius, ground) {
+    this.near(x, z, radius, (t) => {
+      if (ground(t.x, t.z) < t.y - 3) { t.alive = false; this.write(t); }
+    });
+  }
+
   hit(center, radius, vel) {
     let any = false;
     this.near(center.x, center.z, radius + 0.6, (t) => {

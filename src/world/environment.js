@@ -2,7 +2,10 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { CITY, WORLD, SPACE } from '../config.js';
 import { mulberry32, smoothstep, lerp } from '../utils.js';
-import { HALF, PLANE_HALF, RIVER_Z, RIVER_HALF_W, TOWNS, blockTypes, TERRAIN_RES, terrainHeights, coastX, forestMask, QUAY_X, SEA_BED, BIG_PARK, POND, STADIUM, BEACH, plainK, MEGA_SITES, ISLE, isleToWorld, islandSample, DISTRICTS } from './layout.js';
+import { SUN } from './bodies.js';
+import { HALF, PLANE_HALF, RIVER_Z, RIVER_HALF_W, TOWNS, blockTypes, TERRAIN_RES, TERRAIN_TILE, terrainHeights, coastX, forestMask, QUAY_X, SEA_BED, BIG_PARK, POND, STADIUM, BEACH, plainK, MEGA_SITES, ISLE, isleToWorld, islandSample, DISTRICTS } from './layout.js';
+
+const _toSun = new THREE.Vector3(), _qSun = new THREE.Quaternion(), _qI = new THREE.Quaternion(), _white = new THREE.Color();
 
 // Небо, солнце, туман, земля с дорогами, рельеф, вода, облака.
 export class Environment {
@@ -23,10 +26,13 @@ export class Environment {
     u.uOpacity = { value: 1 };
     u.uSkyGain = { value: 1 };
     u.uTwilight = { value: 0 };   // сила сумеречного свечения (солнце чуть за горизонтом)
+    // Чёрная дыра проглядывает сквозь дневное небо, как Луна днём
+    u.uHoleDir = { value: new THREE.Vector3(0, 1, 0) };
+    u.uHoleK = { value: 0 };
     sky.material.transparent = true;
     sky.material.depthWrite = false;
     sky.material.fragmentShader = sky.material.fragmentShader
-      .replace('void main() {', 'uniform float uOpacity; uniform float uSkyGain; uniform float uTwilight;\nvoid main() {')
+      .replace('void main() {', 'uniform float uOpacity; uniform float uSkyGain; uniform float uTwilight; uniform vec3 uHoleDir; uniform float uHoleK;\nvoid main() {')
       .replace(/gl_FragColor = vec4\(\s*retColor,\s*1\.0\s*\);/, `
         // Фиолетовый час: у горизонта со стороны заката — розово-оранжевая полоса, переходящая
         // в лиловую; выше — глубокий фиолетовый. Модель неба сама этого почти не даёт.
@@ -38,7 +44,14 @@ export class Environment {
         vec3 zenith = vec3( 0.13, 0.07, 0.3 ) * ( 0.35 + 0.65 * smoothstep( 0.0, 0.7, up ) );
         vec3 tw = ( band * ( 0.55 + 0.45 * toward ) + zenith ) * uTwilight;
         float twA = clamp( dot( tw, vec3( 0.33 ) ) * 6.0, 0.0, 1.0 );
-        gl_FragColor = vec4( retColor * uSkyGain + tw, max( uOpacity, twA ) );`);
+        // Цвет с уже умноженной прозрачностью: в круге чёрной дыры небо не гаснет, а космос
+        // под ним добавляется сверху — тень не темнит небо, светится только диск
+        float holeK = uHoleK * smoothstep( 0.984, 0.995, dot( twDir, uHoleDir ) );
+        float skyA = max( uOpacity, twA );
+        gl_FragColor = vec4( ( retColor * uSkyGain + tw ) * skyA, skyA * ( 1.0 - holeK ) );`);
+    sky.material.blending = THREE.CustomBlending;
+    sky.material.blendSrc = THREE.OneFactor;
+    sky.material.blendDst = THREE.OneMinusSrcAlphaFactor;
     this.sunDir = new THREE.Vector3();
     this.lightDir = new THREE.Vector3();
     scene.add(sky);
@@ -555,31 +568,33 @@ export class Environment {
 
   // ---------------------------------------------------------------- рельеф
   createTerrain() {
-    const N = TERRAIN_RES, size = WORLD.terrainSize;
-    const geo = new THREE.PlaneGeometry(size, size, N, N).rotateX(-Math.PI / 2);
-    const pos = geo.attributes.position;
-    const colors = new Float32Array(pos.count * 3);
-    const farmA = new Float32Array(pos.count), meadowA = new Float32Array(pos.count);
-    const H = terrainHeights, W = N + 1;
+    const N = TERRAIN_RES, size = WORLD.terrainSize, W = N + 1;
+    // Общие массивы на всю сетку (индекс вершины j*W+i, как у terrainHeights): по ним terrainFX
+    // перекрашивает разломы и возвращает горы. Рисуется рельеф плитками TERRAIN_TILE×TERRAIN_TILE ячеек,
+    // чтобы после разлома в видеокарту уходили только задетые плитки
+    const colors = new Float32Array(W * W * 3), farmA = new Float32Array(W * W), meadowA = new Float32Array(W * W);
+    const H = terrainHeights;
     const cGrass = new THREE.Color(0x3d5a2a), cDry = new THREE.Color(0x6b6a3e), cRock = new THREE.Color(0x6a625a);
     const cSnow = new THREE.Color(0xf2f4f8), cSand = new THREE.Color(0xcdb98e), cSea = new THREE.Color(0x4a5a52);
-    const cForest = new THREE.Color(0x1b2c14);
+    const cForest = new THREE.Color(0x1b2c14), cAlpine = new THREE.Color(0x56603a), cDark = new THREE.Color(0x4a443f);
     const c = new THREE.Color();
     const cell = size / N;
     const ss = THREE.MathUtils.smoothstep;
 
-    for (let k = 0; k < pos.count; k++) {
-      const x = pos.getX(k), z = pos.getZ(k);
-      const i = Math.round((x / size + 0.5) * N), j = Math.round((z / size + 0.5) * N);
-      const h = H[j * W + i];
-      pos.setY(k, h);
+    for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
+      const k = j * W + i, x = -size / 2 + i * cell, z = -size / 2 + j * cell;
+      const h = H[k];
       const hx = H[j * W + Math.min(N, i + 1)] - H[j * W + Math.max(0, i - 1)];
       const hz = H[Math.min(N, j + 1) * W + i] - H[Math.max(0, j - 1) * W + i];
       const slope = Math.hypot(hx, hz) / (2 * cell);
 
       c.copy(cGrass).lerp(cDry, ss(h, 150, 600));
-      c.lerp(cRock, Math.max(ss(h, 700, 1300), ss(slope, 0.5, 0.9)));
-      c.lerp(cSnow, ss(h, 1500, 1900) * (1 - ss(slope, 0.9, 1.4)));
+      // Альпийские луга над лесом, выше — камень, на высоте — снег (на крутых стенах снег не держится)
+      c.lerp(cAlpine, ss(h, 1100, 1500) * (1 - ss(h, 2200, 2800)));
+      c.lerp(cRock, Math.max(ss(h, 2200, 2900), ss(slope, 0.55, 0.95)));
+      c.lerp(cDark, ss(slope, 1.0, 1.6) * 0.6);
+      // Высоко (Эверест и свита) снег и лёд лежат почти везде, кроме отвесных стен
+      c.lerp(cSnow, Math.max(ss(h, 3200, 3900) * (1 - ss(slope, 1.0 + h * 0.00012, 1.6 + h * 0.00016)), ss(h, 4800, 6200) * (1 - ss(slope, 2.4, 3.4))));
       c.lerp(cForest, Math.min(1, forestMask(x, z, h) * 1.4));
       const beach = x > coastX(z) - 500 ? 1 - ss(h, 2, 12) : 0;
       c.lerp(cSand, beach);
@@ -590,10 +605,7 @@ export class Environment {
       farmA[k] = pk * flat * low * dry * ss(Math.hypot(x, z), 4200, 5600) * (1 - forestMask(x, z, h));
       meadowA[k] = Math.max(0, pk * low * dry - farmA[k]);
     }
-    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geo.setAttribute('farm', new THREE.BufferAttribute(farmA, 1));
-    geo.setAttribute('meadow', new THREE.BufferAttribute(meadowA, 1));
-    geo.computeVertexNormals();
+    this.terrainData = { colors, farm: farmA, meadow: meadowA };
 
     const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 });
     mat.onBeforeCompile = (shader) => {
@@ -631,9 +643,65 @@ export class Environment {
             diffuseColor.rgb = mix(diffuseColor.rgb, meadowCol, smoothstep(0.3, 0.7, vMeadow) * 0.85);
           }`);
     };
+    this.terrainMat = mat;
+    const group = new THREE.Group();
+    group.tiles = [];
+    const T = TERRAIN_TILE, nT = N / T;
+    for (let tj = 0; tj < nT; tj++) for (let ti = 0; ti < nT; ti++) {
+      const tile = this.makeTerrainTile(ti * T, tj * T, T, mat);
+      group.tiles.push(tile);
+      group.add(tile);
+    }
+    return group;
+  }
+
+  // Плитка рельефа: вершины (i0..i0+T) × (j0..j0+T) общей сетки, та же триангуляция, что у PlaneGeometry
+  makeTerrainTile(i0, j0, T, mat) {
+    const N = TERRAIN_RES, size = WORLD.terrainSize, W = N + 1, cell = size / N, V = T + 1;
+    const pos = new Float32Array(V * V * 3), nrm = new Float32Array(V * V * 3), col = new Float32Array(V * V * 3);
+    const farm = new Float32Array(V * V), meadow = new Float32Array(V * V);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.setAttribute('farm', new THREE.BufferAttribute(farm, 1));
+    geo.setAttribute('meadow', new THREE.BufferAttribute(meadow, 1));
+    const idx = [];
+    for (let b = 0; b < T; b++) for (let a = 0; a < T; a++) {
+      const p = b * V + a;
+      idx.push(p, p + V, p + 1, p + V, p + V + 1, p + 1);
+    }
+    geo.setIndex(idx);
+    for (let b = 0; b <= T; b++) for (let a = 0; a <= T; a++) {
+      const v = b * V + a;
+      pos[v * 3] = -size / 2 + (i0 + a) * cell;
+      pos[v * 3 + 2] = -size / 2 + (j0 + b) * cell;
+    }
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
+    mesh.userData = { i0, j0, T };
+    this.refreshTerrainTile(mesh, 0, 0, T, T);
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
     return mesh;
+  }
+
+  // Перенести высоты, нормали и цвет из общих массивов в плитку (локальный прямоугольник a0..a1, b0..b1)
+  refreshTerrainTile(mesh, a0, b0, a1, b1) {
+    const N = TERRAIN_RES, W = N + 1, cell = WORLD.terrainSize / N, H = terrainHeights, D = this.terrainData;
+    const { i0, j0, T } = mesh.userData, V = T + 1, A = mesh.geometry.attributes;
+    const P = A.position.array, Nm = A.normal.array, C = A.color.array, F = A.farm.array, M = A.meadow.array;
+    for (let b = b0; b <= b1; b++) for (let a = a0; a <= a1; a++) {
+      const i = i0 + a, j = j0 + b, k = j * W + i, v = b * V + a;
+      P[v * 3 + 1] = H[k];
+      const hx = H[j * W + Math.min(N, i + 1)] - H[j * W + Math.max(0, i - 1)];
+      const hz = H[Math.min(N, j + 1) * W + i] - H[Math.max(0, j - 1) * W + i];
+      const nx = -hx / (2 * cell), nz = -hz / (2 * cell), l = Math.hypot(nx, 1, nz);
+      Nm[v * 3] = nx / l; Nm[v * 3 + 1] = 1 / l; Nm[v * 3 + 2] = nz / l;
+      C[v * 3] = D.colors[k * 3]; C[v * 3 + 1] = D.colors[k * 3 + 1]; C[v * 3 + 2] = D.colors[k * 3 + 2];
+      F[v] = D.farm[k]; M[v] = D.meadow[k];
+    }
+    for (const n of ['position', 'normal', 'color', 'farm', 'meadow']) A[n].needsUpdate = true;
   }
 
   // Бетонный канал реки внутри города
@@ -922,6 +990,13 @@ export class Environment {
     return mesh;
   }
 
+  // Чёрная дыра сквозь небо: направление на неё и сила (днём — призрак, ночью небо и так прозрачное)
+  setSkyHole(dir, day) {
+    const u = this.sky.material.uniforms;
+    u.uHoleDir.value.copy(dir);
+    u.uHoleK.value = 0.6 * day;
+  }
+
   update(dt, focus, camera, active = true) {
     this.time += dt;
     // Пелена облаков следует за камерой по горизонтали (узор — в мировых координатах)
@@ -931,6 +1006,17 @@ export class Environment {
     this.deck.position.set(camera.position.x, 1650, camera.position.z);
     this.deck.visible = this.deckUniforms.uCover.value > 0.02 && camera.position.y < 12000;
     if (active) this.stepTime(dt);
+    // В космосе свет идёт от настоящего Солнца: выше атмосферы направление плавно уходит
+    // от солнца времени суток к нему (поворотом — встречные направления не дают ноль).
+    // На паузе время стоит — берём сохранённое направление, а не уже повёрнутое
+    if (active || !this.daySun) { this.daySun = this.sunDir.clone(); this.dayLight = this.lightDir.clone(); }
+    else { this.sunDir.copy(this.daySun); this.lightDir.copy(this.dayLight); }
+    const spaceSun = this.spaceSunK = smoothstep(SPACE.atmosphere, SPACE.spaceAlt, camera.position.y);
+    if (spaceSun > 0) {
+      this.sun.color.copy(this.T.sun).lerp(_white.setRGB(1, 0.97, 0.92), spaceSun);
+      _toSun.subVectors(SUN.c, camera.position).normalize();
+      for (const d of [this.sunDir, this.lightDir]) d.applyQuaternion(_qSun.setFromUnitVectors(d, _toSun).slerp(_qI, 1 - spaceSun));
+    }
     this.water.material.userData.uTime.value = this.time;
     this.sun.position.copy(focus).addScaledVector(this.lightDir, 600);
     this.sun.target.position.copy(focus);
@@ -950,7 +1036,7 @@ export class Environment {
 
     // Рельеф растворяется на большой высоте — дальше видна Земля-шар
     const fade = 1 - smoothstep(11000, 24000, alt);
-    for (const m of [this.terrain.material, this.water.material]) {
+    for (const m of [this.terrainMat, this.water.material]) {
       const isWater = m === this.water.material;
       const wantT = isWater || fade < 0.999;
       if (m.transparent !== wantT) { m.transparent = wantT; m.needsUpdate = true; }
@@ -970,7 +1056,7 @@ export class Environment {
     }
     if (this.lightning > 0) { flash = this.lightning * (0.5 + 0.5 * Math.sin(this.time * 60)); this.lightning = Math.max(0, this.lightning - dt * 3); }
     // В космосе нет рассеянного света неба, а солнце ярче
-    this.sun.intensity = lerp(this.baseSunI, this.T.moonLight ? 0.4 : 3.6, k);
+    this.sun.intensity = lerp(this.baseSunI, lerp(this.T.moonLight ? 0.4 : 3.6, 3.6, this.spaceSunK), k);
     this.hemi.intensity = this.baseHemi * (1 - k * 0.85) + flash * 3;
     this.updateRain(dt, camera);
   }

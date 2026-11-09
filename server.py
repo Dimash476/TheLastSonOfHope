@@ -6,6 +6,8 @@
   POST /tracking/start   — запустить (если уже работает — ничего не делает)
   POST /tracking/stop    — остановить
   GET  /tracking/status  — {"running": bool, "error": "последняя строка лога"}
+  GET  /tracking/stream  — поток жестов для игры (text/event-stream): Moves.py печатает
+                           по строке JSON на кадр, сервер пересылает каждую игре
 Python для скрипта (нужен mediapipe 0.10.21) ищется так: переменная TRACKING_PYTHON,
 GameTracking/.venv, затем тот же Python, что у сервера."""
 import atexit
@@ -15,6 +17,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from urllib.parse import urlsplit
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
@@ -75,6 +78,9 @@ class Tracking:
         self.proc = None
         self.log = None
         self.lock = threading.Lock()
+        self.frame = None                   # последняя строка JSON от Moves.py
+        self.seq = 0                        # номер кадра: поток ждёт следующий
+        self.fresh = threading.Condition()
 
     def running(self):
         return self.proc is not None and self.proc.poll() is None
@@ -88,11 +94,33 @@ class Tracking:
             env = dict(os.environ, PYTHONIOENCODING="utf-8")
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             self.proc = subprocess.Popen([tracking_python(), "-u", SCRIPT], cwd=TRACK_DIR, env=env,
-                                         stdout=self.log, stderr=subprocess.STDOUT, creationflags=flags)
+                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=flags)
+            threading.Thread(target=self._read, args=(self.proc, self.log), daemon=True).start()
             try:
                 kill_with_server(self.proc)
             except Exception:
                 pass    # без этой страховки скрипт всё равно остановится по Ctrl и при штатном выходе
+
+    def _read(self, proc, log):
+        """Строки JSON — кадры для игры, остальное (калибровка, ошибки) — в Moves.log."""
+        for line in proc.stdout:
+            if line.lstrip().startswith(b"{"):
+                with self.fresh:
+                    self.frame = line.strip()
+                    self.seq += 1
+                    self.fresh.notify_all()
+            else:
+                try:
+                    log.write(line)
+                    log.flush()
+                except (OSError, ValueError):
+                    pass    # лог уже закрыт — скрипт останавливают
+
+    # Ждёт кадр новее seq (не дольше timeout); возвращает (seq, кадр) или None
+    def next_frame(self, seq, timeout):
+        with self.fresh:
+            self.fresh.wait_for(lambda: self.seq != seq, timeout)
+            return (self.seq, self.frame) if self.seq != seq else None
 
     def stop(self):
         with self.lock:
@@ -154,9 +182,30 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if urlsplit(self.path).path == "/tracking/status":
+        path = urlsplit(self.path).path
+        if path == "/tracking/status":
             return self._json(200, tracking.status()) if self._allowed(False) else self._json(403, {})
+        if path == "/tracking/stream":
+            return self._stream() if self._allowed(False) else self._json(403, {})
         super().do_GET()
+
+    # Поток жестов: каждый кадр Moves.py — событие; пока кадров нет, раз в секунду — пустая строка-«пульс»
+    def _stream(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        seq = tracking.seq
+        try:
+            while True:
+                got = tracking.next_frame(seq, 1.0)
+                if got:
+                    seq, frame = got
+                    self.wfile.write(b"data: " + frame + b"\n\n")
+                else:
+                    self.wfile.write(b":\n\n")
+                self.wfile.flush()
+        except (OSError, ValueError):
+            pass    # вкладку закрыли
 
     def do_POST(self):
         path = urlsplit(self.path).path

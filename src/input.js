@@ -2,7 +2,7 @@
 //
 // Игра читает ТОЛЬКО объект `input.state` — абстрактные «намерения» игрока.
 // Его заполняют клавиатура и мышь (KeyboardMouseSource), а в режиме «Камера» —
-// ещё и HandSource: жесты с веб-камеры (GameTracking/Moves.py, MediaPipe → WebSocket)
+// ещё и HandSource: жесты с веб-камеры (GameTracking/Moves.py, MediaPipe → server.py → поток событий)
 // подменяют движение. Остальной код игры не знает, откуда пришёл ввод.
 
 export function createInputState() {
@@ -10,11 +10,9 @@ export function createInputState() {
     moveX: 0,        // -1..1  влево / вправо
     moveZ: 0,        // -1..1  назад / вперёд
     moveY: 0,        // -1..1  вниз / вверх
-    boost: false,    // сверхскорость
-    cruise: false,   // лёгкое ускорение без сверхзвука (W + Q)
-    hyper: false,    // гиперскорость (Shift + E)
-    ultra: false,    // третий уровень (Shift + Q)
-    warp: false,     // четвёртый уровень (Shift + F)
+    boost: false,    // сверхскорость (W + Shift)
+    gear: 0,         // ступень ускорения: 1 — E, 2 — Q, 3 — F (зажато несколько — старшая).
+                     // Без Shift — первый уровень (не быстрее W + Shift), с Shift — второй
     boostK: null,    // 0..1 — плавный уровень ускорения с камеры (null — уровни по клавишам)
     lookDX: 0,       // накопленное смещение камеры за кадр (пиксели)
     lookDY: 0,
@@ -64,7 +62,8 @@ export class KeyboardMouseSource {
       if (e.code === 'KeyT') state.cycleTime = true;
       if (e.code === 'KeyU') state.cycleWeather = true;
       if (e.code === 'KeyM') state.nextTrack = true;
-      if (e.code === 'KeyE' && !e.shiftKey) state.interact = true;
+      // С зажатой W клавиша E — разгон, а не действие рядом
+      if (e.code === 'KeyE' && !e.shiftKey && !this.keys.has('KeyW')) state.interact = true;
       if (e.code === 'KeyP') state.photo = true;
       if (e.code === 'KeyV') state.slowmo = true;
       if (e.code === 'CapsLock') state.walk = !state.walk;
@@ -125,11 +124,10 @@ export class KeyboardMouseSource {
     s.moveZ = axis('KeyW', 'KeyS');
     s.moveX = axis('KeyD', 'KeyA');
     s.boost = k.has('ShiftLeft') || k.has('ShiftRight');
-    // Ctrl в сочетаниях не используем: в браузере Ctrl+W закрывает вкладку
-    s.hyper = s.boost && k.has('KeyE');
-    s.ultra = s.boost && k.has('KeyQ');
-    s.warp = s.boost && k.has('KeyF');
-    s.cruise = !s.boost && k.has('KeyQ');
+    // Ctrl в сочетаниях не используем: в браузере Ctrl+W закрывает вкладку.
+    // Во Вторжении F без Shift — раскрутка, поэтому там W + F не разгоняет (spinF ставит main.js)
+    const f = k.has('KeyF') && (s.boost || !this.spinF);
+    s.gear = f ? 3 : k.has('KeyQ') ? 2 : k.has('KeyE') ? 1 : 0;
     s.moveY = (k.has('Space') ? 1 : 0) - (k.has('KeyC') ? 1 : 0);
     s.slamHeld = k.has('KeyX');
     s.laser = k.has('KeyZ');
@@ -138,12 +136,13 @@ export class KeyboardMouseSource {
   }
 }
 
-// Управление с веб-камеры. GameTracking/Moves.py каждый кадр присылает:
+// Управление с веб-камеры. GameTracking/Moves.py каждый кадр печатает строку JSON,
+// server.py пересылает её игре потоком /tracking/stream:
 // { calib, face, yaw, pitch (−1..1), fly, boost, k (0..1) }
 //   голова     → поворот камеры (как джойстик: держишь голову повёрнутой — камера поворачивает)
 //   левая рука → полёт вперёд, кулак → сверхскорость
 //   правая     → k: плавный множитель сверхскорости 40^k (≈0.30 → ×3, 0.56 → ×8, 1 → ×40)
-const HAND_URL = 'ws://127.0.0.1:8765';
+const HAND_URL = '/tracking/stream';
 const YAW_RATE = 2.0;     // рад/с при полном отклонении головы (чувствительность самой головы — max_x / max_up / max_down в Moves.py)
 const PITCH_RATE = 1.4;
 const LOOK_SMOOTH = 0.08; // с: скрипт присылает 5–15 кадров в секунду — между ними поворот меняется плавно, без ступенек
@@ -152,7 +151,7 @@ export class HandSource {
   constructor(state) {
     this.state = state;
     this.enabled = false;
-    this.ws = null;
+    this.es = null;         // поток кадров от server.py (EventSource)
     this.msg = null;
     this.lastMsg = 0;
     this.retryT = 0;
@@ -206,25 +205,26 @@ export class HandSource {
   }
 
   // Данные свежие (Moves.py работает и видит камеру)
-  get live() { return !!this.msg && this.ws?.readyState === 1 && performance.now() - this.lastMsg < 600; }
+  get live() { return !!this.msg && this.es?.readyState === 1 && performance.now() - this.lastMsg < 600; }
 
   connect() {
-    try { this.ws = new WebSocket(HAND_URL); } catch { this.ws = null; return; }
-    this.ws.onmessage = (e) => {
+    try { this.es = new EventSource(HAND_URL); } catch { this.es = null; return; }
+    this.es.onmessage = (e) => {
       try { this.msg = JSON.parse(e.data); this.lastMsg = performance.now(); } catch { /* битое сообщение — пропускаем */ }
     };
-    this.ws.onclose = () => { this.ws = null; this.msg = null; };
+    // Обрыв — закрываем сами: переподключение по своему таймеру (у EventSource свой, слишком частый)
+    this.es.onerror = () => { this.es?.close(); this.es = null; this.msg = null; };
   }
 
   close() {
-    if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
+    if (this.es) { this.es.onerror = null; this.es.close(); this.es = null; }
     this.msg = null;
   }
 
   // После клавиатуры: подменяет движение жестами. sens — чувствительность мыши камеры (рад/пиксель)
   update(dt, player, sens) {
     if (!this.enabled) return;
-    if (!this.ws) {
+    if (!this.es) {
       this.retryT -= dt;
       if (this.retryT <= 0) { this.retryT = this.proc === 'starting' ? 0.7 : 2; this.connect(); }
     }
@@ -242,7 +242,7 @@ export class HandSource {
     // В кулаке Колосса: каждое сжатие левого кулака — рывок на свободу
     if (player.captured) s.moveY = m?.boost ? 1 : 0;
     s.boost = !!m?.boost;
-    s.hyper = s.ultra = s.warp = s.cruise = false;
+    s.gear = 0;
     s.boostK = m ? m.k : 0;
     // Линейно: лёгкое движение головы сразу даёт заметный поворот.
     // Новое значение приходит раз в 70–250 мс — подтягиваемся к нему плавно, а не скачком
@@ -260,7 +260,7 @@ export class HandSource {
     if (!this.live) {
       if (this.proc === 'starting') return 'КАМЕРА · ЗАПУСК…';
       if (this.proc === 'error') return `КАМЕРА · ОШИБКА: ${this.error || 'см. GameTracking/Moves.log'}`.slice(0, 90);
-      return 'КАМЕРА · ЗАПУСТИТЕ GameTracking/Moves.py';
+      return 'КАМЕРА · ЗАПУСТИТЕ ИГРУ ЧЕРЕЗ server.py';
     }
     if (m.calib) return 'КАМЕРА · КАЛИБРОВКА — СМОТРИТЕ ПРЯМО';
     if (!m.face) return 'КАМЕРА · НЕ ВИЖУ ЛИЦО';

@@ -145,6 +145,9 @@ export class Kin {
       this.pos.setLength(R);
       this.vel.multiplyScalar(0.3);
     }
+    // Брошенный в горы пробивает их насквозь
+    const sp = this.vel.length();
+    if (this.knock > 0 && sp > 110 && Math.min(_p0.y, this.pos.y) < 9000) W.terrainFX?.ram(_p0, this.pos, sp, 0.5);
     this.onBody = null;
     this.groundY = city.groundHeightAt(this.pos.x, this.pos.z, this.pos.y + 0.5);
     for (const B of BODIES) {

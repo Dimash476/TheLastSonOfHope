@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { MACH, PLAYER } from './config.js';
 import { BODIES } from './world/bodies.js';
+import { BLACK_HOLE } from './world/blackhole.js';
 
 const _p = new THREE.Vector3(), _up = new THREE.Vector3();
 const fmtKm = (m) => {
@@ -19,7 +20,7 @@ export class HUD {
     this.fpsAcc = 0; this.fpsFrames = 0;
     this.toastTimer = 0;
     // Метки Луны и планет в космосе: название и расстояние до поверхности
-    this.bodyMarks = BODIES.map((b) => {
+    this.bodyMarks = [...BODIES, BLACK_HOLE].map((b) => {
       const el = document.createElement('div');
       el.className = 'body-marker hidden';
       el.innerHTML = `<span class="name">${b.name}</span><span class="dist"></span><div class="pin"></div>`;

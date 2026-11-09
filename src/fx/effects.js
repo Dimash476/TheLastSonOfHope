@@ -158,6 +158,21 @@ export class Effects {
     this.waves.push({ mesh, t: 0, life, radius, opacity, type });
   }
 
+  // Шейдеры волн собираются при первом показе (~0,5–0,9 с), а после последней волны программа
+  // удаляется — и следующая собирается заново. Держим по невидимой волне каждого вида всё время:
+  // программа собирается один раз в первом кадре и больше не пропадает
+  warmup() {
+    if (this.keep) return;
+    this.keep = [];
+    for (const type of ['sphere', 'ring']) {
+      this.shockwave(new THREE.Vector3(0, -1e4, 0), { type, opacity: 0, life: 1 });
+      const w = this.waves.pop();
+      w.mesh.frustumCulled = false;
+      if (type === 'sphere') w.mesh.material.uniforms.uOpacity.value = 0; else w.mesh.material.opacity = 0;
+      this.keep.push(w.mesh);
+    }
+  }
+
   flash(pos, intensity = 30) {
     this.flashLight.position.copy(pos);
     this.flashLight.intensity = Math.max(this.flashLight.intensity, intensity * 0.5);
@@ -283,7 +298,7 @@ export class Effects {
       }
     }
     const m = speed / MACH;
-    const peak = player.captured ? 0 : smoothstep(0.85, 1.0, m) * (1 - smoothstep(1.05, 1.6, m) * 0.75);
+    const peak = player.captured || player.calm ? 0 : smoothstep(0.85, 1.0, m) * (1 - smoothstep(1.05, 1.6, m) * 0.75);
     this.coneMat.uniforms.uOpacity.value = peak * 0.55;
     this.coneMat.uniforms.uTime.value = this.time;
     this.cone.visible = peak > 0.01;

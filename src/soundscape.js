@@ -412,7 +412,7 @@ export class Soundscape {
     // ---- полёт
     this.capeGain.gain.setTargetAtTime(live * air * ss(speed, 15, 250) * 0.07 * (1 - inSpace), t, tc);
     this.capeLfo.frequency.setTargetAtTime(5 + Math.min(speed, 500) * 0.02, t, 0.4);
-    this.sonicGain.gain.setTargetAtTime(live * ss(speed / 343, 0.9, 2.5) * 0.22 * (1 - inSpace), t, 0.25);
+    this.sonicGain.gain.setTargetAtTime(live * (player.calm ? 0 : 1) * ss(speed / 343, 0.9, 2.5) * 0.22 * (1 - inSpace), t, 0.25);
     this.highGain.gain.setTargetAtTime(live * ss(cam.y, 400, 6000) * (1 - inSpace) * (0.01 + 0.03 * ss(speed, 50, 900)), t, 0.3);
     this.spaceGain.gain.setTargetAtTime(live * ss(inSpace, 0.3, 0.9) * 0.05, t, 1);
     // «Вжух» мимо зданий: ближайшая секция в радиусе 30 м

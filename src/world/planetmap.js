@@ -167,8 +167,20 @@ function genClouds(o, rnd) {
   return T;
 }
 
+// Солнце: пологие валы плазмы и мелкая рябь (кипение рисует шейдер)
+function genPlasma(rnd) {
+  const T = newTiles(), N2 = TN * TN;
+  const b = fbm(5, 5, 6, 0.55, rnd, BILLOW), f = fbm(18, 18, 4, 0.6, rnd, BILLOW);
+  for (let k = 0; k < N2; k++) {
+    T.bigH[k] = 160 * b[k] * (2 - b[k]);
+    T.bigA[k] = (b[k] - 0.4) * 0.5;
+    T.fineH[k] = 2.5 * f[k];
+  }
+  return T;
+}
+
 // Сами карты. Цвета линейные; тени — свет солнца (оно всегда со стороны +x, высота sunEl)
-// style: 0 камень, 1 Марс, 2 Венера, 3 облака
+// style: 0 камень, 1 Марс, 2 Венера, 3 облака, 4 плазма Солнца
 const LOOKS = {
   moon: {
     style: 0, a: [0.2, 0.2, 0.195], b: [0.46, 0.45, 0.43], c: [0.3, 0.29, 0.28], dens: 0.6, rock: [0.28, 0.275, 0.265], rocks: 0.32, boulders: 0.24,
@@ -204,6 +216,13 @@ const LOOKS = {
     sunEl: 26, sunI: 2.8, sunC: [1, 0.96, 0.87], hemiI: 2.0, hemiC: [0.85, 0.8, 0.68], hemiG: [0.66, 0.56, 0.4], exposure: 0.6, shadow: 0.3,
     fog: 0.00007, sky: { hor: [0.74, 0.66, 0.47], zen: [0.05, 0.05, 0.08], glow: [0.42, 0.38, 0.27], aH: 1, aZ: 0.45, cloud: [0.82, 0.74, 0.54], cloudK: 0.35, scale: [0.7, 3.5] },
     gen: (r) => genClouds({ f: 4, amp: 300 }, r),
+  },
+  // Свет идёт снизу, от самой плазмы: прямой свет слабый и почти сверху, рассеянный — оранжевый от земли
+  sun: {
+    style: 4, a: [0.3, 0.06, 0.01], b: [1, 0.45, 0.08], c: [0.6, 0.15, 0.02], dens: 0, rocks: 0, boulders: 0,
+    sunEl: 70, sunI: 1.0, sunC: [1, 0.6, 0.3], hemiI: 2.0, hemiC: [0.7, 0.32, 0.12], hemiG: [1, 0.35, 0.06], exposure: 0.5, shadow: 0.15,
+    fog: 0.00003, sky: { hor: [0.75, 0.24, 0.05], zen: [0.08, 0.015, 0.005], glow: [0.6, 0.2, 0.04], aH: 1, aZ: 0.85, cloud: [0.9, 0.3, 0.05], cloudK: 0.4, scale: [0.9, 2.4] },
+    gen: genPlasma,
   },
 };
 
@@ -361,6 +380,41 @@ const SURFACE_GLSL = /* glsl */`
     w = lod(px, 0.2);
     if (w > 0.0) { float g = inoise(qs / 0.2); h += (g - 0.5) * 0.012 * w; alb += (g - 0.5) * 0.2 * w; }
     col *= clamp(1.0 + alb, 0.4, 1.8);
+  }
+#elif STYLE == 4
+  // Солнце: зёрна плазмы кипят — светлые центры, тёмные дорожки; крупные ячейки медленнее мелких.
+  // Изредка тёмные пятна. Светится сама: почти всё — в emi
+  float cells2(vec2 x) {
+    vec2 fl = floor(x), f = x - fl;
+    float a = 8.0, b = 8.0;
+    for (int dz = -1; dz <= 1; dz++) {
+      for (int dx = -1; dx <= 1; dx++) {
+        ivec3 c = ivec3(int(fl.x) + dx, int(fl.y) + dz, 3);
+        vec2 o = vec2(float(dx) + ihash(c), float(dz) + ihash(c + 13)) - f;
+        float d = dot(o, o);
+        if (d < a) { b = a; a = d; } else if (d < b) b = d;
+      }
+    }
+    return smoothstep(0.0, 0.3, sqrt(b) - sqrt(a)) * (1.0 - 0.55 * sqrt(a));
+  }
+  void surf(vec3 q, float px, float slope, float alb, out vec3 col, out float h, out vec3 emi) {
+    h = 0.0;
+    vec2 p = vec2(0.8 * q.x + 0.6 * q.z, -0.6 * q.x + 0.8 * q.z);
+    vec3 d = vec3(p.x, uTime * 0.4, p.y);
+    vec2 wp = vec2(inoise(d / 700.0), inoise(d / 700.0 + 9.0)) * 1.3;
+    float bri = 0.55 + 0.45 * cells2(p / 420.0 + wp + uTime * 0.01);
+    float w = lod(px, 60.0);
+    if (w > 0.0) { float c = cells2(p / 60.0 + wp * 2.0 + vec2(0.0, uTime * 0.12)); bri *= mix(1.0, 0.45 + 0.9 * c, w); h += c * 4.0 * w; }
+    w = lod(px, 9.0);
+    if (w > 0.0) { float c = cells2(p / 9.0 + vec2(uTime * 0.45, 0.0)); bri *= mix(1.0, 0.7 + 0.5 * c, w); h += c * 0.6 * w; }
+    w = lod(px, 1.5);
+    if (w > 0.0) bri *= 1.0 + w * (inoise(d / 1.5 + uTime * 0.8) - 0.5) * 0.4;
+    // Пятна: тень и полутень
+    float sp = inoise(q / 5200.0 + 4.0) * 0.7 + inoise(q / 1300.0) * 0.3;
+    bri *= 1.0 - smoothstep(0.66, 0.7, sp) * 0.45 - smoothstep(0.72, 0.75, sp) * 0.4;
+    bri += alb * 0.25;
+    col = mix(uColA, uColB, smoothstep(0.3, 1.0, bri)) * 0.25;
+    emi = mix(vec3(0.9, 0.14, 0.01), vec3(1.7, 0.62, 0.12), smoothstep(0.4, 1.05, bri)) * bri * bri;
   }
 #else
   // Юпитер и Сатурн: полосы по одной оси, клубы и волокна, ветер их медленно сдвигает

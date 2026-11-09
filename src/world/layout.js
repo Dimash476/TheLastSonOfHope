@@ -10,7 +10,7 @@ export const BLOCK = {
   BIGPARK: 5, INDUSTRIAL: 6, PORT: 7, STADIUM: 8, BEACH: 9, MEGA: 10,
 };
 
-export const HALF = CITY.grid * CITY.block * 0.5;          // 3600 м — край сетки
+export const HALF = CITY.grid * CITY.block * 0.5;          // 4400 м — край сетки
 export const PLANE_HALF = HALF + 250;                      // плоская «городская» земля
 export const RIVER_Z = -HALF + CITY.riverRow * CITY.block + CITY.block / 2; // центр русла
 export const RIVER_HALF_W = CITY.block / 2 - CITY.road / 2 - CITY.sidewalk; // 38 м
@@ -19,9 +19,11 @@ export const SEA_BED = -14;
 
 // Районы (центры и радиусы, м). Центры новых районов — в центрах кварталов.
 export const DISTRICTS = {
-  downtown: { x: 0, z: 0, r: 560, h: 270 },
-  midtown: { x: 1250, z: -1100, r: 380, h: 210 },
-  westgate: { x: -2050, z: -850, r: 400, h: 230 },     // деловой квартал на западе с башнями-близнецами
+  downtown: { x: 0, z: 0, r: 560, h: 340 },
+  midtown: { x: 1250, z: -1100, r: 380, h: 280 },
+  westgate: { x: -2050, z: -850, r: 400, h: 300 },     // деловой квартал на западе с башнями-близнецами
+  southside: { x: 1650, z: 2050, r: 420, h: 300 },     // южный деловой квартал между стадионом и пляжем
+  newcity: { x: -3450, z: -3350, r: 520, h: 420 },     // «новый сити» на северо-западной окраине: самые высокие башни
   oldtown: { x: -1100, z: 1000, r: 450 },
   sleeper: { x: -2250, z: 2350, r: 760 },              // спальный район: панельные корпуса и дворы
   campus: { x: 850, z: -2550, r: 250 },                // университетский городок
@@ -62,6 +64,7 @@ const inCircle = (x, z, D) => Math.hypot(x - D.x, z - D.z) < D.r;
 export const inOldTown = (x, z) => inCircle(x, z, DISTRICTS.oldtown);
 export const inSleeper = (x, z) => inCircle(x, z, DISTRICTS.sleeper);
 export const inCampus = (x, z) => inCircle(x, z, DISTRICTS.campus);
+export const inNewCity = (x, z) => inCircle(x, z, DISTRICTS.newcity);
 
 // ---------------------------------------------------------------- кварталы
 export const blockTypes = (() => {
@@ -78,6 +81,7 @@ export const blockTypes = (() => {
     else if (cx > HALF - 700 && cz > -(HALF - 300) && cz < 1400) type = BLOCK.INDUSTRIAL; // промзона у порта
     else if (inCampus(cx, cz)) type = BLOCK.URBAN;                                  // кампус — сплошь корпуса и дворы
     else if (inSleeper(cx, cz)) type = rnd() < 0.08 ? BLOCK.PARK : BLOCK.URBAN;     // спальный район (и скверы)
+    else if (inNewCity(cx, cz)) type = BLOCK.URBAN;                                 // «новый сити» среди пригорода
     else if (Math.max(Math.abs(cx), Math.abs(cz)) < CITY.urbanHalf) type = Math.hypot(cx, cz) > 260 && rnd() < 0.06 ? BLOCK.PARK : BLOCK.URBAN;
     else type = rnd() < 0.06 ? BLOCK.PARK : BLOCK.SUBURB;
     t[j * g + i] = type;
@@ -91,17 +95,20 @@ export function blockAt(x, z) {
   return blockTypes[j * CITY.grid + i];
 }
 
-// Высотность: три кластера небоскрёбов (деловой центр, мидтаун и западный квартал)
+// Высотность: пять кластеров небоскрёбов (деловой центр, мидтаун, западный и южный кварталы,
+// «новый сити»). 1 — высота делового центра; в «новом сити» башни выше, там больше 1
 export function skylineAt(x, z) {
   const d = DISTRICTS;
   const peak = (D) => Math.exp(-((Math.hypot(x - D.x, z - D.z) / D.r) ** 2)) * (D.h / d.downtown.h);
-  return Math.max(peak(d.downtown), peak(d.midtown), peak(d.westgate));
+  return Math.max(peak(d.downtown), peak(d.midtown), peak(d.westgate), peak(d.southside), peak(d.newcity));
 }
 
 // ---------------------------------------------------------------- мега-площади
 // Несколько мест, где квартал 3×3 (≈300 м с дорогами по краям) — одна огромная площадь без
 // внутренних дорог с гигантской постройкой. Только там, где нет высоток: вне делового
 // центра, старого города и реки, на городской или пригородной застройке.
+// Площади 5×5 (≈500 м): гигантская сфера и новые гиганты BIG_KINDS (см. landmarks.js)
+export const BIG_KINDS = ['gate', 'chalice', 'spiral', 'ring', 'halo'];
 export const MEGA_SITES = (() => {
   const g = CITY.grid, rnd = mulberry32(CITY.seed + 777), B = CITY.block;
   const cell = (x) => Math.floor((x + HALF) / B);
@@ -123,27 +130,37 @@ export const MEGA_SITES = (() => {
     const score = Math.abs(Math.hypot(x - LANDMARK.x, z - LANDMARK.z) - 1100);
     if (score < giantScore) { giantScore = score; giant = { i, j, x, z, half: B * 2.5, giant: true, n: 2 }; }
   }
-  const cands = [];
-  for (let i = 2; i < g - 2; i++) for (let j = 2; j < g - 2; j++) {
-    if (Math.abs(j - CITY.riverRow) < 3) continue;
-    let ok = true;
-    for (let a = -1; a <= 1 && ok; a++) for (let b = -1; b <= 1 && ok; b++) {
-      const t = blockTypes[(j + b) * g + (i + a)];
-      if (t !== BLOCK.URBAN && t !== BLOCK.SUBURB) ok = false;
-    }
-    if (!ok) continue;
+  // Место под площадь (n — полуширина в кварталах): только городская или пригородная застройка,
+  // вдали от реки, небоскрёбов, старого города, спального района и кампуса
+  const fits = (i, j, n) => {
+    if (i < n + 1 || j < n + 1 || i >= g - n - 1 || j >= g - n - 1 || Math.abs(j - CITY.riverRow) < n + 2 || !free(i, j, n)) return false;
     const x = -HALF + (i + 0.5) * B, z = -HALF + (j + 0.5) * B;
-    if (skylineAt(x, z) > 0.3 || inOldTown(x, z) || Math.hypot(x - LANDMARK.x, z - LANDMARK.z) < 700) continue;
-    if (Math.hypot(x - DISTRICTS.sleeper.x, z - DISTRICTS.sleeper.z) < DISTRICTS.sleeper.r + 150) continue;
-    if (Math.hypot(x - DISTRICTS.campus.x, z - DISTRICTS.campus.z) < DISTRICTS.campus.r + 150) continue;
-    cands.push({ i, j, x, z, r: rnd() });
-  }
-  cands.sort((p, q) => p.r - q.r);
+    if (skylineAt(x, z) > 0.3 || inOldTown(x, z) || Math.hypot(x - LANDMARK.x, z - LANDMARK.z) < 700) return false;
+    if (Math.hypot(x - DISTRICTS.sleeper.x, z - DISTRICTS.sleeper.z) < DISTRICTS.sleeper.r + 150 + n * 100) return false;
+    return Math.hypot(x - DISTRICTS.campus.x, z - DISTRICTS.campus.z) >= DISTRICTS.campus.r + 150 + n * 100;
+  };
   const sites = giant ? [tower, giant] : [tower];
+  const far = (c, d) => !sites.some((s) => Math.hypot(s.x - c.x, s.z - c.z) < d + (s.n - 1) * 150);
+  // Новые гиганты на площадях 5×5 — кольцом в 1,6–3,8 км от главного небоскрёба, далеко друг от друга
+  const big = [];
+  for (let i = 0; i < g; i++) for (let j = 0; j < g; j++) {
+    if (!fits(i, j, 2)) continue;
+    const x = -HALF + (i + 0.5) * B, z = -HALF + (j + 0.5) * B, d = Math.hypot(x - LANDMARK.x, z - LANDMARK.z);
+    if (d > 1600 && d < 3800) big.push({ i, j, x, z, r: rnd() });
+  }
+  big.sort((p, q) => p.r - q.r);
+  for (const kind of BIG_KINDS) {
+    const c = big.find((c) => far(c, 1300));
+    if (c) sites.push({ i: c.i, j: c.j, x: c.x, z: c.z, half: B * 2.5, n: 2, kind });
+  }
+  const cands = [];
+  for (let i = 0; i < g; i++) for (let j = 0; j < g; j++) if (fits(i, j, 1)) cands.push({ i, j, x: -HALF + (i + 0.5) * B, z: -HALF + (j + 0.5) * B, r: rnd() });
+  cands.sort((p, q) => p.r - q.r);
+  let reg = 0;
   for (const c of cands) {
-    if (sites.length >= 14) break;
-    if (sites.some((s) => Math.hypot(s.x - c.x, s.z - c.z) < 850)) continue;
-    sites.push({ i: c.i, j: c.j, x: c.x, z: c.z, half: B * 1.5, n: 1 });
+    if (reg >= 15) break;
+    if (!far(c, 850)) continue;
+    sites.push({ i: c.i, j: c.j, x: c.x, z: c.z, half: B * 1.5, n: 1, reg: reg++ });
   }
   for (const s of sites) for (let a = -s.n; a <= s.n; a++) for (let b = -s.n; b <= s.n; b++) blockTypes[(s.j + b) * g + (s.i + a)] = BLOCK.MEGA;
   return sites;
@@ -199,7 +216,8 @@ export function forestMask(x, z, h) {
   const d = Math.hypot(x, z);
   const ring = smoothstep(PLANE_HALF + 200, PLANE_HALF + 900, Math.max(Math.abs(x), Math.abs(z))) * (1 - smoothstep(10000, 15000, d)) * (1 - 0.85 * plainK(x, z));
   const n = smoothstep(0.47, 0.56, fbm(x * 0.0009 + 13.1, z * 0.0009 - 7.7, 4));
-  return ring * n * (1 - smoothstep(900, 1400, h)) * smoothstep(2, 10, h);
+  // Хвойный пояс поднимается по склонам до ~1,7 км, выше — альпийские луга
+  return ring * n * (1 - smoothstep(1300, 1800, h)) * smoothstep(2, 10, h);
 }
 
 const LAKES = [
@@ -208,9 +226,9 @@ const LAKES = [
   { x: -4200, z: -9200, r: 600 },
 ];
 const ISLANDS = [
-  { x: 5600, z: 1600, r: 520, h: 45 },
-  { x: 7000, z: -2600, r: 850, h: 140 },
-  { x: 4800, z: 4600, r: 420, h: 30 },
+  { x: 6400, z: 1600, r: 520, h: 45 },
+  { x: 7800, z: -2600, r: 850, h: 140 },
+  { x: 5600, z: 4600, r: 420, h: 30 },
   // Дальние вулканические островки — силуэты на фоне заката за райским островом
   { x: 17500, z: -300, r: 950, h: 640 },
   { x: 15600, z: 2600, r: 700, h: 380 },
@@ -302,20 +320,54 @@ export function islandHeight(x, z) {
   return s ? s.h : null;
 }
 
+// ---------------------------------------------------------------- горы
+// Хребты растут с расстоянием от города: у окраин ~1,5 км, дальше 4–6 км
+function ridgesAt(x, z) {
+  const mask = smoothstep(4000, 9800, Math.hypot(x * 0.9, z));
+  const amp = 4600 + 2000 * smoothstep(9000, 17000, Math.hypot(x, z));
+  return Math.pow(ridged(x * 0.00018 + 7.1, z * 0.00018 - 3.3, 6), 1.3) * amp * mask * (1 - 0.94 * plainK(x, z));
+}
+// Прежние, более низкие хребты (до ~3 км) — на западе за городом, где река уходит в горы
+const OLD_WEST = { x: -14500, z: -4000, r0: 6500, r1: 9500 };
+function oldRidgesAt(x, z) {
+  const mask = smoothstep(3200, 9000, Math.hypot(x * 0.9, z));
+  return Math.pow(ridged(x * 0.00018 + 7.1, z * 0.00018 - 3.3, 5), 1.25) * 3300 * mask * (1 - 0.94 * plainK(x, z));
+}
+// Великан на северо-западе — высочайшая вершина (~8,8 км): тот же массив, что был здесь,
+// только шире в GIANT.s раз и выше в GIANT.hs раз
+export const GIANT = { x: -14500, z: -16500, s: 1.6, hs: 1.51, r0: 5500, r1: 9000 };
+function mountainsAt(x, z) {
+  let h = ridgesAt(x, z);
+  const dw = Math.hypot(x - OLD_WEST.x, z - OLD_WEST.z);
+  if (dw < OLD_WEST.r1) h = lerp(oldRidgesAt(x, z), h, smoothstep(OLD_WEST.r0, OLD_WEST.r1, dw));
+  const G = GIANT, dg = Math.hypot(x - G.x, z - G.z);
+  if (dg < G.r1) {
+    const big = ridgesAt(G.x + (x - G.x) / G.s, G.z + (z - G.z) / G.s) * G.hs;
+    h = Math.max(h, big * (1 - smoothstep(G.r0, G.r1, dg)));
+  }
+  return h;
+}
+
 // ---------------------------------------------------------------- рельеф (аналитический)
 // Используется для построения меша рельефа. Внутри плоской городской зоны не важен.
-export function terrainHeightRaw(x, z) {
+export const terrainHeightRaw = (x, z) => terrainCore(x, z, true);
+// Та же земля без гор: луга, холмы, долины, озёра. Ниже неё гору не проломить —
+// за городом ломаются только горы, а равнины и холмы остаются целыми
+export const terrainBaseRaw = (x, z) => terrainCore(x, z, false);
+const BASE_KEEP = 120;
+function terrainCore(x, z, withMountains) {
   const dCity = Math.max(Math.abs(x), Math.abs(z));
   // Под городской плоскостью рельеф прячем глубже русла (иначе он закрыл бы реку и море)
   if (dCity < PLANE_HALF - 150) return x > QUAY_X ? SEA_BED : WORLD.riverBed - 3;
 
-  // Горы: растут с расстоянием от города
-  const mountainMask = smoothstep(3200, 9000, Math.hypot(x * 0.9, z));
-  // На равнинах горы и холмы сглаживаются в пологие луга; в остальных местах горы выше и острее
+  // На равнинах горы и холмы сглаживаются в пологие луга
   const pk = plainK(x, z);
   const hills = fbm(x * 0.0007, z * 0.0007, 4) * 70 * (1 - 0.55 * pk);
-  const mountains = Math.pow(ridged(x * 0.00018 + 7.1, z * 0.00018 - 3.3, 5), 1.25) * 3300 * mountainMask * (1 - 0.94 * pk);
-  let h = hills * smoothstep(PLANE_HALF, PLANE_HALF + 1500, dCity) + mountains;
+  let h = hills * smoothstep(PLANE_HALF, PLANE_HALF + 1500, dCity);
+  const m = mountainsAt(x, z);
+  // Неломаемая часть: на равнинах — весь рельеф (там «горный» шум даёт только холмы),
+  // у гор — нижние BASE_KEEP м: подножие и холмы вокруг остаются целыми
+  h += withMountains ? m : Math.max(Math.min(m, BASE_KEEP), m * smoothstep(0.12, 0.4, pk));
 
   // Долина реки: на запад к горам и на восток к морю
   {
@@ -358,7 +410,8 @@ export function terrainHeightRaw(x, z) {
 }
 
 // ---------------------------------------------------------------- сетка высот для физики
-export const TERRAIN_RES = 256;
+export const TERRAIN_RES = 512;   // ячейка ~86 м
+export const TERRAIN_TILE = 32;   // плитка сетки рельефа (16×16 плиток по ~2,75 км)
 export const terrainHeights = (() => {
   const N = TERRAIN_RES, size = WORLD.terrainSize;
   const a = new Float32Array((N + 1) * (N + 1));

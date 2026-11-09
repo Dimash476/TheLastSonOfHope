@@ -407,8 +407,10 @@ export class HeroModel {
   }
 
   // Человеческое тело со скелетом (Free Rigged Male Basemesh, автор Filip, CC-BY-4.0).
-  // Пока грузится — виден процедурный «манекен».
-  loadBody() {
+  // Пока грузится — виден процедурный «манекен». Сорвалась загрузка — пробуем ещё (до 4 раз);
+  // ready — когда тело готово или попытки кончились (меню ждёт его)
+  loadBody(tries = 4) {
+    this.ready ??= new Promise((res) => { this.readyRes = res; });
     loadSkinnedHero('assets/models/hero/scene.gltf', { height: 1.88, chestScale: 1.1 }).then((sk) => {
       const body = sk.meshes.find((m) => m.geometry.attributes.position.count > 5000);
       const eyes = sk.meshes.filter((m) => m !== body);
@@ -423,7 +425,13 @@ export class HeroModel {
       sk.scene.traverse((o) => { if (o.isMesh) o.visible = true; });
       this.skinned = sk;
       this.cape = new Cape(this.group);
-    }).catch((e) => console.warn('Модель персонажа не загрузилась, остаётся процедурная:', e));
+      this.readyRes(true);
+    }).catch((e) => {
+      if (this.skinned) { console.warn('Ошибка после загрузки модели персонажа:', e); this.readyRes(true); return; }
+      if (tries > 1) { console.warn('Модель персонажа не загрузилась, пробуем ещё раз:', e); setTimeout(() => this.loadBody(tries - 1), 700); return; }
+      console.warn('Модель персонажа не загрузилась, остаётся процедурная:', e);
+      this.readyRes(false);
+    });
   }
 
   // Глаза светятся красным, пока работает лазер
@@ -746,7 +754,7 @@ export class HeroModel {
       const climb = p.climb || 0;
       acc.chest[0] -= Math.max(0, climb) * 0.12 * w;
       acc.knR[0] += Math.max(0, -climb) * 0.15 * w;
-      // Ускорение (Shift, W+Q, рывок, гипер) — обе руки вытянуты вперёд, кулаки рядом
+      // Ускорение (Shift, W+E/Q/F, рывок, гипер) — обе руки вытянуты вперёд, кулаки рядом
       const bk = Math.max(p.boost || 0, p.hyper || 0) * w;
       if (bk > 0.01) {
         mixArm(acc, 'L', [-3.0, 0, -0.11], [-0.05, 0, 0], bk);

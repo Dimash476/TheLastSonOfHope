@@ -1,18 +1,18 @@
 import * as THREE from 'three';
 import { SPACE } from '../config.js';
 import { mulberry32 } from '../utils.js';
-import { BODIES, nearestBody } from './bodies.js';
+import { BODIES, SUN, nearestBody } from './bodies.js';
 
-// Отдельная «космическая» сцена: звёзды, Земля-шар с атмосферой и облаками, Луна и планеты
-// до Сатурна, Солнце. Рисуется ПЕРЕД основной сценой со своей камерой (огромная дальность
+// Отдельная «космическая» сцена: звёзды, Земля-шар с атмосферой и облаками, Солнце, Луна
+// и планеты до Сатурна. Рисуется ПЕРЕД основной сценой со своей камерой (огромная дальность
 // прорисовки), а основная сцена рисуется поверх. Внизу у земли её закрывает небо.
 //
-// Расстояния здесь — до 2·10⁷ м, поэтому глубина логарифмическая (вручную, только в этих
+// Расстояния здесь — до 7·10⁷ м, поэтому глубина логарифмическая (вручную, только в этих
 // шейдерах): обычной не хватило бы и на облака Земли, и на камни у ног на Луне.
 // Вершины переводим в систему камеры через modelViewMatrix (считается на CPU в double) —
 // мировые координаты в миллионы метров во float32 дрожали бы.
 
-const FAR = 2.5e7, SUN_DIST = 2.0e7, STAR_DIST = 2.2e7;
+const FAR = 1.5e8, STAR_DIST = 1.2e8;   // звёзды — дальше всех тел (и чёрной дыры), иначе рисовались бы поверх планет
 
 const LOGZ_V = 'varying float vLogZ;';
 const LOGZ_V_MAIN = 'vLogZ = 1.0 + gl_Position.w;';
@@ -266,6 +266,102 @@ const PLANET_F = /* glsl */`
     ${LOGZ_F_MAIN}
   }`;
 
+// Солнце: зёрна плазмы (грануляция) крупные и мелкие, медленно кипят; тёмные пятна с полутенью,
+// яркие факелы у края, потемнение к краю диска. Вблизи — всё мельче, до десятков метров под ногами
+const SUN_F = /* glsl */`
+  uniform float uR, uTime, uFade; uniform vec3 uSeed;
+  varying vec3 vN; varying vec3 vNv; varying vec3 vView;
+  ${LOGZ_F}
+  ${NOISE_GLSL}
+  ${INOISE_GLSL}
+  // Ячейки конвекции: светлый центр, тёмные дорожки между зёрнами
+  float cells(vec3 x) {
+    vec3 fl = floor(x), f = x - fl;
+    float a = 8.0, b = 8.0;
+    for (int k = 0; k < 27; k++) {
+      ivec3 g = ivec3(k % 3 - 1, (k / 3) % 3 - 1, k / 9 - 1), c = ivec3(fl) + g;
+      vec3 o = vec3(g) + vec3(ihash(c), ihash(c + 19), ihash(c + 41)) - f;
+      float d = dot(o, o);
+      if (d < a) { b = a; a = d; } else if (d < b) b = d;
+    }
+    // Ярче к центру зерна, тёмная дорожка на границе
+    return smoothstep(0.0, 0.3, sqrt(b) - sqrt(a)) * (1.0 - 0.55 * sqrt(a));
+  }
+  void main() {
+    vec3 n = normalize(vN);
+    float px = length(fwidth(vView));
+    float t = uTime;
+    // Край диска — только издалека: у поверхности взгляд скользящий, и тогда темнело бы всё
+    float far = smoothstep(uR * 0.03, uR * 0.4, length(vView));
+    float mu = mix(1.0, max(dot(normalize(vNv), normalize(-vView)), 0.0), far);
+    // Крупные течения и супергранулы — по всему шару
+    vec3 w = vec3(fbm3(n * 3.0 + uSeed + t * 0.004, 4), fbm3(n * 3.0 + uSeed.yzx - t * 0.003, 4), 0.0);
+    float big = fbm3(n * 9.0 + w * 1.5 + vec3(0.0, t * 0.01, 0.0), 5);
+    float gr = cells(n * 70.0 + w * 2.0 + vec3(t * 0.006, 0.0, 0.0));
+    float b = 0.55 + 0.45 * mix(big, gr, 0.55);
+    // Вблизи — мелкие гранулы в метрах (целочисленный шум: без дрожи на больших числах)
+    vec3 q = n * uR;
+    float l1 = lod(px, 9000.0);
+    if (l1 > 0.0) b = mix(b, b * (0.6 + 0.6 * cells(q / 9000.0 + vec3(0.0, t * 0.03, 0.0))), l1);
+    float l2 = lod(px, 900.0);
+    if (l2 > 0.0) b *= 1.0 + l2 * (inoise(q / 900.0 + vec3(t * 0.08)) - 0.5) * 0.5;
+    float l3 = lod(px, 90.0);
+    if (l3 > 0.0) b *= 1.0 + l3 * (inoise(q / 90.0 + vec3(t * 0.25)) - 0.5) * 0.35;
+    // Под ногами — кипящие зёрна в десятки метров и рябь в метры
+    float l4 = lod(px, 40.0);
+    if (l4 > 0.0) b *= mix(1.0, 0.45 + 0.9 * cells(q / 40.0 + vec3(0.0, t * 0.35, 0.0)), l4 * 0.9);
+    float l6 = lod(px, 8.0);
+    if (l6 > 0.0) b *= mix(1.0, 0.7 + 0.5 * cells(q / 8.0 + vec3(t * 0.6, 0.0, 0.0)), l6);
+    float l5 = lod(px, 5.0);
+    if (l5 > 0.0) b *= 1.0 + l5 * (inoise(q / 5.0 + vec3(t * 1.1)) - 0.5) * 0.45;
+    // Пятна: тёмная тень в светлой полутени
+    float sp = fbm3(n * 5.0 + uSeed * 1.7, 4);
+    float pen = smoothstep(0.66, 0.7, sp), umb = smoothstep(0.71, 0.74, sp);
+    b *= 1.0 - pen * 0.45 - umb * 0.45;
+    // Факелы: светлые прожилки, заметнее у края
+    float fac = smoothstep(0.62, 0.66, sp) * (1.0 - pen) + smoothstep(0.6, 0.7, fbm3(n * 22.0 + uSeed, 3)) * 0.4;
+    b += fac * (1.0 - mu) * 0.6;
+    // Цвет по «температуре»: тёмное — красно-оранжевое, светлое — почти белое
+    vec3 col = mix(vec3(1.0, 0.2, 0.01), vec3(1.0, 0.55, 0.1), smoothstep(0.35, 0.95, b));
+    col = mix(col, vec3(1.0, 0.8, 0.45), smoothstep(0.95, 1.25, b));
+    // Потемнение к краю: край краснее и тусклее
+    float limb = 0.22 + 0.78 * pow(mu, 0.55);
+    col *= mix(vec3(1.0, 0.45, 0.2), vec3(1.0), pow(mu, 0.35));
+    gl_FragColor = vec4(col * b * limb * 1.7 * uFade, uFade);
+    ${LOGZ_F_MAIN}
+  }`;
+
+// Корона и протуберанцы: плоскость в центре Солнца, всегда к камере (диск закрывает её середину).
+// Лучи-стримеры по углу, у края — петли и языки плазмы; всё медленно меняется
+const CORONA_F = /* glsl */`
+  uniform float uTime, uFade, uSpan; uniform vec3 uSeed;
+  varying vec2 vUv;
+  ${LOGZ_F}
+  ${NOISE_GLSL}
+  void main() {
+    vec2 p = (vUv - 0.5) * 2.0 * uSpan;   // в радиусах Солнца
+    float r = length(p), a = atan(p.y, p.x);
+    if (r < 0.98) discard;
+    vec2 cs = vec2(cos(a), sin(a));
+    float e = r - 1.0, t = uTime;
+    // Ровное свечение
+    float glow = exp(-e * 2.6) * 0.9 + exp(-e * 0.7) * 0.18;
+    // Стримеры: вытянутые по радиусу лучи
+    float st = fbm3(vec3(cs * 3.5, t * 0.01) + uSeed, 4);
+    float rays = pow(fbm3(vec3(cs * 14.0, e * 0.6 - t * 0.02) + uSeed, 4), 2.0);
+    float corona = glow * (0.55 + 1.1 * st) + rays * exp(-e * 1.1) * 1.4;
+    // Протуберанцы: яркие петли и языки у самого края
+    float pr = fbm3(vec3(cs * 9.0, e * 7.0 - t * 0.06) + uSeed * 1.3, 5);
+    float zone = smoothstep(0.55, 0.75, fbm3(vec3(cs * 2.2, t * 0.005) + uSeed.zxy, 3));
+    float prom = smoothstep(0.5, 0.62, pr) * zone * exp(-e * 4.5);
+    // У самого диска — горячий край
+    float rim = exp(-e * 22.0);
+    vec3 col = vec3(1.0, 0.45, 0.14) * corona * 0.7 + vec3(1.0, 0.22, 0.04) * prom * 6.0 + vec3(1.0, 0.6, 0.25) * rim * 2.0;
+    col *= smoothstep(uSpan, uSpan * 0.7, r);
+    gl_FragColor = vec4(col * uFade, 1.0);
+    ${LOGZ_F_MAIN}
+  }`;
+
 const _v = new THREE.Vector3(), _e1 = new THREE.Vector3(), _e2 = new THREE.Vector3(), _n0 = new THREE.Vector3();
 const Z = new THREE.Vector3(0, 0, 1);
 
@@ -281,6 +377,7 @@ export class Space {
       uLogK: { value: 1 / Math.log2(FAR + 1) },
     };
     this.earthCenter = new THREE.Vector3(0, -SPACE.earthRadius, 0);
+    this.earthR = SPACE.earthRadius;
     this.mapBodyId = null;   // тело, на отдельной карте которого сейчас герой
 
     this.createStars();
@@ -288,7 +385,6 @@ export class Space {
     this.createBodies();
     this.createPatch();
     this.createBlob();
-    this.createSun();
   }
 
   createStars() {
@@ -424,14 +520,17 @@ export class Space {
   // ---------------------------------------------------------------- Луна и планеты
   createBodies() {
     this.bodies = BODIES.map((b, i) => {
+      if (b.star) return (this.sunBody = this.createStarBody(b, i));
       const look = LOOKS[b.id];
+      // Свет — от Солнца: тела стоят на месте, поэтому направление постоянное
+      const sun = SUN.c.clone().sub(b.c).normalize();
       // Большое красное пятно — на стороне, обращённой к Земле, в южных широтах
       const toEarth = b.c.clone().negate().normalize();
       const spot = toEarth.addScaledVector(b.axis, -toEarth.dot(b.axis)).normalize()
         .multiplyScalar(Math.cos(0.38)).addScaledVector(b.axis, -Math.sin(0.38));
       const mat = new THREE.ShaderMaterial({
         uniforms: {
-          ...this.uniforms,
+          ...this.uniforms, uSun: { value: sun },
           uR: { value: b.r }, uAxis: { value: b.axis }, uSpot: { value: spot }, uSeed: { value: new THREE.Vector3(i * 7.3, i * 3.1, i * 5.7) },
           uColA: { value: new THREE.Vector3(...look.a) }, uColB: { value: new THREE.Vector3(...look.b) },
           uAtmo: { value: new THREE.Vector3(...(look.atmo || [0, 0, 0])) }, uDens: { value: look.dens || 0 },
@@ -448,17 +547,44 @@ export class Space {
       mesh.position.copy(b.c);
       this.scene.add(mesh);
       const body = { ...b, mesh, mat, ring: null };
-      if (b.rings) body.ring = this.createRings(b);
+      if (b.rings) body.ring = this.createRings(b, sun);
       return body;
     });
   }
 
+  // Солнце: шар со своим шейдером (светится сам) и корона вокруг
+  createStarBody(b, i) {
+    const seed = new THREE.Vector3(i * 7.3 + 2.0, i * 3.1 + 5.0, i * 5.7 + 1.0);
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { uLogK: this.uniforms.uLogK, uTime: this.uniforms.uTime, uR: { value: b.r }, uSeed: { value: seed }, uFade: { value: 0 } },
+      vertexShader: PLANET_V, fragmentShader: SUN_F, transparent: true,
+    });
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(b.r, 256, 128), mat);
+    mesh.position.copy(b.c);
+    this.scene.add(mesh);
+    const SPAN = 4;
+    const cmat = new THREE.ShaderMaterial({
+      uniforms: { uLogK: this.uniforms.uLogK, uTime: this.uniforms.uTime, uSeed: { value: seed }, uFade: { value: 0 }, uSpan: { value: SPAN } },
+      vertexShader: /* glsl */`
+        varying vec2 vUv;
+        ${LOGZ_V}
+        void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); ${LOGZ_V_MAIN} }`,
+      fragmentShader: CORONA_F,
+      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
+    });
+    this.corona = new THREE.Mesh(new THREE.PlaneGeometry(2 * SPAN * b.r, 2 * SPAN * b.r), cmat);
+    this.corona.position.copy(b.c);
+    this.corona.frustumCulled = false;
+    this.scene.add(this.corona);
+    return { ...b, mesh, mat, ring: null };
+  }
+
   // Кольца Сатурна: кольцо C (тусклое), плотное B, щель Кассини, A со щелью Энке;
   // тонкая структура колечек, тень планеты на кольцах
-  createRings(b) {
+  createRings(b, sun) {
     const [r0, r1] = b.rings;
     const mat = new THREE.ShaderMaterial({
-      uniforms: { ...this.uniforms, uR: { value: b.r }, uRing: { value: new THREE.Vector2(r0, r1) }, uAxis: { value: b.axis } },
+      uniforms: { ...this.uniforms, uSun: { value: sun }, uR: { value: b.r }, uRing: { value: new THREE.Vector2(r0, r1) }, uAxis: { value: b.axis } },
       vertexShader: /* glsl */`
         varying vec3 vRel;
         ${LOGZ_V}
@@ -603,37 +729,6 @@ export class Space {
     this.blob.visible = true;
   }
 
-  createSun() {
-    const c = document.createElement('canvas');
-    c.width = c.height = 128;
-    const g = c.getContext('2d');
-    const grd = g.createRadialGradient(64, 64, 0, 64, 64, 64);
-    grd.addColorStop(0, 'rgba(255,255,255,1)');
-    grd.addColorStop(0.15, 'rgba(255,248,230,1)');
-    grd.addColorStop(0.35, 'rgba(255,220,160,0.35)');
-    grd.addColorStop(1, 'rgba(255,200,120,0)');
-    g.fillStyle = grd; g.fillRect(0, 0, 128, 128);
-    const tex = new THREE.CanvasTexture(c);
-    // Плоскость, всегда повёрнутая к камере (как спрайт), но с той же логарифмической глубиной:
-    // за планетой Солнце прячется
-    const mat = new THREE.ShaderMaterial({
-      uniforms: { uLogK: this.uniforms.uLogK, uMap: { value: tex }, uOpacity: { value: 0 } },
-      vertexShader: /* glsl */`
-        varying vec2 vUv;
-        ${LOGZ_V}
-        void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); ${LOGZ_V_MAIN} }`,
-      fragmentShader: /* glsl */`
-        uniform sampler2D uMap; uniform float uOpacity; varying vec2 vUv;
-        ${LOGZ_F}
-        void main() { vec4 t = texture2D(uMap, vUv); gl_FragColor = vec4(vec3(6.0, 5.6, 5.0) * t.rgb, t.a * uOpacity); ${LOGZ_F_MAIN} }`,
-      blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-    });
-    this.sun = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
-    this.sun.scale.setScalar(160000 * SUN_DIST / 1.5e6);
-    this.sun.frustumCulled = false;
-    this.scene.add(this.sun);
-  }
-
   // На карте Луны Земля стоит в небе; null — вернуть на место
   moveEarth(p) {
     const c = p || this.earthCenter;
@@ -650,9 +745,6 @@ export class Space {
   update(dt, mainCamera, sunDir, spaceK, nightK, hero) {
     this.uniforms.uTime.value += dt;
     this.sunDir.copy(sunDir);
-    this.sun.position.copy(mainCamera.position).addScaledVector(sunDir, SUN_DIST);
-    this.sun.quaternion.copy(mainCamera.quaternion);
-    this.sun.material.uniforms.uOpacity.value = Math.max(spaceK, 0);
     // Звёзды: в космосе и ночью
     this.uniforms.uStars.value = Math.max(spaceK, nightK * 0.9);
     this.stars.position.copy(mainCamera.position);
@@ -661,10 +753,16 @@ export class Space {
     this.earth.visible = this.clouds.visible = this.atmo.visible = high;
     const bodiesOn = high || nightK > 0.5;
     // На отдельной карте планеты её шара нет: под ногами — рельеф основной сцены
+    // Солнце — только с высоты (внизу светит небесное солнце времени суток)
+    const sunFade = Math.max(spaceK, 0);
     for (const b of this.bodies) {
-      b.mesh.visible = bodiesOn && b.id !== this.mapBodyId;
+      b.mesh.visible = (b.star ? sunFade > 0.01 : bodiesOn) && b.id !== this.mapBodyId;
       if (b.ring) b.ring.visible = bodiesOn;
     }
+    this.sunBody.mat.uniforms.uFade.value = sunFade;
+    this.corona.material.uniforms.uFade.value = sunFade;
+    this.corona.visible = sunFade > 0.01 && this.mapBodyId !== SUN.id;
+    this.corona.quaternion.copy(mainCamera.quaternion);
     if (this.mapBodyId) {
       this.patch.visible = this.blob.visible = false;
       this.patchState.body = null;

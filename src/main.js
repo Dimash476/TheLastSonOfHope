@@ -7,6 +7,8 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 
 import { createInputState, KeyboardMouseSource, HandSource, endFrame } from './input.js';
 import { Environment } from './world/environment.js';
+import { TerrainFX } from './world/terrainfx.js';
+import { Rocks } from './world/rocks.js';
 import { City } from './world/city.js';
 import { Debris } from './world/debris.js';
 import { Particles } from './fx/particles.js';
@@ -30,6 +32,7 @@ import { Critters } from './world/critters.js';
 import { Countryside } from './world/countryside.js';
 import { Props } from './world/props.js';
 import { Space } from './world/space.js';
+import { BlackHole } from './world/blackhole.js';
 import { PlanetMap } from './world/planetmap.js';
 import { Trees } from './world/trees.js';
 import { Soundscape } from './soundscape.js';
@@ -37,6 +40,7 @@ import { WildSound } from './wildsound.js';
 import { BossBattle } from './boss/battle.js';
 import { Invasion } from './boss/invasion.js';
 import { installSunFog, createGodRaysPass, createGradePass, updateCinematic } from './fx/cinematic.js';
+import { HALF } from './world/layout.js';
 
 // Туман со светом солнца — до создания и компиляции материалов
 installSunFog();
@@ -59,6 +63,9 @@ const space = new Space();
 const composer = new EffectComposer(renderer);
 const spacePass = new RenderPass(space.scene, space.camera);
 composer.addPass(spacePass);
+// Чёрная дыра: искривляет уже нарисованный космос (до основной сцены — герой и город поверх)
+const blackHole = new BlackHole(scene);
+composer.addPass(blackHole.pass);
 const mainPass = new RenderPass(scene, camera);
 mainPass.clear = false;      // не стираем цвет космоса
 mainPass.clearDepth = true;  // но глубину — стираем
@@ -136,6 +143,7 @@ const dust = new Particles(scene, { max: 6000, color: 0x9a8f80, drag: 1.1 });
 const glass = new Debris(scene, { max: 2500, glass: true });
 const sparks = new Particles(scene, { max: 1500, additive: true, color: 0xffd28a, drag: 2.5 });
 const effects = new Effects(scene, camera);
+effects.warmup();
 effects.sparkSink = sparks;
 
 const fx = { debris, glass, dust, sparks, effects, audio };
@@ -159,6 +167,7 @@ world.impact = (point, radius, force, source) => {
   beach.impulse(point, radius, force);
   nature.impulse(point, radius, force);
   animals.impulse(point, radius, force);
+  rocks.explode(point, radius, force);
 };
 const traffic = world.traffic = new Traffic(scene, world);
 const people = world.people = new People(scene, world);
@@ -174,6 +183,10 @@ const animals = world.animals = new Animals(scene, world);
 const waterlife = world.waterlife = new WaterLife(scene, world);
 const critters = world.critters = new Critters(scene, world);
 const countryside = world.countryside = new Countryside(scene, world);
+// Горы ломаются как здания: таран и удар разваливают склон на глыбы, края осыпаются
+const rocks = world.rocks = new Rocks(scene, world);
+const terrainFX = world.terrainFX = new TerrainFX(world, env);
+blackHole.world = world;
 world.soundscape = soundscape;
 city.onImpact = (p, r, f) => world.impact(p, r, f);
 debris.onImpact = (p, r, f) => world.impact(p, r, f);
@@ -211,7 +224,12 @@ function updateCtrlBadge() {
 const overlay = document.getElementById('overlay');
 const playBtn = document.getElementById('play-btn');
 const $ = (id) => document.getElementById(id);
-$('loading').classList.add('hidden');
+// Меню — только когда готово тело героя: иначе в игре остался бы процедурный «манекен»
+$('modes').style.visibility = 'hidden';
+player.model.ready.then(() => {
+  $('loading').classList.add('hidden');
+  $('modes').style.visibility = '';
+});
 
 // Главное меню: выбор режима. Симулятор и битва с боссом; сюжет — в разработке.
 let paused = true;
@@ -236,6 +254,7 @@ function enterMode(m) {
   else if (m === 'invasion') { resetWorld(true); invasion.start(); }
   else if (mode === 'boss' || mode === 'invasion') resetWorld(true);
   mode = m;
+  kbm.spinF = m === 'invasion';
 }
 function startMode(m) {
   enterMode(m);
@@ -390,6 +409,7 @@ function applyQuality(i) {
   env.sun.shadow.map?.dispose();
   env.sun.shadow.map = null;
   bloom.enabled = q.bloom;
+  blackHole.setQuality(i);
   return q.name;
 }
 // Встроенная графика (Intel и т.п.) — сразу среднее качество
@@ -493,6 +513,8 @@ function resetWorld(quiet = false) {
   animals.clear();
   props.reset();
   trees.reset();
+  terrainFX.reset();
+  blackHole.reset();
   street.reset();
   air.reset();
   beach.reset();
@@ -564,6 +586,8 @@ function step(dt, active) {
     gdt *= slow.k;
 
     invasion.preUpdate(input, dt);
+    // Притяжение дыры — до хода героя: иначе модель встаёт на старое место, а камера уходит вперёд
+    blackHole.tick(dt, player, camRig);
     player.update(pdt, input, camRig);
     planetMap.tick(player);
     if (mode === 'boss') battle.update(gdt, dt);
@@ -577,6 +601,8 @@ function step(dt, active) {
     waterlife.update(gdt, player, camera.position);
     critters.update(gdt, player, camera.position, env.night);
     countryside.update(gdt, camera.position);
+    terrainFX.update(gdt);
+    rocks.update(gdt, player);
     fire.update(gdt);
     dust.update(gdt);
     sparks.update(gdt);
@@ -590,9 +616,13 @@ function step(dt, active) {
   if (invasion.active) invasion.fx.applyEnv(env, scene, camera);
   planetMap.update(paused || photo.on ? 0 : dt, camera, env, player);
   space.update(dt, camera, env.sunDir, env.altitudeK, env.night, player);
+  blackHole.update(paused ? 0 : dt, camera, space.camera, space.earthCenter, space.earthR);
+  env.setSkyHole(blackHole.skyHole(camera.position), 1 - env.night);
   hud.markers(camera, player, !paused && !photo.on && !planetMap.active);
   // Космос рисуем, только когда небо хоть немного прозрачное
-  spacePass.enabled = env.sky.material.uniforms.uOpacity.value < 0.995;
+  // (и днём, если в кадре чёрная дыра — она проглядывает сквозь небо призраком)
+  spacePass.enabled = env.sky.material.uniforms.uOpacity.value < 0.995 || blackHole.pass.enabled;
+  blackHole.pass.enabled = blackHole.pass.enabled && spacePass.enabled;
   mainPass.clear = !spacePass.enabled;
   props.update(camera.position);
   city.updateView(camera.position, dt);
@@ -632,7 +662,7 @@ function step(dt, active) {
   {
     const cp = camera.position, r = Math.max(Math.abs(cp.x), Math.abs(cp.z));
     const inCity = 1 - THREE.MathUtils.smoothstep(r, 2400, 3800);
-    const inSuburb = THREE.MathUtils.smoothstep(r, 2100, 2900) * (1 - THREE.MathUtils.smoothstep(r, 3800, 4800));
+    const inSuburb = THREE.MathUtils.smoothstep(r, 2100, 2900) * (1 - THREE.MathUtils.smoothstep(r, HALF + 200, HALF + 1200));
     const low = 1 - THREE.MathUtils.smoothstep(cp.y, 150, 1800);
     audio.setAmbience(Math.max(inCity, inSuburb * 0.45) * low, inSuburb * low, env.night, env.W.rain);
   }
@@ -651,7 +681,7 @@ frame();
 
 // Для отладки из консоли
 window.game = {
-  scene, camera, renderer, player, city, battle, invasion, hands, setControl, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space, planetMap,
+  scene, camera, renderer, player, city, battle, invasion, hands, setControl, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space, planetMap, blackHole,
   // Запуск без захвата мыши (для автотестов)
   unpause() { paused = false; overlay.classList.add('hidden'); hud.show(true); },
   // Начать режим без захвата мыши (для автотестов)

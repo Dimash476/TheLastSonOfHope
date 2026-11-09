@@ -21,9 +21,13 @@ class handDetector():
 
         self.mpDraw = mp.solutions.drawing_utils
 
-    def findHands(self, img, draw=False):
+    def process(self, img):
         imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         self.result = self.hands.process(imgRGB)
+        return self.result
+
+
+    def findHands(self, img, draw=False):
         if self.result.multi_hand_landmarks:
             for handLms in self.result.multi_hand_landmarks:
                 if draw:
@@ -31,8 +35,8 @@ class handDetector():
         return img
 
     def findPosition(self, img, draw=False, fingers=None, hand='Left'):
-        imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        self.result = self.hands.process(imgRGB)
+        pointSpec = self.mpDraw.DrawingSpec(color=(0, 255, 255), thickness=2, circle_radius=3)
+        lineSpec  = self.mpDraw.DrawingSpec(color=(255, 255, 255), thickness=2)
         lmList = []
         if self.result.multi_hand_landmarks:
             for myHand, handed in zip(self.result.multi_hand_landmarks, self.result.multi_handedness):
@@ -44,16 +48,18 @@ class handDetector():
                     cx, cy = int(lm.x * w), int(lm.y * h)
                     handPoints.append([id, cx, cy])
 
-                    if draw:
-                        if fingers is None or id in fingers:
-                            cv2.circle(img, (cx, cy), 5, (255, 255, 0), cv2.FILLED)
+                if draw:
+                    if fingers is None:
+                        self.mpDraw.draw_landmarks(img, myHand, self.mpHands.HAND_CONNECTIONS, pointSpec, lineSpec)
+                    else:
+                        for id, x, y in handPoints:
+                            if id in fingers:
+                                cv2.circle(img, (x, y), 5, (255, 255, 0), cv2.FILLED)
                 lmList.append(handPoints)
 
         return lmList
 
-    def getHandType(self, img):
-        imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        self.result = self.hands.process(imgRGB)
+    def getHandType(self):
         hands_type = []
         if self.result.multi_handedness:
             for hand in self.result.multi_handedness:

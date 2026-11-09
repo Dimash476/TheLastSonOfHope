@@ -32,7 +32,9 @@ class FaceDetector():
 
         return img
 
-    def findPositon(self, img, nose=False):
+    def findPositon(self, img, draw=False, nose=False):
+        pointSpec = self.mpDraw.DrawingSpec(color=(255, 255, 0), circle_radius=1)
+        lineSpec = self.mpDraw.DrawingSpec(color=(255, 255, 255), thickness=1)
         points = []
         imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         self.result = self.face.process(imgRGB)
@@ -44,11 +46,13 @@ class FaceDetector():
                     points.append([id, cx, cy])
                     # cv2.putText(img, str(id), (cx, cy), cv2.FONT_HERSHEY_PLAIN, 0.3, (255, 255, 0), 1)
                     if nose and id == 1:
-                        cv2.circle(img, (cx, cy), 1, (255,255,0), 1)
+                        cv2.circle(img, (cx, cy), 5, (255, 255, 0), 1)
+                if draw:
+                    self.mpDraw.draw_landmarks(img, faceLms, self.mpFace.FACEMESH_CONTOURS, pointSpec, lineSpec)
 
         if nose:
-            return points[1]
-        return points
+            return points[1], img
+        return points, img
 
 
     #game function

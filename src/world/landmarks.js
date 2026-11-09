@@ -123,12 +123,21 @@ export function makeShapeGeometries() {
   const spire = withPart(new THREE.ConeGeometry(Math.SQRT1_2, 1, 4, 1).rotateY(Math.PI / 4).translate(0, 0.5, 0), 1);
   spire.computeVertexNormals();
 
-  const out = { sphere, dome, round, crown, twist, pyramid, bullet, geodome, pillar, cradle, tent, clock, spire };
-  // Гигантские формы вращения, нарезанные на ярусы (ключи вида «orb:3»)
+  // Плита «Спирали»: светлое перекрытие и стеклянный этаж над ним
+  const slab = M([
+    withPart(new THREE.BoxGeometry(1, 0.16, 1).translate(0, 0.08, 0), 1),
+    withPart(new THREE.BoxGeometry(0.94, 0.84, 0.94).translate(0, 0.58, 0), 3),
+  ]);
+  // Стеклянный короб: сплошной витраж с переплётом (башни и мост «Врат»)
+  const glassbox = withPart(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0), 3);
+
+  const out = { sphere, dome, round, crown, twist, pyramid, bullet, geodome, pillar, cradle, tent, clock, spire, slab, glassbox };
+  // Гигантские формы вращения, нарезанные на ярусы (ключи вида «orb:3»), и кольца, нарезанные на дуги
   for (const name in GIANTS) {
     const slices = buildGiant(GIANTS[name]);
     slices.forEach((s, k) => { out[`${name}:${k}`] = s.geo; });
   }
+  for (const name in RINGS) buildRing(RINGS[name]).forEach((s, k) => { out[`${name}:${k}`] = s.geo; });
   for (const k in out) out[k].computeBoundingSphere();
   return out;
 }
@@ -173,6 +182,15 @@ export const GIANTS = {
   pagoda: { aspect: 1.5, slices: 9, radial: 8, flat: true,
     profile: (y) => { const t = y / 1.5, k = Math.min(8, Math.floor(t * 9)), f = t * 9 - k; return 0.5 * (1 - k * 0.095) * (f > 0.86 ? 1.06 : 1 - f * 0.05); },
     part: (y) => (((y / 1.5) * 9) % 1 > 0.86 ? 2 : 3) },
+  // «Чаша»: широкий постамент, тонкий светлый ствол и огромная стеклянная чаша со светящимся краем
+  chalice: { aspect: 1.17, slices: 12, radial: 64,
+    profile: (y) => {
+      const t = y / 1.17;
+      if (t < 0.04) return 0.2 - t * 2;
+      if (t < 0.42) return 0.12 - (t - 0.04) * 0.08;
+      return 0.09 + 0.41 * Math.pow((t - 0.42) / 0.58, 1.7);
+    },
+    part: (y) => { const t = y / 1.17; return t > 0.985 ? 2 : t < 0.42 ? 1 : 0; } },
 };
 function fract(x) { return x - Math.floor(x); }
 
@@ -233,6 +251,90 @@ export function buildGiant(G) {
   }
   _giantCache.set(G, out);
   return out;
+}
+
+// ================================================================ кольца
+// Кольцо режется по окружности на дуги; каждая дуга — секция со своей коробкой (как ярусы
+// гигантов), поэтому столкновения повторяют форму, а рушится кольцо по частям.
+// vertical — кольцо стоит (ось вдоль Z), иначе лежит (ось вертикальна). Размеры — в долях
+// внешнего диаметра D: r0, r1 — внутренний и внешний радиусы, t — толщина.
+// Окна там, где грань вертикальна: у стоящего кольца — на плоских сторонах, у лежащего —
+// на внешнем ободе; остальное — глухая отделка. Внутренний край светится
+export const RINGS = {
+  ring: { vertical: true, pieces: 24, r0: 0.41, r1: 0.5, t: 0.1 },
+  halo: { vertical: false, pieces: 16, r0: 0.38, r1: 0.5, t: 0.09 },
+};
+// Дуга k начинается снизу (у стоящего кольца) или с оси +X (у лежащего) и идёт против часовой
+export const ringAngle = (R, k) => (R.vertical ? -Math.PI / 2 : 0) + (k / R.pieces) * Math.PI * 2;
+const _ringCache = new Map();
+export function buildRing(R) {
+  if (_ringCache.has(R)) return _ringCache.get(R);
+  const out = [], m = 4, h = R.t / 2;
+  // Точка кольца: радиус r, угол a, смещение по оси кольца s
+  const pt = (r, a, s) => (R.vertical ? [r * Math.cos(a), r * Math.sin(a), s] : [r * Math.cos(a), s, r * Math.sin(a)]);
+  const axis = R.vertical ? [0, 0, 1] : [0, 1, 0];
+  const radial = (a, sg) => (R.vertical ? [sg * Math.cos(a), sg * Math.sin(a), 0] : [sg * Math.cos(a), 0, sg * Math.sin(a)]);
+  const side = R.vertical ? 3 : 1, rim = R.vertical ? 1 : 3;
+  for (let k = 0; k < R.pieces; k++) {
+    const a0 = ringAngle(R, k), a1 = ringAngle(R, k + 1);
+    const pos = [], nrm = [], part = [];
+    // Четырёхугольник с заданной нормалью; обход подбираем так, чтобы грань смотрела наружу
+    const quad = (A, B, C, D, n, p) => {
+      const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], v = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
+      const flip = (u[1] * v[2] - u[2] * v[1]) * n[0] + (u[2] * v[0] - u[0] * v[2]) * n[1] + (u[0] * v[1] - u[1] * v[0]) * n[2] < 0;
+      for (const P of flip ? [A, C, B, A, D, C] : [A, B, C, A, C, D]) { pos.push(...P); nrm.push(...n); part.push(p); }
+    };
+    const quadN = (A, B, C, D, nA, nB, p) => {
+      // Изогнутая грань: нормали по вершинам (A, D — на угле a0; B, C — на a1)
+      const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], v = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
+      const n = [(nA[0] + nB[0]) / 2, (nA[1] + nB[1]) / 2, (nA[2] + nB[2]) / 2];
+      const flip = (u[1] * v[2] - u[2] * v[1]) * n[0] + (u[2] * v[0] - u[0] * v[2]) * n[1] + (u[0] * v[1] - u[1] * v[0]) * n[2] < 0;
+      const vs = [[A, nA], [B, nB], [C, nB], [D, nA]];
+      for (const i of flip ? [0, 2, 1, 0, 3, 2] : [0, 1, 2, 0, 2, 3]) { pos.push(...vs[i][0]); nrm.push(...vs[i][1]); part.push(p); }
+    };
+    for (let i = 0; i < m; i++) {
+      const b0 = a0 + (a1 - a0) * i / m, b1 = a0 + (a1 - a0) * (i + 1) / m;
+      for (const sg of [-1, 1]) {
+        // Плоские стороны, у внутреннего края — светящаяся полоса
+        const n = axis.map((c) => c * sg), rb = R.r0 + 0.012;
+        quad(pt(R.r0, b0, sg * h), pt(R.r0, b1, sg * h), pt(rb, b1, sg * h), pt(rb, b0, sg * h), n, 2);
+        quad(pt(rb, b0, sg * h), pt(rb, b1, sg * h), pt(R.r1, b1, sg * h), pt(R.r1, b0, sg * h), n, side);
+      }
+      quadN(pt(R.r1, b0, -h), pt(R.r1, b1, -h), pt(R.r1, b1, h), pt(R.r1, b0, h), radial(b0, 1), radial(b1, 1), rim);
+      quadN(pt(R.r0, b0, -h), pt(R.r0, b1, -h), pt(R.r0, b1, h), pt(R.r0, b0, h), radial(b0, -1), radial(b1, -1), 2);
+    }
+    // Торцы: видны, когда соседняя дуга выбита
+    for (const [a, sg] of [[a0, -1], [a1, 1]]) {
+      const t = R.vertical ? [-Math.sin(a) * sg, Math.cos(a) * sg, 0] : [-Math.sin(a) * sg, 0, Math.cos(a) * sg];
+      quad(pt(R.r0, a, -h), pt(R.r1, a, -h), pt(R.r1, a, h), pt(R.r0, a, h), t, 1);
+    }
+    let geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    geo.setAttribute('part', new THREE.Float32BufferAttribute(part, 1));
+    // Коробка дуги и нормировка в единичный объём (как у ярусов гигантов)
+    geo.computeBoundingBox();
+    const bb = geo.boundingBox;
+    const cx = (bb.min.x + bb.max.x) / 2, cz = (bb.min.z + bb.max.z) / 2;
+    const w = bb.max.x - bb.min.x, d = bb.max.z - bb.min.z, hh = bb.max.y - bb.min.y;
+    const P = geo.attributes.position, N = geo.attributes.normal, v = new THREE.Vector3();
+    for (let i = 0; i < P.count; i++) {
+      P.setXYZ(i, (P.getX(i) - cx) / w, (P.getY(i) - bb.min.y) / hh, (P.getZ(i) - cz) / d);
+      v.set(N.getX(i) * w, N.getY(i) * hh, N.getZ(i) * d).normalize();
+      N.setXYZ(i, v.x, v.y, v.z);
+    }
+    out.push({ geo, cx, cz, w, d, y0: bb.min.y, h: hh });
+  }
+  _ringCache.set(R, out);
+  return out;
+}
+
+// Ставит дугу k кольца name: диаметр D, центр кольца (x, yc, z)
+function addRingPiece(city, b, name, k, x, yc, z, D, color = null) {
+  const s = buildRing(RINGS[name])[k];
+  const seg = city.addSeg(b, { x: x + s.cx * D, z: z + s.cz * D, w: s.w * D, d: s.d * D, y0: yc + s.y0 * D, h: s.h * D, type: 'shape', shape: `${name}:${k}` });
+  if (color) seg.color = new THREE.Color(color);
+  return seg;
 }
 
 // Ставит гиганта: диаметр D, центр (x, z), основание y0. color — цвет для всех ярусов
@@ -363,8 +465,8 @@ const MEGA_KINDS = ['orb', 'crownTower', 'tent', 'pyramid', 'pagoda', 'hyper', '
 export function addMegaLandmark(city, site, index, rnd) {
   const { x, z } = site, L = (site.half - 12) * 2;           // ширина площади без тротуаров
   const order = MEGA_KINDS.map((k, i) => [k, Math.sin(i * 12.9898 + 4.1) * 43758.5 % 1]).sort((p, q) => p[1] - q[1]).map((p) => p[0]);
-  // Площадь 5×5 — под гигантскую сферу, остальные — по очереди
-  const kind = site.giant ? 'megaOrb' : order[index % order.length];
+  // Площади 5×5 — под гигантскую сферу и новых гигантов (вид задан в layout.js), остальные — по очереди
+  const kind = site.kind || (site.giant ? 'megaOrb' : order[(site.reg ?? index) % order.length]);
   const fixed = () => 0.5;
   const pick = (a) => a[Math.floor(rnd() * a.length)];
   const shaped = (bx, bz, color) => { const b = city.newBuilding({ kind: 'building', x: bx, z: bz, color, glass: true }); b.shaped = true; return b; };
@@ -437,6 +539,65 @@ export function addMegaLandmark(city, site, index, rnd) {
     addGiant(city, shaped(x, z, pick(SOLID_TINTS)), 'dome', x, z, L * 0.82, 4);
   } else if (kind === 'geodome') {
     addGiant(city, shaped(x, z, 0xe8eef0), 'geodome', x, z, L * 0.9, 0);
+  } else if (kind === 'gate') {
+    // «Врата» ~420 м: две стеклянные башни, сверху их накрывает огромный золотой корпус-мост.
+    // Мост держится на обеих: выбили опору ниже него — он падает (как переход у «Близнецов»)
+    base(L * 0.9, 5);
+    const color = pick([0x40566e, 0x5a7896, 0x4f73b0]);
+    const towers = [-1, 1].map((s) => {
+      const b = shaped(x + s * 100, z, color);
+      stack(b, 'glassbox', x + s * 100, z, 56, 5, 343);
+      b.links = [];
+      return b;
+    });
+    const br = shaped(x, z, GOLD);
+    for (const [y0, h] of [[348, 36], [384, 36]]) for (let k = 0; k < 6; k++) {
+      const s = seg(br, 'glassbox', x - 128 + 256 * (k + 0.5) / 6, z, 256 / 6, 62, y0, h);
+      for (const t of towers) t.links.push(s);
+    }
+  } else if (kind === 'chalice') {
+    // «Чаша» ~350 м: тонкий ствол раскрывается в стеклянную чашу ~300 м в поперечнике
+    base(150, 5);
+    addGiant(city, shaped(x, z, pick([0x4f73b0, 0x5aa6b8, 0x7aa0c8])), 'chalice', x, z, 300, 5);
+  } else if (kind === 'spiral') {
+    // «Спираль» ~500 м: плиты-этажи, каждая повёрнута и сдвинута относительно нижней — закрученная лестница
+    base(160, 5);
+    const b = shaped(x, z, pick([0x5aa6b8, 0x4f9a86, 0x4f73b0, 0x7aa0c8]));
+    const n = 40, sh = 12.4, R = 15, da = 0.16;
+    for (let k = 0; k < n; k++) {
+      const a = k * da, w = 74 - 28 * k / (n - 1);
+      seg(b, 'slab', x + Math.cos(a) * R, z + Math.sin(a) * R, w, w, 5 + k * sh, sh, a);
+    }
+    stack(b, 'pillar', x + Math.cos(n * da) * R, z + Math.sin(n * da) * R, 3, 5 + n * sh, 36);
+  } else if (kind === 'ring') {
+    // «Кольцо» ~350 м: стоящее на ребре кольцо-здание, окна на обеих сторонах, внутренний край светится.
+    // Две половины — отдельные здания: выбитая дуга роняет всё, что выше неё на своей стороне
+    const D = 340, yc = 2 + D / 2, R = RINGS.ring;
+    city.addBuilding({ x, z, w: 170, d: 80, h: 10, color: 0xd9d3c7, glass: false, type: 'concrete', roof: null }, fixed);
+    const color = pick([0x7aa0c8, 0x5aa6b8, 0x4f73b0]);
+    const right = shaped(x + D / 4, z, color), left = shaped(x - D / 4, z, color);
+    for (let k = 0; k < R.pieces / 2; k++) addRingPiece(city, right, 'ring', k, x, yc, z, D);
+    for (let k = R.pieces - 1; k >= R.pieces / 2; k--) addRingPiece(city, left, 'ring', k, x, yc, z, D);
+  } else if (kind === 'halo') {
+    // «Нимб» ~360 м: три круглые башни держат над площадью огромное лежащее кольцо; ночью его
+    // внутренний край светится. Кольцо держится на всех трёх: выбили опору — оно падает
+    const D = 360, top = 330, R = RINGS.halo, rr = (R.r0 + R.r1) / 2 * D;
+    base(L * 0.94, 4);
+    const color = pick(GLASS_TINTS);
+    const towers = [0, 1, 2].map((i) => {
+      const a = Math.PI / 2 + i * Math.PI * 2 / 3, tx = x + Math.cos(a) * rr, tz = z + Math.sin(a) * rr;
+      const b = shaped(tx, tz, color);
+      stack(b, 'round', tx, tz, 40, 4, top - 4);
+      b.links = [];
+      return b;
+    });
+    const ring = shaped(x, z, 0xe8eef0);
+    for (let k = 0; k < R.pieces; k++) {
+      const s = addRingPiece(city, ring, 'halo', k, x, top + R.t * D / 2, z, D);
+      for (const t of towers) t.links.push(s);
+    }
+    // В центре площади — стеклянный купол-павильон
+    addGiant(city, shaped(x, z, pick([0x5aa6b8, 0x4f73b0])), 'dome', x, z, 120, 4);
   }
 }
 

@@ -52,6 +52,7 @@ export class Player {
     this.latAccel = new THREE.Vector3();
     this.roll = 0;
     this.boomT = 0;
+    this.gearPrev = 0;       // ступень сверхскорости в прошлом кадре: 0 — нет, 1 — Shift, 2 — +E… (рывок в космосе)
     this.landT = 0;      // «супергеройское» приземление на колено
     this.falling = false; // сошёл с уступа — падает под силой тяжести, пока не встанет на землю
     this.takeoffT = 0;   // присед перед взлётом
@@ -226,7 +227,8 @@ export class Player {
     }
 
     // ------------------------------------------------ движение
-    this.cruiseOn = false;   // W + Q в полёте (выставляет fly)
+    this.cruiseOn = false;   // первый уровень (W + E / Q / F) в полёте (выставляет fly)
+    this.calm = false;       // скорость первого уровня: без сверхзвуковых эффектов (выставляет fly)
     if (this.dashT > 0) {
       this.dashT -= dt;
       const sp = Math.max(P.dashSpeed, this.vel.length());
@@ -247,7 +249,7 @@ export class Player {
       const wish = new THREE.Vector3().addScaledVector(camFlat, input.moveZ).addScaledVector(right, input.moveX);
       if (wish.lengthSq() > 1) wish.normalize();
       // Пока поднимается с колена — стоит на месте
-      const top = this.landT > 0.25 || this.petting ? 0 : input.boost ? P.sprintSpeed : input.cruise ? P.cruiseRun : input.walk ? P.walkSpeed : P.runSpeed;
+      const top = this.landT > 0.25 || this.petting ? 0 : input.boost ? P.sprintSpeed : input.gear ? P.cruiseRuns[input.gear] : input.walk ? P.walkSpeed : P.runSpeed;
       // Человек разгоняется быстрее, чем тормозит с бега; шаг набирается мягко
       const hs0 = Math.hypot(this.vel.x, this.vel.z);
       const accel = top < hs0 ? P.groundAccel * 0.75 : top <= P.walkSpeed + 0.1 ? 5 : P.groundAccel;
@@ -296,8 +298,15 @@ export class Player {
     this.touchObjects();
 
     // ------------------------------------------------ сверхзвук
-    const mach = this.speed / MACH;
-    if (!this.supersonic && mach >= 1) {
+    // На первом уровне барьер не берём: рывок случится, когда нажмут Shift
+    const mach = this.calm ? 0 : this.speed / MACH;
+    // В космосе и в дуэли с генералом вместо звукового удара — рывок (ниже)
+    const inSpace = !W.planetMap.active && this.pos.y > (SPACE.atmosphere + SPACE.spaceAlt) / 2;
+    const duel = !W.planetMap.active && W.boss?.stage === 'duel';
+    if (!this.supersonic && mach >= 1 && (inSpace || duel)) {
+      this.supersonic = true;
+      if (this.pos.y - this.groundY < 60) W.impact?.(this.center.clone(), 70, 18);
+    } else if (!this.supersonic && mach >= 1) {
       this.supersonic = true;
       const dir = this.vel.clone().normalize();
       W.effects.shockwave(this.center.clone(), { type: 'disc', dir, radius: 70, life: 0.9, opacity: 1 });
@@ -308,6 +317,12 @@ export class Player {
       if (!W.boss?.fightOn) W.toast?.('SONIC BOOM');
       if (this.pos.y - this.groundY < 60) W.impact?.(this.center.clone(), 70, 18);
     } else if (this.supersonic && mach < 0.9) this.supersonic = false;
+
+    // Космос: удар и рывок, когда нажали W + Shift (ступень 1) или W + Shift + F (ступень 4).
+    // В дуэли с генералом — на каждой ступени (Shift, +E, +Q, +F), и в космосе, и над Землёй
+    const stage = this.boosting && input.boostK == null ? input.gear + 1 : 0;
+    if (stage > this.gearPrev && P.gearKick && (duel || (inSpace && (stage === 1 || stage === 4)))) this.gearKick(stage, camDir);
+    this.gearPrev = stage;
 
     // Ударная волна сверхзвукового полёта у земли выбивает стёкла в соседних зданиях
     this.boomT -= dt;
@@ -347,6 +362,20 @@ export class Player {
     W.audio?.setCharge(ck);
     if (ck > 0.3) W.effects.shake(ck * ck * dt * 0.8);
     if (ck > 0 && Math.random() < ck * 0.8) W.sparks.burst(_cp, 1, { size: [0.2, 0.5], speed: 3, life: [0.2, 0.4], color: 0xffc860 });
+  }
+
+  // Рывок сверхскорости: в космосе на W + Shift и W + Shift + F, в дуэли — все ступени везде. Волна за спиной, вспышка, экран «врезается», низкий удар.
+  // Камера не трясётся — рывок даёт угол обзора и размытие
+  gearKick(gear, camDir) {
+    const W = this.world, k = [0, 0.6, 0.75, 0.9, 1][gear] * P.gearKick, c = this.center.clone();
+    const dir = this.vel.lengthSq() > 1 ? this.vel.clone().normalize() : camDir.clone();
+    W.effects.shockwave(c.clone().addScaledVector(dir, -6), { type: 'disc', dir, radius: 90 + 90 * k, life: 0.7, opacity: 1, color: 0xcfe4ff });
+    W.effects.shockwave(c.clone(), { type: 'sphere', radius: 50 + 40 * k, life: 0.5, opacity: 0.8, color: 0xcfe4ff });
+    W.effects.flash(c, 30 + 30 * k);
+    W.effects.impactFX(0.7 + 0.3 * k, null, 0.35 + 0.35 * k, 10 + 10 * k);
+    W.effects.ghost(this.root);
+    W.audio?.boom(0.8 + 0.4 * k);
+    W.audio?.whoosh(0.6 + 0.4 * k);
   }
 
   // Удар: момент попадания и конец анимации
@@ -414,18 +443,21 @@ export class Player {
     wish.normalize();
     const boosting = input.boost && input.moveZ > 0;
     this.boosting = boosting;
-    // W + Q: лёгкое ускорение — плавно до P.cruiseSpeed и так же плавно обратно
-    const cruise = !boosting && input.cruise && input.moveZ > 0;
-    if (cruise) this.cruising = true; else if (boosting) this.cruising = false;
-    this.cruiseOn = cruise;
-    // На карте планеты высота мира огромна, но это не космос: скорость как в атмосфере, без гипера
+    // Первый уровень (W + E / Q / F): плавно до своей скорости и так же плавно обратно
+    const cruise = !boosting && input.gear > 0 && input.moveZ > 0;
+    // На карте планеты высота мира огромна, но это не космос: скорости как в атмосфере
     const onMap = this.world.planetMap.active;
     const spaceK = onMap ? 0 : smoothstep(SPACE.atmosphere, SPACE.spaceAlt, this.pos.y);
-    // Уровни ускорения: Shift → Shift+E (гипер) → Shift+Q (третий) → Shift+F (четвёртый)
+    const cruiseK = lerp(1, P.spaceCruiseK, spaceK);
+    const cruiseSpeed = cruise ? P.cruiseSpeeds[input.gear] * cruiseK : 0;
+    if (cruise) this.cruising = true; else if (boosting) this.cruising = false;
+    this.cruiseOn = cruise;
+    // Первый уровень — просто ускорение: без звукового барьера, конуса и гиперпозы (их даёт только Shift)
+    this.calm = cruise || (this.cruising && speed <= P.cruiseSpeeds[3] * cruiseK + 5);
+    // Второй уровень: W + Shift → +E (×8) → +Q (×40) → +F (×200)
     // С камеры уровень плавный: 40^k (k от правой руки)
-    const hyper = !boosting || onMap ? 1 : input.boostK != null ? Math.pow(P.warpMul, input.boostK)
-      : input.warp ? P.warpMul : input.ultra ? P.ultraMul : input.hyper ? P.hyperMul : 1;
-    const target = boosting ? lerp(P.boostSpeed, P.spaceBoostSpeed, spaceK) * hyper : cruise ? P.cruiseSpeed : P.flySpeed * wl;
+    const hyper = !boosting ? 1 : input.boostK != null ? Math.pow(P.handMul, input.boostK) : P.gearMul[input.gear] || 1;
+    const target = boosting ? lerp(P.boostSpeed, P.spaceBoostSpeed, spaceK) * hyper : cruise ? cruiseSpeed : P.flySpeed * wl;
 
     if (speed < 90 && !boosting && !cruise) {
       // Медленный полёт: плавно ведём вектор скорости
@@ -442,7 +474,7 @@ export class Player {
 
     if (angle > 1.9) {
       // Резкий разворот назад: сначала воздушное торможение, разворот — когда скорость упадёт
-      ns = Math.max(0, speed - this.brakeDecel(speed, rho) * 1.3 * dt);
+      ns = Math.max(0, speed - this.brakeDecel(speed, rho) * lerp(1.3, P.spaceStopK, spaceK) * dt);
       this.braking = true;
     } else {
       // Поворот ограничен перегрузкой: чем выше скорость, тем шире дуга (заносы)
@@ -455,18 +487,21 @@ export class Player {
         dir.copy(newDir);
       }
       // Разгон / сброс к целевой скорости
-      if (speed > target && this.cruising && speed <= P.cruiseSpeed + 5) {
-        // Отпустили W + Q: скорость уходит так же мягко, как набиралась
-        ns = Math.max(damp(speed, target, P.cruiseAccel, dt), speed - P.cruiseMaxAccel * dt);
+      if (speed > target && this.cruising && speed <= P.cruiseSpeeds[3] * cruiseK + 5) {
+        // Отпустили первый уровень или перешли на ступень ниже: скорость уходит так же мягко, как набиралась
+        ns = Math.max(damp(speed, target, P.cruiseAccel, dt), speed - P.cruiseMaxAccel * cruiseK * dt);
       } else if (speed > target) {
         // Отпустили ускорение (или гиперскорость): быстро сбрасываем скорость
         const brake = this.brakeDecel(speed, rho);
         ns = Math.max(target, speed - brake * dt);
       } else {
         ns = damp(speed, target, boosting && speed < target ? P.boostAccel : cruise ? P.cruiseAccel : 1.4, dt);
-        if (cruise) ns = Math.min(ns, speed + P.cruiseMaxAccel * dt);
+        if (cruise) ns = Math.min(ns, speed + P.cruiseMaxAccel * cruiseK * dt);
       }
       if (boosting) ns = Math.max(ns, Math.min(target, speed + (140 + spaceK * 1500) * hyper * dt));
+      // +E и +Q набирают скорость быстро, +F рвёт с места
+      const rush = !boosting || input.boostK != null ? 0 : input.gear === 3 ? lerp(P.warpRush, P.spaceWarpRush, spaceK) : P.gearRush[input.gear];
+      if (rush) ns = Math.max(ns, Math.min(target, speed + target / rush * dt));
       // Крутой вираж на скорости стоит энергии
       ns -= ns * 0.12 * Math.min(1, angle) * dt * rho;
     }
@@ -584,6 +619,11 @@ export class Player {
         }
       }
 
+      // Горы: на таранной скорости герой прорубает себе проход — и тому, кого несёт перед собой
+      const sp = this.vel.length();
+      // Отвесное пике не бурит шахту: герой бьётся о склон, и удар оставляет воронку (groundImpact)
+      const dive = -this.vel.y > 0.8 * Math.hypot(this.vel.x, this.vel.z);
+      if (sp >= P.ramSpeed && !this.grounded && !dive && Math.min(_p0.y, this.pos.y) < 9000) W.terrainFX?.ram(_p0, this.pos, sp);
       // Земля / крыша под ногами (или верх Луны / планеты)
       this.groundY = city.groundHeightAt(this.pos.x, this.pos.z, this.pos.y);
       this.onBody = null;
@@ -846,6 +886,8 @@ export class Player {
     const W = this.world;
     const r = P.slamRadius * (0.4 + 0.6 * k);
     if (point.y < 1) W.effects.crater(point, 10 + 22 * k);
+    // В горах — воронка в самом склоне
+    if (!this.onBody && !W.planetMap.active) W.terrainFX?.crater(point, 180 + 180 * k, 20 + 60 * k);
     W.effects.shockwave(point.clone().setY(point.y + 0.6), { type: 'ring', radius: r * 2.2, life: 0.9, opacity: 0.9 });
     W.effects.shockwave(point, { type: 'sphere', radius: r * 1.1, life: 0.6, opacity: 0.35 });
     W.debris.explode(point, r * 1.6, 25 + 45 * k);
@@ -1007,7 +1049,7 @@ export class Player {
     a.roll = this.roll || 0;
     a.gust = smoothstep(30, 400, speed);
     a.climb = speed > 1 ? this.vel.y / speed : 0;
-    a.hyper = damp(a.hyper || 0, smoothstep(1200, 2600, speed), 3, dt);   // гипер (Shift+E) и выше
+    a.hyper = damp(a.hyper || 0, this.calm ? 0 : smoothstep(1200, 2600, speed), 3, dt);   // гипер (W+Shift+E) и выше
     // Взгляд за камерой: угол между направлением камеры и лицом героя
     const fz = this.facing.x * camDir.x + this.facing.z * camDir.z;
     const fx = this.facing.z * camDir.x - this.facing.x * camDir.z;
