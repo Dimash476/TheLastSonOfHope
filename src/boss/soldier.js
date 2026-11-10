@@ -6,6 +6,11 @@ import { lerp } from '../utils.js';
 // стреляют из наручей с дистанции. Несколько ударов — и солдат выходит из боя.
 
 const _d = new THREE.Vector3(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
+// Тяжесть волны: солдат держит серию из четырёх ударов, бьёт и стреляет больнее и чаще
+const SOLDIER_HP = 170;
+const MELEE_DMG = 8, BOLT_DMG = 2.5;
+const BOLT_GAP = 0.45;   // с между выстрелами всего отряда
+const LUNGE_GAP = [3, 3];   // с между бросками в ближний бой: от и плюс случайно до
 
 export class Soldier extends Kin {
   constructor(inv, index) {
@@ -18,7 +23,7 @@ export class Soldier extends Kin {
   // Стоит в строю на месте слот
   stand(at, face) {
     this.reset();
-    this.hp = 100;
+    this.hp = SOLDIER_HP;
     this.state = 'form';
     this.slot = at.clone();
     this.place(at, face);
@@ -198,7 +203,7 @@ export class Soldier extends Kin {
       I.meleeSlots--;
       this.state = 'lunge';
       this.lT = 0;
-      this.lungeT = 4 + Math.random() * 5;
+      this.lungeT = LUNGE_GAP[0] + Math.random() * LUNGE_GAP[1];
       return;
     }
     // Выстрел из наруча: рука вытягивается, через миг сгусток летит с упреждением
@@ -212,11 +217,11 @@ export class Soldier extends Kin {
       this.fireT = 1.8 + Math.random() * 2.8;
       // Огонь по очереди: иначе десять стволов разом просто не дают играть
       if (dist < 260 && I.boltCd <= 0) {
-        I.boltCd = 0.6;
+        I.boltCd = BOLT_GAP;
         this.model.fistWorldPos('R', _v);
         _v2.copy(hero.center).addScaledVector(hero.vel, dist / 260 * 0.7).sub(_v).normalize();
         _v2.x += (Math.random() - 0.5) * 0.05; _v2.y += (Math.random() - 0.5) * 0.05; _v2.z += (Math.random() - 0.5) * 0.05;
-        I.bolts.fire(_v, _v2.normalize(), 260, 1.5);
+        I.bolts.fire(_v, _v2.normalize(), 260, BOLT_DMG);
       }
     }
   }
@@ -236,7 +241,7 @@ export class Soldier extends Kin {
     this.vel.copy(this.aim).multiplyScalar(Math.max(90, dist * 7));
     if (dist < 2.8 || this.lT > 0.9) {
       this.startPunch(0);
-      if (dist < 3.4) I.meleeHit(this, 5, 34);
+      if (dist < 3.4) I.meleeHit(this, MELEE_DMG, 34);
       this.state = 'fight';
       I.meleeSlots++;
       this.vel.multiplyScalar(0.15);

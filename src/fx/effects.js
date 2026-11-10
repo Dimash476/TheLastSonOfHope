@@ -71,6 +71,12 @@ export class Effects {
     this.cone = new THREE.Mesh(coneGeo, this.coneMat);
     this.cone.visible = false;
     this.cone.renderOrder = 8;
+    this.conePeak = 0;
+    // Камера вплотную к герою (удар одним кадром во Вторжении) оказывается внутри конуса: он лёг бы пеленой на полкадра.
+    // Где камера, известно только к отрисовке: кадр сцены ставит её после эффектов
+    this.cone.onBeforeRender = (r, s, cam) => {
+      this.coneMat.uniforms.uOpacity.value = this.conePeak * 0.55 * smoothstep(3.5, 6, cam.position.distanceTo(this.cone.position));
+    };
     scene.add(this.cone);
 
     // ---------- Линии скорости (в пространстве камеры) ----------
@@ -299,7 +305,7 @@ export class Effects {
     }
     const m = speed / MACH;
     const peak = player.captured || player.calm ? 0 : smoothstep(0.85, 1.0, m) * (1 - smoothstep(1.05, 1.6, m) * 0.75);
-    this.coneMat.uniforms.uOpacity.value = peak * 0.55;
+    this.conePeak = peak;
     this.coneMat.uniforms.uTime.value = this.time;
     this.cone.visible = peak > 0.01;
     if (this.cone.visible) {

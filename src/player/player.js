@@ -60,6 +60,8 @@ export class Player {
     this.boosting = false;
     this.slowmo = 0;     // замедление времени (читает главный цикл)
     this.knockT = 0;     // отброшен ударом босса: управление ненадолго потеряно
+    this.knockDrag = undefined;   // сопротивление воздуха в отбросе (задаёт сцена; по умолчанию 1,1)
+    this.downK = 0;      // лежит без сил (0..1): позу и высоту тела ведёт сцена вместе с poseQ
     this.reel = newReel();   // как тело отзывается на удар
     this.blow = null;        // удар сцены: { side, f, k, pitch }
     this.poseQ = null;       // корпус ведёт сцена, а не полёт
@@ -242,7 +244,7 @@ export class Player {
       // Отброшен ударом: летит по инерции, кувыркаясь; управление вернётся через миг
       this.knockT -= dt;
       this.vel.y -= 9.81 * 2 * dt;
-      this.vel.multiplyScalar(Math.exp(-1.1 * dt));
+      this.vel.multiplyScalar(Math.exp(-(this.knockDrag ?? 1.1) * dt));
     } else if (this.slamming) {
       // ввод игнорируется — летим вниз
     } else if (this.grounded) {
@@ -910,7 +912,8 @@ export class Player {
     if (this.poseQ) {
       this.quat.copy(this.poseQ);
       this.flyK = 0;
-      this.root.position.copy(this.pos).addScaledVector(UP, 1.0);
+      // Лежит на земле: тело опускается к ней
+      this.root.position.copy(this.pos).addScaledVector(UP, 1.0 - 0.82 * this.downK);
       this.root.quaternion.copy(this.quat);
       return;
     }
@@ -1024,6 +1027,9 @@ export class Player {
     this.stepIdx = step;
     this.landT = Math.max(0, this.landT - dt);
     a.land = damp(a.land || 0, this.landT > 0.25 && this.grounded ? 1 : 0, this.landT > 0.25 ? 18 : 5, dt);
+    // Лежит: колено подтягивается, только когда он уже поднимается
+    a.downed = this.downK;
+    if (this.downK > 0) a.land = Math.min(a.land, 1 - this.downK);
     a.bob = air * (1 - this.flyK) * Math.sin(performance.now() * 0.002) * 0.06;
 
     const pitch = Math.asin(clamp((this.lockDir || camDir).y, -1, 1));

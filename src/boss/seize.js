@@ -223,6 +223,7 @@ export class Seize {
     const I = this.inv, P = I.player;
     this.throwAim(this.throwDir);
     P.blow = { side: 'R', f: 1.75, k: 1, pitch: 0, kind: 'straight' };
+    P.punchSide = 'R';   // бросок шёл правой: следующий удар — левой
     P.poseQ = P.quat.clone();
     I.fx.play('swing', { gain: 0.95, rate: 0.8 });
     this.release(false);

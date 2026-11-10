@@ -13,7 +13,7 @@ import { BattleFX } from './battlefx.js';
 import { spaceK } from './kin.js';
 import { reelHit } from '../player/model.js';
 import { PLAYER as PC } from '../config.js';
-import { clamp, lerp } from '../utils.js';
+import { clamp, lerp, smoothstep } from '../utils.js';
 
 // Режим «Вторжение»: предупреждение → корабль входит в атмосферу → десант и генерал спускаются →
 // переговоры → бой с десантом → дуэль с генералом Ксаргом: сначала он тащит героя в центр города,
@@ -25,12 +25,25 @@ const FACE = new THREE.Vector3(420, 0, 1180).normalize();   // строй смо
 const ARRIVE = 20;      // с: от края космоса до зависания над парком
 const WARN_T = 11;
 const SOLDIERS = 10;
-const WAVE_GOAL = 6;    // столько солдат надо вывести из боя: дальше генерал отзывает остальных
+const WAVE_GOAL = 9;    // столько солдат надо вывести из боя: дальше генерал отзывает остальных
+const WAVE_FIRST = 5;   // столько вступают в бой сразу; дальше по одному
+const WAVE_MAX = 240;   // с: дольше волна не тянется, генерал выходит сам
 const HERO_HP = 500;    // в этом режиме герой держит впятеро больше, чем в бою с Колоссом
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _p = new THREE.Vector3(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), _r = new THREE.Vector3();
+const _q = new THREE.Quaternion();
 const ARENA_R = 620;    // м от центра города: ближе этого бой никуда не тянем
+// Бросок во вступлении: полёт, удары о землю, лежит, поднимается (с)
+const FLUNG = {
+  drag: 0.25,      // сопротивление воздуха в полёте (обычный отброс — 1,1)
+  lateDrag: 2.2,   // после fly: долетает и ложится, а не уносится из города
+  fly: 2.8, flyMax: 5,
+  hopMin: 10, hopK: 0.45, hopMax: 21,   // от земли подбрасывает, каждый раз ниже
+  rub: 0.8,        // трение о землю
+  restV: 28,       // медленнее — ложится
+  lie: 1.6, rise: 1.1, kneel: 0.9,
+};
 
 const ALERT = [
   'ПЕРЕХВАТ СВЯЗИ · ОРБИТАЛЬНЫЙ МОНИТОРИНГ',
@@ -108,6 +121,8 @@ export class Invasion {
       P.grounded = true;
       P.landT = 0.8;
     };
+    this.flung = null;
+    this.lieHero = () => this.lie();
     window.addEventListener('keydown', (e) => {
       if (e.code !== 'Tab' || !this.active || !this.fightOn) return;
       this.softLock = !this.softLock;
@@ -179,6 +194,9 @@ export class Invasion {
     P.driven = null;
     P.lockDir = null;
     P.captured = null;
+    this.flung = null;
+    P.knockDrag = undefined;
+    P.downK = 0;
     this.camRig.focus = this.focus;
     this.camRig.shot = null;
     this.chain.reset();
@@ -231,6 +249,9 @@ export class Invasion {
     P.blow = null;
     P.poseQ = null;
     P.knockT = 0;
+    this.flung = null;
+    P.knockDrag = undefined;
+    P.downK = 0;
     this.world.audio?.setHeavy?.(false);
     if (P.captured === this.xarg) P.captured = null;
     P.driven = null;
@@ -455,7 +476,7 @@ export class Invasion {
     this.engageT = 0;
     this.engaged = 0;
     this.meleeSlots = 2;
-    this.engageNext(4);
+    this.engageNext(WAVE_FIRST);
     this.theme.start('wave');
     this.el.ui.classList.remove('hidden');
     this.el.hero.classList.remove('hidden');
@@ -542,6 +563,14 @@ export class Invasion {
     if (r < ARENA_R || p.y > 2000 || spaceK(p.y) > 0) return dir;
     _r.set(-p.x, 0, -p.z).normalize();
     return dir.addScaledVector(_r, clamp((r - ARENA_R) / 800, 0, 1) * k).normalize();
+  }
+
+  // Герой таранит корабль: уже в пролёте сквозь корпус или борт впереди ближе, чем полсекунды пути
+  ramsShip(sp) {
+    const S = this.ship;
+    if (S.state !== 'hover') return false;
+    if (S.passT > 0) return true;
+    return !!S.rayHit(this.heroC, _v2.copy(this.player.vel).divideScalar(sp), sp * 0.5);
   }
 
   // Герой на скорости прошёл сквозь здание
@@ -633,6 +662,124 @@ export class Invasion {
       this.say('Сын Ксаррона умер на чужой земле. Как и его мать.', 3, true);
       this.theme.finish(false);
     }
+  }
+
+  // ---------------------------------------------------------------- брошен во вступлении
+  // Генерал швырнул героя через город: тот долго летит, ломает дома, бьётся о землю и подскакивает, кувыркаясь.
+  // Лёг — лежит без сил, потом поднимается на колено и встаёт. Это ещё сцена: ни рывок, ни полёт её не прерывают
+  startFlung(vel) {
+    const P = this.player;
+    // Скорость броска как есть: hurtHero вдали от центра оставляет от неё только направление (arenaDir)
+    P.vel.copy(vel);
+    this.flung = { t: 0, phase: 'fly', vy: P.vel.y, q0: new THREE.Quaternion(), lieQ: new THREE.Quaternion(), upQ: new THREE.Quaternion(), face: new THREE.Vector3() };
+    P.knockT = Math.max(P.knockT, 0.3);
+    P.knockDrag = FLUNG.drag;
+    this.fx.cineFor(FLUNG.flyMax);
+  }
+
+  // До хода героя: в полёте он в отбросе; запоминаем, с какой скоростью он идёт к земле
+  flungPre() {
+    const F = this.flung, P = this.player;
+    if (F.phase !== 'fly') return;
+    if (P.driven || P.captured || this.heroDown) { this.endFlung(); return; }
+    P.knockT = Math.max(P.knockT, 0.3);
+    F.vy = P.vel.y;
+  }
+
+  flungTick(realDt) {
+    const F = this.flung, P = this.player;
+    F.t += realDt;
+    if (F.phase !== 'fly') {
+      if (P.driven !== this.lieHero || this.heroDown) this.endFlung();
+      return;
+    }
+    const low = P.pos.y - P.groundY < 0.4, hs = Math.hypot(P.vel.x, P.vel.z);
+    if (low) {
+      // Земля бьёт и подбрасывает, с каждым разом ниже
+      if (F.vy < -FLUNG.hopMin) {
+        P.vel.y = Math.min(-F.vy * FLUNG.hopK, FLUNG.hopMax);
+        this.flungHit(clamp(-F.vy / 120, 0.3, 1));
+        F.vy = 0;
+      }
+      const rub = Math.exp(-FLUNG.rub * realDt);
+      P.vel.x *= rub;
+      P.vel.z *= rub;
+    }
+    if (F.t > FLUNG.fly) P.knockDrag = FLUNG.lateDrag;
+    if ((low && hs < FLUNG.restV && P.vel.y <= 0) || F.t > FLUNG.flyMax) {
+      if (P.pos.y - P.groundY < 3) this.lieDown();
+      else this.endFlung();
+    }
+  }
+
+  flungHit(k) {
+    const P = this.player, W = this.world, p = P.pos.clone();
+    W.effects.crater(p, 3 + 4 * k);
+    W.dust.burst(_p.copy(p).setY(p.y + 0.5), Math.round(12 + 16 * k), { size: [3, 8], speed: 10 + 16 * k, life: [0.8, 2], flat: true });
+    W.debris.explode(p, 4 + 6 * k, 12 + 14 * k);
+    W.impact?.(p, 10, 10 + 20 * k);
+    reelHit(P.reel, 0.6 + 0.4 * k, -1);
+    this.fx.play('hit1', { gain: 0.55 + 0.35 * k, pos: p, rate: 0.7 }) || W.audio?.concrete(k, p);
+  }
+
+  // Лёг лицом вверх, головой туда, куда несло
+  lieDown() {
+    const F = this.flung, P = this.player;
+    F.phase = 'lie';
+    F.t = 0;
+    F.face.set(-P.vel.x, 0, -P.vel.z);
+    if (F.face.lengthSq() < 1) F.face.copy(P.facing);
+    F.face.normalize();
+    F.upQ.setFromAxisAngle(UP, Math.atan2(F.face.x, F.face.z));
+    F.lieQ.copy(F.upQ).multiply(_q.setFromAxisAngle(_v.set(1, 0, 0), -Math.PI / 2 * 0.98));
+    P.knockT = 0;
+    P.knockDrag = undefined;
+    P.landT = 0;
+    P.vel.set(0, 0, 0);
+    P.poseQ = P.quat.clone();
+    P.driven = this.lieHero;
+  }
+
+  // player.driven, пока лежит и поднимается
+  lie() {
+    const F = this.flung, P = this.player, rdt = this.realDt;
+    if (!F) { P.driven = null; P.poseQ = null; P.downK = 0; return; }
+    P.vel.set(0, 0, 0);
+    P.knockT = 0;
+    P.grounded = true;
+    P.falling = false;
+    this.chain.keepAbove(P);
+    P.pos.y = P.groundY;
+    if (F.phase === 'lie') {
+      P.poseQ.slerp(F.lieQ, 1 - Math.exp(-9 * rdt));
+      P.downK = Math.min(1, P.downK + rdt / 0.25);
+      if (F.t < FLUNG.lie) return;
+      // Приходит в себя: поворачивается и встаёт на колено
+      F.phase = 'rise';
+      F.t = 0;
+      F.q0.copy(P.poseQ);
+      P.landT = FLUNG.rise + FLUNG.kneel;
+    }
+    const u = smoothstep(0, 1, F.t / FLUNG.rise);
+    P.poseQ.copy(F.q0).slerp(F.upQ, u);
+    P.downK = 1 - u;
+    if (F.t >= FLUNG.rise) this.endFlung();
+  }
+
+  endFlung() {
+    const P = this.player, X = this.xarg, F = this.flung;
+    this.flung = null;
+    P.knockDrag = undefined;
+    P.downK = 0;
+    if (P.driven === this.lieHero) {
+      P.driven = null;
+      P.poseQ = null;
+      P.quat.copy(F.upQ);
+      P.facing.copy(F.face);
+    }
+    // Генерал ждал, пока он поднимется
+    if (X && X.state === 'recover') X.recoverT = Math.min(X.recoverT, 0.6);
+    if (X) X.cd.grab = Math.max(X.cd.grab, 4);
   }
 
   meleeHit(kin, dmg, knockSpeed) {
@@ -857,6 +1004,7 @@ export class Invasion {
     this.realDt = dt;
     if (!this.active || !this.fightOn || !this.pool) return;
     const P = this.player, Z = this.seize;
+    if (this.flung) this.flungPre();
     this.flyAway(input);
     if (Z.holding) {
       // Цель в руке: R отпускает, ЛКМ или B швыряет, F раскручивает. Заряжать удар нечем: рука занята
@@ -874,7 +1022,7 @@ export class Invasion {
     if (input.punch && (!P.driven || P.driven === this.chain.driven) && !P.captured && !P.held && this.chain.press(input)) input.punch = false;
     this.chain.tick(dt);
     this.recoverCd -= dt;
-    if (input.dash && P.knockT > 0 && this.recoverCd <= 0 && !P.driven && !P.captured && !this.heroDown) {
+    if (input.dash && P.knockT > 0 && this.recoverCd <= 0 && !P.driven && !P.captured && !this.heroDown && !this.flung) {
       this.recoverCd = 1.2;
       P.knockT = 0;
       P.dashCd = 0;
@@ -888,7 +1036,7 @@ export class Invasion {
     const P = this.player, X = this.xarg, Z = this.seize, C = this.chain;
     const fly = input.boost && input.moveZ > 0, edge = fly && !this.flyHeld;
     this.flyHeld = fly;
-    if (!fly || this.heroDown || this.finale.on || this.story.lock || this.story.brawlOn) return;
+    if (!fly || this.heroDown || this.finale.on || this.story.lock || this.story.brawlOn || this.flung) return;
     // Клавиши уже зажаты, а его только что ударили или схватили: миг держит, потом герой всё равно уходит
     if (P.captured === X && !X.opening && X.t > 0.35) X.breakFree();
     if (P.knockT > 0 && !P.captured && !P.driven && this.time - this.lastHurt > 0.25) P.knockT = 0;
@@ -1005,6 +1153,7 @@ export class Invasion {
     this.heroC.copy(P.pos).addScaledVector(UP, 1);
     if (this.counterT > 0) this.counterT -= realDt;
     if (P.dashT <= 0) this.dodgeLock = false;
+    if (this.flung) this.flungTick(realDt);
     // Отбросило и отпустило: резко тормозит корпусом, воздух бьёт вокруг
     const knocked = P.knockT > 0;
     if (this.wasKnocked && !knocked && !P.grounded && !P.driven && !P.captured && P.dashT <= 0 && !this.heroDown && this.fightOn) {
@@ -1066,6 +1215,8 @@ export class Invasion {
           // Он догнал героя сзади или уже обошёл: это не герой в него влетел
           _v.subVectors(k.c, this.heroC);
           if (_v.dot(P.vel) < 0 || _v.dot(P.vel) < _v.dot(k.vel)) return;
+          // Таран идёт в корабль: десантник на пути не перехватывает удар, всё достаётся кораблю
+          if (k.kind === 'soldier' && this.ramsShip(sp)) return;
           this.ramCd = 0.5;
           if (headOn) { this.clash(k, true); return; }
           const dir = P.vel.clone().normalize();
@@ -1181,7 +1332,7 @@ export class Invasion {
         if (this.duelT !== null) {
           this.duelT -= realDt;
           if (this.duelT <= 0) this.beginDuel();
-        } else if (t > 150) this.beginDuel();
+        } else if (t > WAVE_MAX) this.beginDuel();
         break;
       }
       case 'duel': {

@@ -11,9 +11,11 @@ import { clamp, damp, lerp, smoothstep } from '../utils.js';
 // Подлетать самому не надо: цель на нормальной дистанции герой находит сам. Клавиши выбирают, каким будет удар.
 // Цель ведёт себя так, как будто её и правда гонят: врезается в здания, уходит ввысь или в землю.
 //
-// Чистая ЛКМ по генералу снята иначе, одним кадром: без замедления и без замаха. Камера едет вплотную за плечом
-// героя и обходит его с креном, он на полном ходу настигает цель, кулак входит за пару кадров, рука остаётся вытянутой,
-// цель сразу уносит, и следом склейка: длинный объектив с другого конца её пути, она летит прямо на камеру.
+// Чистая ЛКМ по генералу снята иначе, одним кадром и без замедления, как на видео автора. Камера едет вплотную
+// сбоку от героя с креном, со стороны бьющей руки: герой развёрнут к ней грудью, кулак у груди, локоть отведён назад,
+// вторая рука тянется к цели, и удар идёт от корпуса прямо в цель: грудь разворачивается, рука выпрямляется. После удара камера уходит за спину,
+// а к следующему замаху выходит с другой стороны: руки чередуются, и бьющая всегда ближняя к камере.
+// Цель уносит, и следом склейка: длинный объектив с другого конца её пути, она летит прямо на камеру.
 // Клавиши (A/D, S, Пробел, C, Shift) и заряд по-прежнему дают кадры с замахом.
 
 const MAX_HITS = 6;
@@ -22,12 +24,17 @@ const RUSH = 300;              // м: с такого расстояния на�
 const SHOULDER = [18, 200];    // м: для удара плечом нужен разгон: в упор его не сделать, издалека он не долетит
 const HOLD = 0.55;             // с: столько цель успевает отлететь, прежде чем герой пойдёт за ней
 const BUF = 0.25;              // с: столько ждёт нажатие, пока герой приходит в себя
-const FILM_COIL = 0.4;         // с: кулак заведён назад ещё на подлёте, цель уже растёт в кадре
+const FILM_COIL = 0.55;        // с: кулак у груди, локоть назад ещё на подлёте, цель уже растёт в кадре
 const FILM_DRIVE = 0.12;       // с: кулак идёт к цели
+const FILM_MIN = 0.8;          // с: подлёт не короче: замах успевают увидеть, даже если цель рядом
 const FILM_LUNGE = 1.35;       // в последний миг герой бросается вперёд быстрее, чем летел, и уходит от камеры
 const FILM_HOLD = 0.25;        // с: столько цель успевает отлететь, прежде чем герой пойдёт за ней
 const FILM_CUT = 0.6;          // с: столько после удара камера летит с героем за целью, дальше склейка
 const FILM_LEAN = 1.0;         // наклон корпуса в ударе: герой не встаёт в полёте, рука идёт вдоль линии полёта
+const FILM_COIL_LEAN = 0.6;    // на замахе корпус круче, грудь отвёрнута от цели; в рывке ложится в удар
+const FILM_SIDE = 1.05;        // рад: насколько камера на замахе выходит вбок из-за спины героя: видно лицо и цель впереди
+const FILM_SWING = 0.45;       // с: быстрее камера с одной стороны на другую не переходит
+const FILM_DIST = 2.0;         // м: от камеры до героя
 // Удары серии на чистой ЛКМ. Последний — сверху или снизу, смотря куда смотрит герой
 const KINDS = ['straight', 'hook', 'straight', 'back', 'shoulder'];
 // Узор направлений: удары идут то вправо-вверх, то влево — серия не летит по прямой
@@ -273,6 +280,8 @@ export class Chain {
         if (kin.kind === 'general') kin.cd.answer = Math.max(kin.knock, 0) + 1.2;
       }
       if (this.phase === 'plow') kin.poseQ = null;
+      // Кулак уже шёл вперёд, когда оборвалось: этот удар видели
+      if (P.blow && P.blow.f > 1 && this.state === 'chase') this.commitSide();
     }
     this.kin = null;
     this.state = null;
@@ -386,18 +395,20 @@ export class Chain {
     this.coilLen = !this.big ? 0.2 : this.sup ? lerp(0.62, 0.95, this.heavyC) : this.final ? 0.68 : St.coil;
     this.driveLen = this.big ? St.drive : 0.09;
     // Руки строго по очереди: левая, правая, левая. Счёт общий с обычными ударами героя.
-    // Только боковой с A/D бьёт той рукой, которая гонит цель в эту сторону: вправо её гонит левая
+    // Только боковой с A/D бьёт той рукой, которая гонит цель в эту сторону: вправо её гонит левая.
+    // Рука засчитывается, только когда удар виден (commitSide): оборванный на подлёте не сбивает очередь
     if (this.kind === 'hook' && K.x) this.side = K.x > 0 ? -1 : 1;
     else this.side = P.punchSide === 'R' ? -1 : 1;
-    P.punchSide = this.side > 0 ? 'R' : 'L';
-    P.blow = { side: this.side > 0 ? 'R' : 'L', f: 0, k: 0, pitch: 0, kind: this.kind };
+    // Прямой по десантнику: вторая рука на замахе в защите (model.js, guarded)
+    const pose = this.film ? 'film' : !this.big && this.kind === 'straight' ? 'guarded' : this.kind;
+    P.blow = { side: this.side > 0 ? 'R' : 'L', f: 0, k: 0, pitch: 0, kind: pose };
     this.hitDir.copy(this.pickDir(kin));
     // Боковой и с разворота заходят сбоку: цель уходит от кулака, а не мимо него
     this.from.copy(this.hitDir).setY(0);
     this.flank = (this.kind === 'hook' || this.kind === 'back') && this.from.lengthSq() > 0.05;
     if (this.flank) this.from.normalize().negate();
     if (this.film) {
-      this.left = this.all = clamp(d / 280, 0.36, 1.6);
+      this.left = this.all = clamp(d / 280, FILM_MIN, 1.6);
       this.filmV = d / this.all;
       // Цель не начинает нового удара, пока он летит: прервать его может только то, что уже начато
       kin.thinkT = Math.max(kin.thinkT, this.all + 0.2);
@@ -545,8 +556,9 @@ export class Chain {
       I.theme.duck(0.65);
     }
     if (reach > FILM_DRIVE && this.phase === 'coil') {
-      b.k = Math.min(1, b.k + rdt / 0.12);
       b.f = smoothstep(0, 0.6, 1 - (reach - FILM_DRIVE) / FILM_COIL);
+      // Цель летит навстречу, и замах сжат в пару кадров: поза всё равно успевает, руки не висят
+      b.k = Math.min(1, Math.max(b.k + rdt / 0.12, b.f));
     } else {
       // Рывок: кулак вперёд, и герой уходит от камеры
       if (this.phase === 'coil') {
@@ -557,7 +569,8 @@ export class Chain {
       b.f = 1 + clamp(1 - reach / FILM_DRIVE, 0, 1);
       this.camPull = 2.4 * clamp(1 - reach / FILM_DRIVE, 0, 1);
     }
-    P.poseQ.slerp(blowQuat(_fq, _f, FILM_LEAN), 1 - Math.exp(-(this.phase === 'drive' ? 22 : 8) * rdt));
+    const drive = this.phase === 'drive';
+    P.poseQ.slerp(blowQuat(_fq, _f, drive ? FILM_LEAN : FILM_COIL_LEAN), 1 - Math.exp(-(drive ? 22 : 8) * rdt));
     if (reach <= 0.004) {
       b.f = 2;
       this.contact();
@@ -621,8 +634,14 @@ export class Chain {
   }
 
   // ---------------------------------------------------------------- удар
+  // Эта рука ударила: следующий удар пойдёт другой
+  commitSide() {
+    this.inv.player.punchSide = this.side > 0 ? 'R' : 'L';
+  }
+
   contact() {
     const I = this.inv, P = I.player, kin = this.kin, St = STAGE[this.kind], c = this.heavyC, shoulder = this.kind === 'shoulder';
+    this.commitSide();
     // Плечо бьёт всем телом: удар там, где сошлись корпуса
     const point = shoulder ? new THREE.Vector3().lerpVectors(I.heroC, kin.c, 0.55) : P.model.fistWorldPos(P.blow?.side || 'R', new THREE.Vector3());
     const dir = this.hitDir;
@@ -860,19 +879,18 @@ export class Chain {
     return out.add(_o);
   }
 
-  // Один кадр за плечом героя. Продолжая прежний, камера идёт обратно: то за спину, то почти в профиль
+  // Один кадр вплотную к герою. filmA — угол камеры от его спины: больше нуля — справа, меньше — слева.
+  // К замаху камера выходит на сторону бьющей руки. Следующий удар — другой рукой:
+  // продолжая кадр, камера проходит за спиной героя на другую сторону
   startFilmShot(take) {
     const I = this.inv, S = this.shot, kin = this.kin;
-    if (take) {
-      this.filmFrom = this.filmA;
-      this.filmTo = this.filmA > 0.75 ? 0.4 : 1.05;
-    } else {
-      this.filmFrom = 0.3;
-      this.filmTo = 1.05;
-      this.camSide = this.side;
+    if (take) this.filmFrom = this.filmA;
+    else {
+      this.filmFrom = this.side * 0.15;
       this.camT = Math.random() * 6;
       this.camD.subVectors(kin.c, I.heroC).normalize();
     }
+    this.filmTo = this.side * FILM_SIDE;
     this.filmA = this.filmFrom;
     this.camPull = 0;
     this.filmRig = true;
@@ -882,7 +900,7 @@ export class Chain {
     I.camRig.shot = S;
   }
 
-  // Камера вплотную: герой занимает полкадра, цель впереди почти по центру. Крен всё время меняется
+  // Камера вплотную: на замахе герой у края кадра, цель впереди ближе к середине. Крен в сторону камеры и всё время меняется
   placeFilmShot(rdt) {
     const I = this.inv, P = I.player, kin = this.kin, S = this.shot, D = this.camD;
     this.camT += rdt;
@@ -894,19 +912,26 @@ export class Chain {
     R.normalize();
     _o.crossVectors(R, D);
     if (this.state === 'chase' && this.phase !== 'push') {
-      const k = clamp(1 - this.left / this.all, 0, 1);
+      // На свою сторону камера выходит к началу замаха и дальше держится. Цель летит навстречу и замах короче —
+      // камера всё равно на месте, пока кулак заведён
+      const k = Math.max(clamp((this.all - this.left) / Math.max(FILM_SWING, this.all - FILM_COIL - FILM_DRIVE), 0, 1), clamp(P.blow?.f || 0, 0, 1));
       this.filmA = lerp(this.filmFrom, this.filmTo, k * k * (3 - 2 * k));
+    } else if (this.state === 'window') {
+      // Цель уносит: камера отстаёт за спину героя, он летит следом
+      this.filmA *= Math.exp(-2.2 * rdt);
     }
     // Рывок уносит героя от камеры, потом она его догоняет
     if (this.phase !== 'drive') this.camPull *= Math.exp(-5 * rdt);
     this.whip *= Math.exp(-4.5 * rdt);
-    const a = this.filmA, dist = 2.6 + this.camPull;
-    S.pos.copy(h).addScaledVector(D, -Math.cos(a) * dist).addScaledVector(R, Math.sin(a) * dist * this.camSide).addScaledVector(_o, 0.55);
-    S.look.copy(h).addScaledVector(D, lerp(30, 1.2, smoothstep(0.45, 0.95, a))).addScaledVector(_o, 0.2);
+    const a = this.filmA, dist = FILM_DIST + this.camPull, s = clamp(Math.sin(a) / Math.sin(FILM_SIDE), -1, 1);
+    this.camSide = a < 0 ? -1 : 1;
+    S.pos.copy(h).addScaledVector(D, -Math.cos(a) * dist).addScaledVector(R, Math.sin(a) * dist).addScaledVector(_o, lerp(0.55, 0.3, Math.abs(s)));
+    // Из-за спины смотрит далеко вперёд, сбоку — чуть перед героем: он у края кадра, заведённый локоть в кадре, цель ближе к середине
+    S.look.copy(h).addScaledVector(D, lerp(30, 3.3, Math.abs(s))).addScaledVector(_o, lerp(0.2, 1.0, Math.abs(s)));
     const gy = I.world.city.groundHeightAt(S.pos.x, S.pos.z, S.pos.y + 1) + 0.6;
     if (S.pos.y < gy) S.pos.y = gy;
-    S.roll = this.camSide * (0.14 + 0.26 * Math.sin(this.camT * 1.3)) + 0.015 * Math.sin(this.camT * 9) + this.whip;
-    S.fov = 55 - I.fx.zoom * 0.6;
+    S.roll = s * (0.14 + 0.26 * Math.sin(this.camT * 1.3)) + 0.015 * Math.sin(this.camT * 9) + this.whip;
+    S.fov = lerp(55, 62, Math.abs(s)) - I.fx.zoom * 0.6;
   }
 
   // Склейка: длинный объектив впереди на её пути, чуть ниже: она летит на камеру на фоне неба и растёт в кадре

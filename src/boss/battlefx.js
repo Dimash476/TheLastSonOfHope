@@ -1306,6 +1306,8 @@ export class BattleFX {
     // Цвет боя: холоднее и контрастнее, в космосе цвет возвращается
     const gradeT = fight ? 1 - smoothstep(SPACE.atmosphere * 0.5, SPACE.atmosphere, cam.y) : 0;
     this.gradeK += (gradeT - this.gradeK) * Math.min(1, realDt * 1.5);
+    // Один кадр с NaN в камере остался бы здесь навсегда, и цветокоррекция гасила бы весь экран
+    if (!Number.isFinite(this.gradeK)) this.gradeK = 0;
 
     if (!I.pool || !fight) return;
     this.slab.update(dt);

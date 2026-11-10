@@ -1061,7 +1061,8 @@ export class Xarg extends Kin {
     this.releaseHero();
     this.boosting = false;
     const dir = _v.copy(this.carryDir).multiplyScalar(0.9).setY(-0.3).normalize().clone();
-    I.hurtHero(DMG.hurl, dir.clone().multiplyScalar(lerp(620, 900, sk)), false, 0);
+    const fling = dir.clone().multiplyScalar(lerp(620, 900, sk));
+    I.hurtHero(DMG.hurl, fling.clone(), false, 0);
     this.bigHitFX(I.heroC.clone(), dir, 1.2);
     I.fx.airRing(I.heroC, dir, 30, 0.5, 0.55);
     I.fx.play('sonicBoom', { gain: 0.9 });
@@ -1077,8 +1078,10 @@ export class Xarg extends Kin {
     }
     this.startPunch(1);
     this.cd.grab = Math.max(this.cd.grab, 5);
+    // Герой летит, бьётся о город и лежит: генерал смотрит и ждёт, пока тот поднимется (Invasion.endFlung)
+    I.startFlung(fling);
     this.go('recover');
-    this.recoverT = 0.5;
+    this.recoverT = 12;
   }
 
   // Несёт героя через город на вытянутой руке и ломает им дома
