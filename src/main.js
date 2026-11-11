@@ -32,7 +32,11 @@ import { Critters } from './world/critters.js';
 import { Countryside } from './world/countryside.js';
 import { Props } from './world/props.js';
 import { Space } from './world/space.js';
-import { BlackHole } from './world/blackhole.js';
+import { BlackHole, WHITE_HOLE } from './world/blackhole.js';
+import { setRegion, regionAt } from './world/bodies.js';
+import { SPACE } from './config.js';
+import { Wormhole } from './world/wormhole.js';
+import { XARRON_GATE } from './world/portal.js';
 import { PlanetMap } from './world/planetmap.js';
 import { Trees } from './world/trees.js';
 import { Soundscape } from './soundscape.js';
@@ -41,6 +45,7 @@ import { BossBattle } from './boss/battle.js';
 import { Invasion } from './boss/invasion.js';
 import { installSunFog, createGodRaysPass, createGradePass, updateCinematic } from './fx/cinematic.js';
 import { HALF } from './world/layout.js';
+import { Galaxy } from './world/galaxy.js';
 
 // Туман со светом солнца — до создания и компиляции материалов
 installSunFog();
@@ -66,6 +71,9 @@ composer.addPass(spacePass);
 // Чёрная дыра: искривляет уже нарисованный космос (до основной сцены — герой и город поверх)
 const blackHole = new BlackHole(scene);
 composer.addPass(blackHole.pass);
+// Белая дыра — у системы Ксаррона; в нашей системе её проход выключен (и наоборот)
+const whiteHole = new BlackHole(scene, WHITE_HOLE);
+composer.addPass(whiteHole.pass);
 const mainPass = new RenderPass(scene, camera);
 mainPass.clear = false;      // не стираем цвет космоса
 mainPass.clearDepth = true;  // но глубину — стираем
@@ -154,7 +162,7 @@ const env = new Environment(scene, renderer);
 env.onThunder = () => setTimeout(() => audio.thunder(), 300 + Math.random() * 1200);
 
 const fire = new Fire(scene, dust);
-const world = { ...fx, city, fire, camera, toast: (t, d) => hud.toast(t, d) };
+const world = { ...fx, city, fire, camera, space, toast: (t, d) => hud.toast(t, d) };
 const planetMap = world.planetMap = new PlanetMap(scene, space, world);
 // Общее событие «удар/взрыв в точке»: разлетаются машины, люди, ломаются фонари
 world.impact = (point, radius, force, source) => {
@@ -186,7 +194,7 @@ const countryside = world.countryside = new Countryside(scene, world);
 // Горы ломаются как здания: таран и удар разваливают склон на глыбы, края осыпаются
 const rocks = world.rocks = new Rocks(scene, world);
 const terrainFX = world.terrainFX = new TerrainFX(world, env);
-blackHole.world = world;
+blackHole.world = whiteHole.world = world;
 world.soundscape = soundscape;
 city.onImpact = (p, r, f) => world.impact(p, r, f);
 debris.onImpact = (p, r, f) => world.impact(p, r, f);
@@ -196,6 +204,12 @@ const battle = new BossBattle(scene, world, player, hud, camera);
 const invasion = new Invasion(scene, world, player, hud, camera, camRig);
 invasion.onWarm = () => renderer.compile(scene, camera);
 planetMap.blocked = () => battle.active || invasion.active;
+// Нора к Ксаррону: открывается победой над Ксаргом; пока идёт бой, чёрная дыра ведёт себя по-старому
+const wormhole = world.wormhole = new Wormhole(world, blackHole, whiteHole);
+wormhole.blocked = planetMap.blocked;
+wormhole.build(scene, space, env);
+// Галактики: небо (полоса Млечного Пути, туманности, соседние галактики) и полёт между ними на W + Shift + Tab
+const galaxy = world.galaxy = new Galaxy(renderer, space.scene, world);
 
 city.onDestroyed = () => {
   if (city.destroyed % 25 === 0) hud.toast(`${city.destroyed} ЗДАНИЙ`);
@@ -253,11 +267,26 @@ function enterMode(m) {
   if (m === 'boss') { resetWorld(true); battle.start(); }
   else if (m === 'invasion') { resetWorld(true); invasion.start(); }
   else if (mode === 'boss' || mode === 'invasion') resetWorld(true);
+  setCosmos(m === 'invasion');
   mode = m;
   kbm.spinF = m === 'invasion';
 }
+// Чёрная дыра, путь к Ксаррону и галактики (W + Shift + Tab) — пока только во Вторжении: в бою и в свободном
+// полёте после победы. В Симуляторе и Битве — одна Солнечная система (решение автора: сперва доработать во Вторжении)
+let cosmos = true;
+function setCosmos(on) {
+  if (cosmos === on) return;
+  cosmos = on;
+  blackHole.off = whiteHole.off = !on;
+  galaxy.off = !on;
+  kbm.tabOK = on;
+  // Герой был у Ксаррона, в межгалактике или падал в дыру — домой, к городу
+  if (!on && (regionAt(player.pos) !== 'sol' || blackHole.fall || whiteHole.fall)) resetWorld(true);
+}
+setCosmos(false);
 function startMode(m) {
   enterMode(m);
+  wormhole.newGame();   // новая игра: коллапса нет, земные врата закрыты, пока не прилетишь через них с Ксаррона
   startPlaying();
 }
 $('mode-sim').addEventListener('click', () => startMode('sim'));
@@ -268,6 +297,14 @@ playBtn.addEventListener('click', startPlaying);
 $('end-retry').addEventListener('click', () => startMode(mode));
 $('end-menu').addEventListener('click', () => { enterMode('sim'); mode = null; showMenu('main'); });
 battle.onEnd = invasion.onEnd = (win, title, sub) => {
+  // Победа во Вторжении: без экрана итога — сразу обратно в мир. Бой закончен, город как есть, дальше свободный полёт
+  if (win && mode === 'invasion') {
+    invasion.stop();
+    mode = 'sim';
+    kbm.spinF = false;
+    hud.toast(title, 3);
+    return;
+  }
   $('end-title').textContent = title;
   $('end-sub').textContent = sub;
   $('battle-end').classList.toggle('lose', !win);
@@ -410,6 +447,9 @@ function applyQuality(i) {
   env.sun.shadow.map = null;
   bloom.enabled = q.bloom;
   blackHole.setQuality(i);
+  whiteHole.setQuality(i);
+  space.setQuality(i);
+  galaxy.setQuality(i);
   return q.name;
 }
 // Встроенная графика (Intel и т.п.) — сразу среднее качество
@@ -436,7 +476,9 @@ function setPhoto(on) {
     photo.yaw = Math.atan2(off.x, off.z);
     photo.pitch = Math.asin(THREE.MathUtils.clamp(off.y / Math.max(off.length(), 1e-3), -1, 1));
     photo.lift = 0;
-    photo.near = camera.near;
+    // Снимок — со стороны: герой целиком, с головой и плащом, даже если играли от первого лица
+    camRig.showBody(player);
+    photo.near = camRig.baseNear ?? camera.near;
   } else if (photo.near) {
     camera.near = photo.near;
     camera.updateProjectionMatrix();
@@ -498,9 +540,13 @@ window.addEventListener('keydown', (e) => {
     else hud.toast(soundscape.toggleScore() ? 'МУЗЫКА: ВКЛ' : 'МУЗЫКА: ВЫКЛ');
   }
   if (e.code === 'KeyG' && !paused) { qualityIndex = (qualityIndex + 1) % QUALITY.length; hud.toast(applyQuality(qualityIndex)); }
+  // ВРЕМЕННО, для отладки: L во Вторжении — сразу к финалу победы (потом убрать)
+  if (e.code === 'KeyL' && !paused && invasion.active && invasion.debugWin()) hud.toast('ОТЛАДКА: ФИНАЛ');
 });
 
 function resetWorld(quiet = false) {
+  // K издалека (космос, Ксаррон, межгалактика) — заодно возврат на Землю
+  const away = regionAt(player.pos) !== 'sol' || player.pos.y > SPACE.atmosphere || planetMap.active;
   city.reset();
   debris.clear();
   glass.clear();
@@ -515,13 +561,18 @@ function resetWorld(quiet = false) {
   trees.reset();
   terrainFX.reset();
   blackHole.reset();
+  whiteHole.reset();
   street.reset();
   air.reset();
   beach.reset();
   nature.reset();
   planetMap.leave();
   player.spawn();
-  if (!quiet) hud.toast('ГОРОД ВОССТАНОВЛЕН');
+  // Регион — сразу: иначе в этом же кадре «беговая дорожка» межгалактики вернула бы героя обратно
+  // и сдвинула всё небо (герой будто проваливался вниз)
+  setRegion(regionAt(player.pos));
+  galaxy.hasPrev = false;
+  if (!quiet) hud.toast(away ? 'ВОЗВРАТ НА ЗЕМЛЮ' : 'ГОРОД ВОССТАНОВЛЕН');
 }
 
 // ---------------------------------------------------------------- цикл
@@ -544,6 +595,8 @@ function frame() {
 function step(dt, active) {
   // Кадр с нулевым шагом времени пропускаем: деление на dt дало бы NaN
   if (!(dt > 1e-5)) return;
+  // В какой системе герой: наша или Ксаррона (физика, свет и космос берут тела оттуда)
+  setRegion(regionAt(player.pos));
   if (active && input.photo) setPhoto(!photo.on);
   if (active && photo.on) {
     // Фоторежим: мир стоит, крутится только камера
@@ -562,6 +615,10 @@ function step(dt, active) {
     }
     if (input.reset && mode !== 'boss' && mode !== 'invasion') resetWorld();
     if (input.toggleHelp) hud.toggleHelp();
+    if (input.toggleView) {
+      camRig.first = !camRig.first;
+      hud.toast(camRig.first ? 'Вид от первого лица' : 'Вид от третьего лица');
+    }
     if (input.cycleTime && env.cycleTime) hud.toast(env.cycleTime());
     if (input.cycleWeather && env.cycleWeather) hud.toast(env.cycleWeather());
     if (input.nextTrack) {
@@ -588,8 +645,12 @@ function step(dt, active) {
     invasion.preUpdate(input, dt);
     // Притяжение дыры — до хода героя: иначе модель встаёт на старое место, а камера уходит вперёд
     blackHole.tick(dt, player, camRig);
+    whiteHole.tick(dt, player, camRig);
+    wormhole.update(dt, player, camRig);
+    galaxy.preTick(player);
     player.update(pdt, input, camRig);
     planetMap.tick(player);
+    galaxy.postTick(dt, player, input);
     if (mode === 'boss') battle.update(gdt, dt);
     if (mode === 'invasion') invasion.update(gdt, dt, input);
     city.update(gdt);
@@ -616,13 +677,21 @@ function step(dt, active) {
   if (invasion.active) invasion.fx.applyEnv(env, scene, camera);
   planetMap.update(paused || photo.on ? 0 : dt, camera, env, player);
   space.update(dt, camera, env.sunDir, env.altitudeK, env.night, player);
+  // Небо галактик: в системах — в космосе и ночью (как звёзды), в межгалактике — всегда; звёзды-точки — только внутри галактики
+  galaxy.D.uK.value = space.uniforms.uStars.value;
+  galaxy.update(dt, camera, space.camera);
+  space.uniforms.uStars.value *= galaxy.starK;
   blackHole.update(paused ? 0 : dt, camera, space.camera, space.earthCenter, space.earthR);
-  env.setSkyHole(blackHole.skyHole(camera.position), 1 - env.night);
-  hud.markers(camera, player, !paused && !photo.on && !planetMap.active);
+  whiteHole.update(paused ? 0 : dt, camera, space.camera, space.earthCenter, space.earthR);
+  // Днём дыра — призрак сквозь небо; в коллапсе — заметнее
+  env.setSkyHole(blackHole.skyHole(camera.position), blackHole.here ? (1 - env.night) * (1 + 1.4 * blackHole.u) : 0);
+  wormhole.drone(player, paused);
+  hud.markers(camera, player, !paused && !photo.on && !planetMap.active && !blackHole.fall && !whiteHole.fall);
   // Космос рисуем, только когда небо хоть немного прозрачное
   // (и днём, если в кадре чёрная дыра — она проглядывает сквозь небо призраком)
   spacePass.enabled = env.sky.material.uniforms.uOpacity.value < 0.995 || blackHole.pass.enabled;
   blackHole.pass.enabled = blackHole.pass.enabled && spacePass.enabled;
+  whiteHole.pass.enabled = whiteHole.pass.enabled && spacePass.enabled;
   mainPass.clear = !spacePass.enabled;
   props.update(camera.position);
   city.updateView(camera.position, dt);
@@ -680,8 +749,37 @@ camRig.update(0.016, input, player, city, effects.shakeOffset);
 frame();
 
 // Для отладки из консоли
+const _look = (d) => { d.normalize(); camRig.yaw = Math.atan2(-d.x, -d.z); camRig.pitch = Math.asin(THREE.MathUtils.clamp(d.y, -1, 1)); };
 window.game = {
-  scene, camera, renderer, player, city, battle, invasion, hands, setControl, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space, planetMap, blackHole,
+  scene, camera, renderer, player, city, battle, invasion, hands, setControl, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space, planetMap, blackHole, whiteHole, wormhole, galaxy,
+  // В межгалактику: к галактике по id (снаружи, на расстоянии d её радиусов) или в точку p (координаты галактик), для проверок
+  toDeep(id = 'milky', d = 2.5, p = null) {
+    const g = galaxy.galaxies.find((x) => x.id === id);
+    const at = p ? new THREE.Vector3(...p) : g.c.clone().addScaledVector(g.B.z, g.r * d * 0.6).addScaledVector(g.B.x, g.r * d * 0.8);
+    galaxy.teleport(at, player);
+    _look(g.c.clone().sub(at));
+  },
+  // Открыть путь к Ксаррону без боя (как после победы) и закрыть обратно
+  openGate() { wormhole.unlock(); },
+  closeGate() { wormhole.lock(); },
+  // Как будто уже вернулся с Ксаррона: дыра спокойна, над Землёй врата
+  settleGate() { wormhole.settle(); },
+  // К вратам Ксаррона (снаружи, лицом к ним), для проверок
+  toGate(d = 30000) {
+    const G = XARRON_GATE;
+    player.pos.copy(G.c).addScaledVector(G.n, d);
+    player.vel.set(0, 0, 0); player.grounded = false; player.falling = false; player.onBody = player.nearBody = null;
+    setRegion(regionAt(player.pos));
+    camRig.yaw = Math.atan2(G.n.x, G.n.z); camRig.pitch = -Math.asin(G.n.y);
+  },
+  // Перенести героя в систему Ксаррона (к белой дыре или к телу по id), для проверок
+  toXarron(id) {
+    const H = WHITE_HOLE, b = space.bodies.find((x) => x.id === id);
+    if (b) player.pos.copy(b.c).add(new THREE.Vector3(0, b.r * 1.6, b.r * 2.4));
+    else player.pos.copy(H.c).addScaledVector(H.toward, H.rs * 12);
+    player.vel.set(0, 0, 0); player.grounded = false; player.falling = false; player.onBody = player.nearBody = null;
+    setRegion(regionAt(player.pos));
+  },
   // Запуск без захвата мыши (для автотестов)
   unpause() { paused = false; overlay.classList.add('hidden'); hud.show(true); },
   // Начать режим без захвата мыши (для автотестов)

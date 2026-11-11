@@ -261,6 +261,10 @@ export class Effects {
     this.impact *= Math.exp(-realDt * 5);
     this.screenFlash *= Math.exp(-realDt * 9);
     this.fovKick *= Math.exp(-realDt * 6);
+    // Страховка: NaN держался бы вечно (Math.max с NaN — NaN) и красил весь кадр чёрным
+    if (!Number.isFinite(this.impact)) this.impact = 0;
+    if (!Number.isFinite(this.screenFlash)) this.screenFlash = 0;
+    if (!Number.isFinite(this.fovKick)) this.fovKick = 0;
 
     // Волны
     for (let i = this.waves.length - 1; i >= 0; i--) {

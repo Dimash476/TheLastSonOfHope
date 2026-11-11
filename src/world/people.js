@@ -330,6 +330,8 @@ export class People {
   }
 
   update(dt, player) {
+    // Тихий город (финал боя): на руинах никого
+    if (this.calm) { this.clear(); return; }
     const city = this.world.city, focus = player.pos;
     // Рисуем только тех, кто в кадре (и всех рядом); остальные не тратят видеокарту
     this.drawN = 0;

@@ -64,6 +64,10 @@ export class Particles {
       blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
     });
 
+    // Позиции частиц хранятся во float32 относительно своего начала (origin): в мировых числах
+    // у Сатурна или Ксаррона (миллионы и миллиарды метров) пыль дрожала бы на метры и сотни метров.
+    // Новая вспышка вдали от начала переносит его к себе
+    this.origin = new THREE.Vector3();
     this.points = new THREE.Points(geo, this.material);
     this.points.frustumCulled = false;
     this.points.renderOrder = additive ? 6 : 5;
@@ -81,11 +85,13 @@ export class Particles {
     const [lmin, lmax] = opts.life || [0.5, 1.5];
     const speed = opts.speed ?? 5;
     const color = opts.color ? new THREE.Color(opts.color) : this.baseColor;
+    if (Math.abs(pos.x - this.origin.x) + Math.abs(pos.y - this.origin.y) + Math.abs(pos.z - this.origin.z) > 20000) this.rebase(pos);
+    const O = this.origin;
     for (let n = 0; n < count; n++) {
       const i = this.next;
       this.next = (this.next + 1) % this.max;
       const i3 = i * 3;
-      this.aPos[i3] = pos.x; this.aPos[i3 + 1] = pos.y; this.aPos[i3 + 2] = pos.z;
+      this.aPos[i3] = pos.x - O.x; this.aPos[i3 + 1] = pos.y - O.y; this.aPos[i3 + 2] = pos.z - O.z;
 
       let vx = Math.random() - 0.5, vy = Math.random() - 0.5, vz = Math.random() - 0.5;
       if (opts.flat) vy = Math.random() * 0.08;
@@ -115,8 +121,23 @@ export class Particles {
     }
   }
 
+  // Перенести начало координат частиц в p: живые сдвигаются, совсем далёкие (после перелёта) гаснут
+  rebase(p) {
+    const dx = this.origin.x - p.x, dy = this.origin.y - p.y, dz = this.origin.z - p.z;
+    const far = Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 1e6;
+    for (let i = 0; i < this.max; i++) {
+      if (this.maxLife[i] <= 0) continue;
+      if (far) { this.maxLife[i] = 0; this.aAlpha[i] = 0; this.aSize[i] = 0; continue; }
+      const i3 = i * 3;
+      this.aPos[i3] += dx; this.aPos[i3 + 1] += dy; this.aPos[i3 + 2] += dz;
+    }
+    this.origin.copy(p);
+    this.points.position.copy(p);
+  }
+
   update(dt) {
     const drag = Math.exp(-this.drag * dt);
+    const floor = 0.3 - this.origin.y;   // земля города (y = 0,3) в своих координатах
     for (let i = 0; i < this.max; i++) {
       const ml = this.maxLife[i];
       if (ml <= 0) continue;
@@ -126,7 +147,7 @@ export class Particles {
       const i3 = i * 3;
       this.vel[i3] *= drag; this.vel[i3 + 1] = this.vel[i3 + 1] * drag + (this.rise[i] - this.grav[i]) * dt; this.vel[i3 + 2] *= drag;
       this.aPos[i3] += this.vel[i3] * dt;
-      this.aPos[i3 + 1] = Math.max(0.3, this.aPos[i3 + 1] + this.vel[i3 + 1] * dt);
+      this.aPos[i3 + 1] = Math.max(floor, this.aPos[i3 + 1] + this.vel[i3 + 1] * dt);
       this.aPos[i3 + 2] += this.vel[i3 + 2] * dt;
       this.aSize[i] = this.size0[i] + (this.size1[i] - this.size0[i]) * Math.sqrt(t);
       this.aAlpha[i] = this.alpha0[i] * Math.min(1, t * 8) * (this.plume[i] ? 1 - t * t * t : (1 - t) * (1 - t));

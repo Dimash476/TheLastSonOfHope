@@ -93,6 +93,30 @@ export class ThirdPersonCamera {
     this.baseFov = damp(this.baseFov ?? 70, fovTarget, F?.fov ? 9 : 4, dt);
     // extraFov — толчки от ударов и «прицеливание» при зарядке
     this.camera.fov = this.baseFov + (this.extraFov || 0);
+    // От первого лица (O): глаза героя, взгляд — мышью. Голову срезает ближняя плоскость, плащ прячем.
+    // Сцены Вторжения всё равно снимаются своим кадром
+    const first = this.first && !this.shot;
+    player.firstPerson = first;
+    const cape = player.model?.cape?.mesh;
+    if (cape) cape.visible = !first;
+    // Руки в кадре ближе прежней ближней плоскости — от первого лица она ближе; голову сжимаем в точку, чтобы не лезла в кадр
+    this.baseNear ??= this.camera.near;
+    this.camera.near = first ? 0.12 : this.baseNear;
+    const head = player.model?.skinned?.bone('Head');
+    if (head) head.scale.setScalar(first ? 0.001 : 1);
+    if (first) {
+      if (head) head.getWorldPosition(_b).sub(player.pos);
+      else _b.set(0, 1.6, 0);
+      // Сглаживаем покачивание головы на бегу и в ударах
+      if (!this.eye) this.eye = _b.clone();
+      this.eye.x = damp(this.eye.x, _b.x, 18, dt);
+      this.eye.y = damp(this.eye.y, _b.y, 18, dt);
+      this.eye.z = damp(this.eye.z, _b.z, 18, dt);
+      pos.copy(player.pos).add(this.eye).addScaledVector(this.direction, 0.12).add(shake);
+      pos.y += 0.06;
+      this.camera.position.copy(pos);
+      this.camera.lookAt(pos.add(this.direction));
+    } else this.eye = null;
     // Кинематографический кадр: камера стоит там, где задумано
     if (this.shot) {
       this.camera.position.copy(this.shot.pos);
@@ -101,5 +125,12 @@ export class ThirdPersonCamera {
       this.camera.fov = this.shot.fov ?? this.camera.fov;
     }
     this.camera.updateProjectionMatrix();
+  }
+
+  // Вернуть герою голову и плащ (фоторежим снимает со стороны)
+  showBody(player) {
+    player.firstPerson = false;
+    if (player.model?.cape?.mesh) player.model.cape.mesh.visible = true;
+    player.model?.skinned?.bone('Head')?.scale.setScalar(1);
   }
 }

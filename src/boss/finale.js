@@ -65,6 +65,8 @@ export class Finale {
   }
 
   get on() { return !!this.state; }
+  // Пропустить можно, когда последний удар уже показан
+  get skippable() { return !!this.state && this.state !== 'init' && this.state !== 'strike'; }
 
   reset() {
     const I = this.inv, P = I.player;
@@ -78,6 +80,7 @@ export class Finale {
       if (I.xarg) I.xarg.anim.prop = 0;
       for (const m of I.world.effects.craters) m.material.color.setScalar(1);
     }
+    this.calm(false);
     this.state = null;
     this.$fade?.classList.remove('on');
   }
@@ -94,6 +97,13 @@ export class Finale {
     this.t = 0;
   }
 
+  // Город после боя пуст: ни машин на ходу, ни прохожих
+  calm(on) {
+    const W = this.inv.world;
+    if (W.traffic) W.traffic.calm = on;
+    if (W.people) W.people.calm = on;
+  }
+
   start() {
     const I = this.inv, P = I.player, X = I.xarg, St = I.story;
     if (I.chain.kin) I.chain.end(true);
@@ -108,6 +118,7 @@ export class Finale {
     I.el.sub.classList.add('hidden');
     I.setCine(true);
     I.slowT = 0;
+    this.calm(true);
     X.clearShot();
     X.go('scene');
     X.knock = 99;

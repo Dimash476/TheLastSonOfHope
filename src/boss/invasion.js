@@ -25,9 +25,9 @@ const FACE = new THREE.Vector3(420, 0, 1180).normalize();   // строй смо
 const ARRIVE = 20;      // с: от края космоса до зависания над парком
 const WARN_T = 11;
 const SOLDIERS = 10;
-const WAVE_GOAL = 9;    // столько солдат надо вывести из боя: дальше генерал отзывает остальных
+const WAVE_GOAL = 7;    // столько солдат надо вывести из боя: дальше генерал отзывает остальных
 const WAVE_FIRST = 5;   // столько вступают в бой сразу; дальше по одному
-const WAVE_MAX = 240;   // с: дольше волна не тянется, генерал выходит сам
+const WAVE_MAX = 150;   // с: дольше волна не тянется, генерал выходит сам
 const HERO_HP = 500;    // в этом режиме герой держит впятеро больше, чем в бою с Колоссом
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -530,6 +530,14 @@ export class Invasion {
     }
   }
 
+  // ВРЕМЕННО, для отладки (L в main.js): сразу к финалу победы, минуя бой. Потом убрать
+  debugWin() {
+    if (this.ended || this.endT !== null || this.finale.on || !this.pool || !this.xarg) return false;
+    if (this.stage !== 'duel') { this.startFight(); this.beginDuel(); }
+    this.onXargDown(_v.subVectors(this.xarg.pos, this.player.pos).setY(0).normalize().clone());
+    return true;
+  }
+
   // Генерал убит. Сцена сама скажет, когда показать итог
   onXargDown(dir) {
     if (this.endT !== null) return;
@@ -611,7 +619,11 @@ export class Invasion {
       ? 'Корабль лежит в руинах центрального парка. Десанту больше некуда возвращаться.'
       : 'Корабль ушёл на орбиту. Они знают, где ты живёшь, и они вернутся.';
     if (this.endBad) this.onEnd?.(false, 'НАМЕСТНИК', 'Земля стала колонией Ксаррона. Города больше нет, зато ты теперь здесь главный.');
-    else if (this.endWin) this.onEnd?.(true, 'ЗЕМЛЯ ВЫСТОЯЛА', `Ксарг мёртв. ${after} ${stats}`);
+    else if (this.endWin) {
+      // Победа открывает путь к Ксаррону: чёрная дыра начнёт коллапсировать
+      this.world.wormhole?.unlock();
+      this.onEnd?.(true, 'ЗЕМЛЯ ВЫСТОЯЛА', `Ксарг мёртв. ${after} ${stats}`);
+    }
     else this.onEnd?.(false, 'ГЕРОЙ ПОВЕРЖЕН', `Ксарг оказался сильнее, и город остался без защиты. ${stats}`);
   }
 
@@ -1002,6 +1014,12 @@ export class Invasion {
   // В сценах, в чужой хватке и с вещью в руках нажатие идёт туда, куда шло. Рывок выводит из отброса
   preUpdate(input, dt) {
     this.realDt = dt;
+    // Финал победы пропускается на ЛКМ (кроме самого последнего удара): сразу обратно в мир
+    if (this.active && this.endWin && !this.ended && this.finale.skippable && input.punch) {
+      input.punch = false;
+      this.finish();
+      return;
+    }
     if (!this.active || !this.fightOn || !this.pool) return;
     const P = this.player, Z = this.seize;
     if (this.flung) this.flungPre();
@@ -1177,7 +1195,7 @@ export class Invasion {
       this.meleeSlots = 2;
       for (const s of this.soldiers) {
         s.update(dt, P, cam);
-        if (s.state === 'lunge') this.meleeSlots--;
+        if (s.inMelee) this.meleeSlots--;
       }
       this.xarg.update(dt, P, cam);
       if (this.xarg.knock > 0) this.ship.collide(this.xarg, this.prevXarg, dt);

@@ -3,10 +3,17 @@ import { PLAYER as P, MACH, WORLD, SPACE } from '../config.js';
 import { newReel, tickReel, HeroModel } from './model.js';
 import { clamp, damp, lerp, smoothstep } from '../utils.js';
 import { EyeLaser } from './laser.js';
-import { BODIES, CAP_NY, nearestBody, bodyGroundAt } from '../world/bodies.js';
+import { BODIES, CAP_NY, REGION, REGIONS, nearestBody, bodyGroundAt } from '../world/bodies.js';
 
 const _qI = new THREE.Quaternion();
 const CAPE_INERTIA = 0.6;  // доля поворота тела, которую плащ «не замечает» (инерция ткани)
+// Галактический уровень (W + Shift + Tab): разгон и торможение — во столько-то раз за секунду (по логарифму)
+const GAL_RUSH_K = Math.log(P.galaxySpeed / P.spaceBoostSpeed) / P.galaxyRush;
+const GAL_BRAKE_K = Math.log(P.galaxySpeed / P.starSpeed) / P.galaxyBrake;
+// Межзвёздный (W + Shift + R) — так же, по логарифму; тормозит до скорости W + Shift + F
+const WARP_SPEED = P.spaceBoostSpeed * P.gearMul[3];
+const STAR_RUSH_K = Math.log(P.starSpeed / P.spaceBoostSpeed) / P.starRush;
+const STAR_BRAKE_K = Math.log(P.starSpeed / WARP_SPEED) / P.starBrake;
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _v = new THREE.Vector3();
@@ -58,6 +65,7 @@ export class Player {
     this.takeoffT = 0;   // присед перед взлётом
     this.dipT = 0; this.dipK = 0;   // амортизация ногами после приземления
     this.boosting = false;
+    this.galactic = false;   // W + Shift + Tab: сквозь тела, разгон и торможение — по своим правилам (fly)
     this.slowmo = 0;     // замедление времени (читает главный цикл)
     this.knockT = 0;     // отброшен ударом босса: управление ненадолго потеряно
     this.knockDrag = undefined;   // сопротивление воздуха в отбросе (задаёт сцена; по умолчанию 1,1)
@@ -251,10 +259,10 @@ export class Player {
       const wish = new THREE.Vector3().addScaledVector(camFlat, input.moveZ).addScaledVector(right, input.moveX);
       if (wish.lengthSq() > 1) wish.normalize();
       // Пока поднимается с колена — стоит на месте
-      const top = this.landT > 0.25 || this.petting ? 0 : input.boost ? P.sprintSpeed : input.gear ? P.cruiseRuns[input.gear] : input.walk ? P.walkSpeed : P.runSpeed;
-      // Человек разгоняется быстрее, чем тормозит с бега; шаг набирается мягко
+      const top = this.landT > 0.25 || this.petting ? 0 : input.boost ? P.sprintSpeed : input.gear ? P.cruiseRuns[input.gear] : P.runSpeed;
+      // Человек разгоняется быстрее, чем тормозит с бега
       const hs0 = Math.hypot(this.vel.x, this.vel.z);
-      const accel = top < hs0 ? P.groundAccel * 0.75 : top <= P.walkSpeed + 0.1 ? 5 : P.groundAccel;
+      const accel = top < hs0 ? P.groundAccel * 0.75 : P.groundAccel;
       this.vel.x = damp(this.vel.x, wish.x * top, accel, dt);
       this.vel.z = damp(this.vel.z, wish.z * top, accel, dt);
       this.vel.y = 0;
@@ -323,7 +331,7 @@ export class Player {
     // Космос: удар и рывок, когда нажали W + Shift (ступень 1) или W + Shift + F (ступень 4).
     // В дуэли с генералом — на каждой ступени (Shift, +E, +Q, +F), и в космосе, и над Землёй
     const stage = this.boosting && input.boostK == null ? input.gear + 1 : 0;
-    if (stage > this.gearPrev && P.gearKick && (duel || (inSpace && (stage === 1 || stage === 4)))) this.gearKick(stage, camDir);
+    if (stage > this.gearPrev && P.gearKick && (duel || (inSpace && (stage === 1 || stage >= 4)))) this.gearKick(stage, camDir);
     this.gearPrev = stage;
 
     // Ударная волна сверхзвукового полёта у земли выбивает стёкла в соседних зданиях
@@ -369,7 +377,8 @@ export class Player {
   // Рывок сверхскорости: в космосе на W + Shift и W + Shift + F, в дуэли — все ступени везде. Волна за спиной, вспышка, экран «врезается», низкий удар.
   // Камера не трясётся — рывок даёт угол обзора и размытие
   gearKick(gear, camDir) {
-    const W = this.world, k = [0, 0.6, 0.75, 0.9, 1][gear] * P.gearKick, c = this.center.clone();
+    // Ступени: Shift, +E, +Q, +F, +R, +Tab (без числа для ступени был NaN: вспышка и угол обзора держали экран чёрным)
+    const W = this.world, k = ([0, 0.6, 0.75, 0.9, 1, 1.2, 1.3][gear] ?? 1.3) * P.gearKick, c = this.center.clone();
     const dir = this.vel.lengthSq() > 1 ? this.vel.clone().normalize() : camDir.clone();
     W.effects.shockwave(c.clone().addScaledVector(dir, -6), { type: 'disc', dir, radius: 90 + 90 * k, life: 0.7, opacity: 1, color: 0xcfe4ff });
     W.effects.shockwave(c.clone(), { type: 'sphere', radius: 50 + 40 * k, life: 0.5, opacity: 0.8, color: 0xcfe4ff });
@@ -419,6 +428,15 @@ export class Player {
     return rho * 0.0012 * speed * speed + lerp(P.spaceBrake + P.spaceBrakeK * speed, P.flightBrake, rho);
   }
 
+  // Быстрее W + Shift + R (только после Tab) тормозим резко, в разы за кадр: до межзвёздной скорости
+  // за galaxyBrake, иначе пролетаешь мимо галактики. Ниже — обычное торможение (ns)
+  // Межзвёздную скорость (после R) так же гасим в разы за секунду, до скорости W + Shift + F
+  galaxyBrake(speed, ns, dt) {
+    if (speed > P.starSpeed) return Math.min(ns, Math.max(P.starSpeed, speed * Math.exp(-GAL_BRAKE_K * dt)));
+    if (speed > WARP_SPEED) return Math.min(ns, Math.max(WARP_SPEED, speed * Math.exp(-STAR_BRAKE_K * dt)));
+    return ns;
+  }
+
   // Физика полёта: инерция, ограничение перегрузки, сопротивление воздуха по высоте
   fly(dt, input, camDir, right) {
     const wish = new THREE.Vector3()
@@ -431,13 +449,14 @@ export class Player {
     const rho = Math.exp(-Math.max(0, this.pos.y) / 8000);
     this.braking = false;
     this.boosting = false;
+    this.galactic = false;
     this.latAccel.set(0, 0, 0);
 
     if (wl < 0.01) {
       // Без ввода: сопротивление воздуха (∝ v²) плюс «сила полёта», которой персонаж гасит скорость.
       // В космосе воздуха нет — тормозим только собственной силой (см. brakeDecel)
       const drag = this.brakeDecel(speed, rho);
-      if (speed > 0.01) this.vel.multiplyScalar(Math.max(0, speed - drag * dt) / speed);
+      if (speed > 0.01) this.vel.multiplyScalar(this.galaxyBrake(speed, Math.max(0, speed - drag * dt), dt) / speed);
       if (speed < 60) this.vel.multiplyScalar(Math.exp(-P.brakeAccel * dt));
       this.braking = speed > 150 && rho > 0.3;
       return;
@@ -456,10 +475,18 @@ export class Player {
     this.cruiseOn = cruise;
     // Первый уровень — просто ускорение: без звукового барьера, конуса и гиперпозы (их даёт только Shift)
     this.calm = cruise || (this.cruising && speed <= P.cruiseSpeeds[3] * cruiseK + 5);
-    // Второй уровень: W + Shift → +E (×8) → +Q (×40) → +F (×200)
+    // Второй уровень: W + Shift → +E (×8) → +Q (×40) → +F (×200); третий — +R, межзвёздный
     // С камеры уровень плавный: 40^k (k от правой руки)
-    const hyper = !boosting ? 1 : input.boostK != null ? Math.pow(P.handMul, input.boostK) : P.gearMul[input.gear] || 1;
-    const target = boosting ? lerp(P.boostSpeed, P.spaceBoostSpeed, spaceK) * hyper : cruise ? cruiseSpeed : P.flySpeed * wl;
+    const base = lerp(P.boostSpeed, P.spaceBoostSpeed, spaceK);
+    // Четвёртый — +Tab, галактический: своя скорость везде в космосе (из системы — сразу в галактику), в атмосфере как +F.
+    // Только что влетел в систему и Tab ещё не отпущен — как +R, иначе тут же упрёшься в край системы
+    const star = boosting && input.boostK == null && input.gear >= 4;
+    const galactic = star && input.gear === 5 && (REGION === 'deep' || this.world.galaxy?.armed !== false);
+    this.galactic = galactic;
+    const hyper = !boosting ? 1 : input.boostK != null ? Math.pow(P.handMul, input.boostK)
+      : galactic ? lerp(P.gearMul[3], P.galaxySpeed / P.spaceBoostSpeed, REGION === 'deep' ? 1 : spaceK)
+      : star ? lerp(P.gearMul[3], P.starSpeed / P.spaceBoostSpeed, spaceK) : P.gearMul[input.gear] || 1;
+    let target = boosting ? base * hyper : cruise ? cruiseSpeed : P.flySpeed * wl;
 
     if (speed < 90 && !boosting && !cruise) {
       // Медленный полёт: плавно ведём вектор скорости
@@ -476,7 +503,7 @@ export class Player {
 
     if (angle > 1.9) {
       // Резкий разворот назад: сначала воздушное торможение, разворот — когда скорость упадёт
-      ns = Math.max(0, speed - this.brakeDecel(speed, rho) * lerp(1.3, P.spaceStopK, spaceK) * dt);
+      ns = this.galaxyBrake(speed, Math.max(0, speed - this.brakeDecel(speed, rho) * lerp(1.3, P.spaceStopK, spaceK) * dt), dt);
       this.braking = true;
     } else {
       // Поворот ограничен перегрузкой: чем выше скорость, тем шире дуга (заносы)
@@ -495,15 +522,21 @@ export class Player {
       } else if (speed > target) {
         // Отпустили ускорение (или гиперскорость): быстро сбрасываем скорость
         const brake = this.brakeDecel(speed, rho);
-        ns = Math.max(target, speed - brake * dt);
+        ns = Math.max(target, this.galaxyBrake(speed, speed - brake * dt, dt));
       } else {
         ns = damp(speed, target, boosting && speed < target ? P.boostAccel : cruise ? P.cruiseAccel : 1.4, dt);
         if (cruise) ns = Math.min(ns, speed + P.cruiseMaxAccel * cruiseK * dt);
       }
-      if (boosting) ns = Math.max(ns, Math.min(target, speed + (140 + spaceK * 1500) * hyper * dt));
-      // +E и +Q набирают скорость быстро, +F рвёт с места
-      const rush = !boosting || input.boostK != null ? 0 : input.gear === 3 ? lerp(P.warpRush, P.spaceWarpRush, spaceK) : P.gearRush[input.gear];
-      if (rush) ns = Math.max(ns, Math.min(target, speed + target / rush * dt));
+      if (galactic || (star && spaceK > 0)) {
+        // Галактический и межзвёздный разгон — плавно, в разы за секунду (по логарифму): от сверхскорости
+        // до полной за galaxyRush / starRush. В атмосфере R — как +F, рвёт с места
+        if (speed < target) ns = Math.min(target, Math.max(speed, base) * Math.exp((galactic ? GAL_RUSH_K : STAR_RUSH_K) * dt));
+      } else {
+        if (boosting) ns = Math.max(ns, Math.min(target, speed + (140 + spaceK * 1500) * hyper * dt));
+        // +E и +Q набирают скорость быстро, +F рвёт с места
+        const rush = !boosting || input.boostK != null ? 0 : star ? P.starRush : input.gear === 3 ? lerp(P.warpRush, P.spaceWarpRush, spaceK) : P.gearRush[input.gear];
+        if (rush) ns = Math.max(ns, Math.min(target, speed + target / rush * dt));
+      }
       // Крутой вираж на скорости стоит энергии
       ns -= ns * 0.12 * Math.min(1, angle) * dt * rho;
     }
@@ -583,10 +616,13 @@ export class Player {
     }
     // Не улетаем в бесконечность
     // Мягкая граница полётной зоны: у края гасим только скорость «наружу»
-    const R = SPACE.flightRadius;
-    if (this.pos.length() > R) {
-      const n = this.pos.clone().normalize();
-      this.pos.setLength(R);
+    // (у каждой системы — своя зона вокруг своего центра)
+    const Rg = REGIONS[REGION], R = Rg.radius;
+    const rel = this.pos.clone().sub(Rg.origin);
+    // На краю системы с W + Shift + R или Tab — вылет в галактику (galaxy.js)
+    if (rel.length() > R && !(this.boosting && input.gear >= 4 && W.galaxy?.escape(this))) {
+      const n = rel.normalize();
+      this.pos.copy(Rg.origin).addScaledVector(n, R);
       const out = this.vel.dot(n);
       if (out > 0) this.vel.addScaledVector(n, -out);
     }
@@ -601,10 +637,13 @@ export class Player {
     } else {
       // Луна и планеты: твёрдые шары. Проверяем весь путь за кадр, а не только его конец:
       // на 360 км/с за кадр пролетаем километры и иначе проскочили бы насквозь
-      for (const B of BODIES) this.collideBody(B, _p0);
+      // На W + Shift + Tab — сквозь тела: иначе с места врезаешься в звезду или планету перед собой
+      // (у белой дыры выход смотрит прямо на звезду) и оказываешься на карте её поверхности
+      if (!(this.galactic && !this.grounded)) for (const B of BODIES) this.collideBody(B, _p0);
       // Ближайшее тело: высота над ним (для HUD), название при подлёте
-      const nb = nearestBody(this.pos), lim = Math.max(20000, nb.body.r);
-      const near = nb.alt < lim || (this.nearBody === nb.body && nb.alt < lim * 1.5) ? nb.body : null;
+      // (в межгалактике тел нет)
+      const nb = nearestBody(this.pos), lim = nb.body ? Math.max(20000, nb.body.r) : 0;
+      const near = nb.body && (nb.alt < lim || (this.nearBody === nb.body && nb.alt < lim * 1.5)) ? nb.body : null;
       if (near && near !== this.nearBody) W.toast?.(near.name.toUpperCase(), 2.2);
       this.nearBody = near;
       this.bodyAlt = nb.alt;
@@ -939,6 +978,8 @@ export class Player {
     if (this.petting) targetFacing = new THREE.Vector3(this.petting.pos.x - this.pos.x, 0, this.petting.pos.z - this.pos.z).normalize();
     else if (this.lockDir && Math.hypot(this.lockDir.x, this.lockDir.z) > 0.05) targetFacing = new THREE.Vector3(this.lockDir.x, 0, this.lockDir.z).normalize();
     else if (acting) targetFacing = camFlat;
+    // От первого лица на земле и в медленном полёте корпус повёрнут туда, куда смотришь: руки всегда перед глазами
+    else if (this.firstPerson && (this.grounded || speed < 55)) targetFacing = camFlat;
     else if (this.grounded || this.falling) targetFacing = hv.lengthSq() > 1 ? hv.clone().normalize() : this.facing;
     else targetFacing = speed > 5 && hv.lengthSq() > 4 ? hv.clone().normalize() : camFlat;
     this.facing.lerp(targetFacing, 1 - Math.exp(-12 * dt)).setY(0).normalize();
@@ -1016,6 +1057,8 @@ export class Player {
     a.dip = damp(a.dip || 0, crouch, crouch > (a.dip || 0) ? 26 : 7, dt);
     // Ускорение (Shift, рывок, гипер) — обе руки вперёд
     a.boost = damp(a.boost || 0, !this.grounded && !this.slamming && (this.boosting || this.cruiseOn || this.dashT > 0) ? 1 : 0, 6, dt);
+    // От первого лица (камера ставит firstPerson) — обе руки перед собой, кулаки на виду
+    a.fp = damp(a.fp || 0, this.firstPerson && !this.driven ? 1 : 0, 10, dt);
     // Шаги: стук, пыль, лёгкий толчок камеры на спринте (касание пяткой — фаза 0 и π)
     const step = Math.floor(a.runPhase / Math.PI);
     if (this.grounded && hs > 1 && step !== this.stepIdx) {

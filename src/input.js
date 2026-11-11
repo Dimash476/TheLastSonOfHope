@@ -11,8 +11,8 @@ export function createInputState() {
     moveZ: 0,        // -1..1  назад / вперёд
     moveY: 0,        // -1..1  вниз / вверх
     boost: false,    // сверхскорость (W + Shift)
-    gear: 0,         // ступень ускорения: 1 — E, 2 — Q, 3 — F (зажато несколько — старшая).
-                     // Без Shift — первый уровень (не быстрее W + Shift), с Shift — второй
+    gear: 0,         // ступень ускорения: 1 — E, 2 — Q, 3 — F, 4 — R, 5 — Tab (зажато несколько — старшая).
+                     // Без Shift — первый уровень (не быстрее W + Shift), с Shift — второй; R — только с Shift (межзвёздная)
     boostK: null,    // 0..1 — плавный уровень ускорения с камеры (null — уровни по клавишам)
     lookDX: 0,       // накопленное смещение камеры за кадр (пиксели)
     lookDY: 0,
@@ -33,6 +33,7 @@ export function createInputState() {
     nextTrack: false,
     interact: false, // E: действие рядом (мяч собаке, привет людям, помочь подняться)
     photo: false,    // P: фоторежим
+    toggleView: false, // O: вид от первого / третьего лица
     slowmo: false,   // V: замедление времени
     toggleControl: false, // Ctrl: управление ПК / камера
   };
@@ -55,7 +56,8 @@ export class KeyboardMouseSource {
       if (e.code === 'KeyX') state.slam = true;
       if (e.code === 'KeyK') state.reset = true;
       if (e.code === 'KeyH') state.toggleHelp = true;
-      if (e.code === 'KeyR') state.grab = true;
+      // С зажатыми W + Shift клавиша R — межзвёздный разгон, а не захват (во Вторжении R всегда захват)
+      if (e.code === 'KeyR' && (this.spinF || !e.shiftKey || !this.keys.has('KeyW'))) state.grab = true;
       if (e.code === 'KeyF' && !e.shiftKey) state.spin = true;
       if (e.code === 'KeyB') state.punch = true;
       if (e.code === 'KeyY') state.dash = true;
@@ -65,8 +67,8 @@ export class KeyboardMouseSource {
       // С зажатой W клавиша E — разгон, а не действие рядом
       if (e.code === 'KeyE' && !e.shiftKey && !this.keys.has('KeyW')) state.interact = true;
       if (e.code === 'KeyP') state.photo = true;
+      if (e.code === 'KeyO') state.toggleView = true;
       if (e.code === 'KeyV') state.slowmo = true;
-      if (e.code === 'CapsLock') state.walk = !state.walk;
     });
     window.addEventListener('keyup', (e) => {
       this.keys.delete(e.code);
@@ -127,7 +129,11 @@ export class KeyboardMouseSource {
     // Ctrl в сочетаниях не используем: в браузере Ctrl+W закрывает вкладку.
     // Во Вторжении F без Shift — раскрутка, поэтому там W + F не разгоняет (spinF ставит main.js)
     const f = k.has('KeyF') && (s.boost || !this.spinF);
-    s.gear = f ? 3 : k.has('KeyQ') ? 2 : k.has('KeyE') ? 1 : 0;
+    const r = k.has('KeyR') && s.boost && !this.spinF;
+    // Tab — галактический (во Вторжении не работает: из боя в другую галактику не улетишь;
+    // в Симуляторе и Битве галактик пока нет — tabOK ставит main.js)
+    const tab = k.has('Tab') && s.boost && !this.spinF && this.tabOK;
+    s.gear = tab ? 5 : r ? 4 : f ? 3 : k.has('KeyQ') ? 2 : k.has('KeyE') ? 1 : 0;
     s.moveY = (k.has('Space') ? 1 : 0) - (k.has('KeyC') ? 1 : 0);
     s.slamHeld = k.has('KeyX');
     s.laser = k.has('KeyZ');
@@ -285,6 +291,7 @@ export function endFrame(state) {
   state.nextTrack = false;
   state.interact = false;
   state.photo = false;
+  state.toggleView = false;
   state.slowmo = false;
   state.toggleControl = false;
 }

@@ -211,8 +211,10 @@ export class Traffic {
     const inGrid = Math.abs(focus.x) < HALF + 400 && Math.abs(focus.z) < HALF + 400 && focus.y < 3000;
     const night = this.uNight.value > 0.05;
     for (const car of this.cars) {
+      // Тихий город (финал боя): по руинам никто не ездит, остаются только обломки
+      if (this.calm && car.state === 'drive') car.state = 'none';
       if (car.state === 'none') {
-        if (inGrid && Math.random() < 0.05) this.spawnCar(car, focus);
+        if (inGrid && !this.calm && Math.random() < 0.05) this.spawnCar(car, focus);
         else { car.mesh.setMatrixAt(car.slot, _zero); if (night) this.beams.setMatrixAt(car.idx, _zero); continue; }
       }
       const far = car.pos.distanceTo(focus) > TRAFFIC.radius + 150;

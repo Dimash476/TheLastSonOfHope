@@ -548,9 +548,9 @@ export class Warship {
     W.effects.impactFX(1, p, 0.32, 14);
     this.chunks(p, dir, 14);
     I.player.hitstop = Math.max(I.player.hitstop, first ? 0.11 : 0.05);
-    I.fx.play('shipRam', { gain: first ? 1 : 0.6, pos: p }) || W.audio?.metal(1, p.clone());
-    I.fx.play('shipBlast', { gain: 0.6, pos: p });
-    I.theme.duck(0.8);
+    I.fx.play('shipRam', { gain: first ? 2.4 : 1.5, pos: p }) || W.audio?.metal(1, p.clone());
+    I.fx.play('shipBlast', { gain: 1.4, pos: p });
+    I.theme.duck(1);
     I.fx.crashZoom(first ? 9 : 5, first ? 0.28 : 0.15);
     if (fresh) I.slowFor(0.4, 0.3);
     body.vel.multiplyScalar(0.8);

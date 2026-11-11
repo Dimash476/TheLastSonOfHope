@@ -1,11 +1,15 @@
 import * as THREE from 'three';
 import { MACH, PLAYER } from './config.js';
-import { BODIES } from './world/bodies.js';
-import { BLACK_HOLE } from './world/blackhole.js';
+import { ALL_BODIES, REGION } from './world/bodies.js';
+import { BLACK_HOLE, WHITE_HOLE } from './world/blackhole.js';
+import { XARRON_GATE, EARTH_GATE } from './world/portal.js';
+import { GAL_MARKS } from './world/galaxy.js';
 
 const _p = new THREE.Vector3(), _up = new THREE.Vector3();
 const fmtKm = (m) => {
   const km = m / 1000;
+  if (km >= 1e9) return `${(km / 1e9).toFixed(km < 1e10 ? 1 : 0).replace('.', ',')} млрд км`;
+  if (km >= 1e7) return `${(km / 1e6).toFixed(km < 1e8 ? 1 : 0).replace('.', ',')} млн км`;
   return km < 10 ? `${km.toFixed(1).replace('.', ',')} км` : `${Math.round(km).toLocaleString('ru-RU')} км`;
 };
 
@@ -20,7 +24,7 @@ export class HUD {
     this.fpsAcc = 0; this.fpsFrames = 0;
     this.toastTimer = 0;
     // Метки Луны и планет в космосе: название и расстояние до поверхности
-    this.bodyMarks = [...BODIES, BLACK_HOLE].map((b) => {
+    this.bodyMarks = [...ALL_BODIES, BLACK_HOLE, WHITE_HOLE, XARRON_GATE, EARTH_GATE, ...GAL_MARKS].map((b) => {
       const el = document.createElement('div');
       el.className = 'body-marker hidden';
       el.innerHTML = `<span class="name">${b.name}</span><span class="dist"></span><div class="pin"></div>`;
@@ -37,7 +41,8 @@ export class HUD {
     const w = window.innerWidth, h = window.innerHeight;
     for (const m of this.bodyMarks) {
       const b = m.b;
-      let vis = show && player.nearBody !== b;
+      // Метки — только тел системы, где сейчас герой
+      let vis = show && b.sys === REGION && !b.hidden && player.nearBody?.id !== b.id;
       if (vis) {
         // «Перед камерой» — по знаку z в её системе (project() не годится: тела дальше far)
         vis = _p.copy(b.c).applyMatrix4(camera.matrixWorldInverse).z < 0;
@@ -50,7 +55,7 @@ export class HUD {
         const top = Math.min(y, (0.5 - _p.y * 0.5) * h);
         vis = y - top < h * 0.35;   // тело уже во весь экран — метка не нужна
         m.el.style.transform = `translate(${x.toFixed(1)}px, ${(top - 6).toFixed(1)}px) translate(-50%, -100%)`;
-        const txt = fmtKm(player.pos.distanceTo(b.c) - b.r);
+        const txt = fmtKm(Math.max(0, player.pos.distanceTo(b.c) - b.r));
         if (txt !== m.last) { m.dist.textContent = txt; m.last = txt; }
       }
       m.el.classList.toggle('hidden', !vis);
@@ -72,21 +77,28 @@ export class HUD {
 
   update(dt, player, city) {
     const speed = player.vel.length();
-    // Скорость в м/с; от 1000 м/с — в км/с
+    // Скорость в км/ч; от 1000 м/с — в км/с
     if (speed < 1000) {
-      this.el.speed.textContent = Math.round(speed);
-      this.el.speedUnit.textContent = 'м/с';
-    } else {
+      this.el.speed.textContent = Math.round(speed * 3.6);
+      this.el.speedUnit.textContent = 'км/ч';
+    } else if (speed < 1e9) {
       this.el.speed.textContent = (speed / 1000).toFixed(speed < 10000 ? 2 : 1).replace('.', ',');
       this.el.speedUnit.textContent = 'км/с';
+    } else {
+      // Галактические скорости: миллионы и миллиарды км/с
+      const big = speed >= 1e12;
+      this.el.speed.textContent = (speed / (big ? 1e12 : 1e9)).toFixed(2).replace('.', ',');
+      this.el.speedUnit.textContent = big ? 'млрд км/с' : 'млн км/с';
     }
     const m = speed / MACH;
     this.el.mach.textContent = `MACH ${m.toFixed(2)}`;
     this.el.mach.classList.toggle('supersonic', m >= 1);
-    // У Луны и планет — высота над их поверхностью
+    // У Луны и планет — высота над их поверхностью; в системе Ксаррона Земли нет — до ближайшего тела
     const nb = player.nearBody;
-    const alt = nb ? Math.max(0, player.bodyAlt) : player.pos.y;
-    const altTxt = (alt >= 1000 ? `${(alt / 1000).toFixed(alt >= 100000 ? 0 : 1)} км` : `${Math.round(alt)} м`) + (nb ? ` · ${nb.name}` : '');
+    const alt = nb || REGION !== 'sol' ? Math.max(0, player.bodyAlt) : player.pos.y;
+    // В межгалактике высоты нет — где герой: в какой галактике или между ними
+    const altTxt = REGION === 'deep' ? player.world.galaxy.whereName()
+      : (alt >= 1000 ? `${(alt / 1000).toFixed(alt >= 100000 ? 0 : 1)} км` : `${Math.round(alt)} м`) + (nb ? ` · ${nb.name}` : '');
     if (altTxt !== this.lastAlt) { this.el.alt.textContent = altTxt; this.lastAlt = altTxt; }
     this.el.destroyed.textContent = city.destroyed;
 

@@ -1013,7 +1013,9 @@ export class Environment {
     else { this.sunDir.copy(this.daySun); this.lightDir.copy(this.dayLight); }
     const spaceSun = this.spaceSunK = smoothstep(SPACE.atmosphere, SPACE.spaceAlt, camera.position.y);
     if (spaceSun > 0) {
-      this.sun.color.copy(this.T.sun).lerp(_white.setRGB(1, 0.97, 0.92), spaceSun);
+      // Свет своей звезды: у Солнца тёплый белый, у гипергиганта Ксаррона — голубой
+      const L = SUN.light;
+      this.sun.color.copy(this.T.sun).lerp(L ? _white.setRGB(L[0], L[1], L[2]) : _white.setRGB(1, 0.97, 0.92), spaceSun);
       _toSun.subVectors(SUN.c, camera.position).normalize();
       for (const d of [this.sunDir, this.lightDir]) d.applyQuaternion(_qSun.setFromUnitVectors(d, _toSun).slerp(_qI, 1 - spaceSun));
     }

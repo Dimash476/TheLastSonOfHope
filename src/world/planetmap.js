@@ -224,6 +224,43 @@ const LOOKS = {
     fog: 0.00003, sky: { hor: [0.75, 0.24, 0.05], zen: [0.08, 0.015, 0.005], glow: [0.6, 0.2, 0.04], aH: 1, aZ: 0.85, cloud: [0.9, 0.3, 0.05], cloudK: 0.4, scale: [0.9, 2.4] },
     gen: genPlasma,
   },
+  // Система Ксаррона: всё освещено голубым гипергигантом (sunC)
+  velkar: {
+    style: 4, a: [0.02, 0.06, 0.3], b: [0.4, 0.62, 1], c: [0.1, 0.25, 0.7], dens: 0, rocks: 0, boulders: 0, emA: [0.06, 0.2, 0.9], emB: [0.8, 1.1, 1.8],
+    sunEl: 70, sunI: 1.0, sunC: [0.6, 0.75, 1], hemiI: 2.0, hemiC: [0.15, 0.3, 0.8], hemiG: [0.1, 0.35, 1], exposure: 0.45, shadow: 0.15,
+    fog: 0.00003, sky: { hor: [0.1, 0.3, 0.85], zen: [0.01, 0.02, 0.09], glow: [0.15, 0.3, 0.7], aH: 1, aZ: 0.85, cloud: [0.2, 0.45, 1], cloudK: 0.4, scale: [0.9, 2.4] },
+    gen: genPlasma,
+  },
+  // Как с орбиты: чёрная корка в трещинах лавы, у горизонта рыжая дымка от неё
+  pyrrak: {
+    style: 0, lava: true, a: [0.035, 0.032, 0.032], b: [0.1, 0.085, 0.08], c: [0.06, 0.05, 0.048], dens: 0.45, rock: [0.045, 0.04, 0.04], rocks: 0.36, boulders: 0.3,
+    sunEl: 38, sunI: 7, sunC: [0.75, 0.86, 1.15], hemiI: 1.4, hemiC: [0.45, 0.4, 0.5], hemiG: [0.4, 0.14, 0.05], exposure: 0.62, shadow: 1,
+    fog: 0.00002, sky: { hor: [0.42, 0.13, 0.04], zen: [0.03, 0.01, 0.005], glow: [0.35, 0.42, 0.65], aH: 0.85, aZ: 0.08 },
+    gen: (r) => genRocky({ hills: 90, mtn: 700, craters: 120, craterMax: 2200, lump: 1.8, smallCraters: 240 }, r),
+  },
+  xarron: {
+    style: 1, a: [0.08, 0.075, 0.085], b: [0.3, 0.25, 0.22], c: [0.14, 0.13, 0.14], dens: 0.12, rock: [0.12, 0.11, 0.12], rocks: 0.28, boulders: 0.22,
+    sunEl: 32, sunI: 4.4, sunC: [0.74, 0.86, 1.18], hemiI: 1.5, hemiC: [0.45, 0.55, 0.95], hemiG: [0.2, 0.18, 0.2], exposure: 0.62, shadow: 0.9,
+    fog: 0.00006, sky: { hor: [0.42, 0.5, 0.85], zen: [0.12, 0.14, 0.38], glow: [0.5, 0.62, 1], aH: 1, aZ: 0.95, cloud: [0.78, 0.8, 0.88], cloudK: 0.3, scale: [1, 2.8] },
+    gen: (r) => genRocky({ hills: 160, mtn: 1600, mesa: true, canyon: 300, craters: 8, craterMax: 900, lump: 1.1, smallCraters: 10 }, r),
+  },
+  tel: {
+    style: 0, a: [0.19, 0.2, 0.22], b: [0.44, 0.45, 0.49], c: [0.29, 0.3, 0.33], dens: 0.55, rock: [0.27, 0.28, 0.3], rocks: 0.3, boulders: 0.22,
+    sunEl: 20, sunI: 8.5, sunC: [0.74, 0.86, 1.18], hemiI: 1.8, hemiC: [0.5, 0.58, 0.8], hemiG: [0.3, 0.3, 0.32], exposure: 0.7, shadow: 1,
+    gen: (r) => genRocky({ hills: 100, mtn: 800, craters: 170, craterMax: 2600, lump: 1.5, smallCraters: 300 }, r),
+  },
+  gorgat: {
+    style: 3, a: [0.5, 0.36, 0.72], b: [1.0, 0.97, 1.12], c: [0.72, 0.6, 0.92], dens: 0, rocks: 0, boulders: 0, bands: 3000, warp: 0.6,
+    sunEl: 30, sunI: 2.8, sunC: [0.74, 0.86, 1.18], hemiI: 2.1, hemiC: [0.62, 0.58, 0.9], hemiG: [0.45, 0.36, 0.62], exposure: 0.6, shadow: 0.3,
+    fog: 0.00009, sky: { hor: [0.5, 0.42, 0.72], zen: [0.05, 0.05, 0.12], glow: [0.35, 0.4, 0.75], aH: 1, aZ: 0.8, cloud: [0.62, 0.52, 0.85], cloudK: 0.6, scale: [0.8, 3] },
+    gen: (r) => genClouds({ f: 5, amp: 450 }, r),
+  },
+  skarn: {
+    style: 3, a: [0.38, 0.72, 0.8], b: [0.9, 1.08, 1.1], c: [0.55, 0.85, 0.92], dens: 0, rocks: 0, boulders: 0, bands: 4200, warp: 0.4,
+    sunEl: 22, sunI: 2.4, sunC: [0.74, 0.86, 1.18], hemiI: 2.2, hemiC: [0.5, 0.8, 0.9], hemiG: [0.4, 0.62, 0.7], exposure: 0.6, shadow: 0.3,
+    fog: 0.00008, sky: { hor: [0.45, 0.75, 0.82], zen: [0.04, 0.08, 0.12], glow: [0.4, 0.62, 0.8], aH: 1, aZ: 0.7, cloud: [0.7, 0.9, 0.95], cloudK: 0.45, scale: [0.7, 3.2] },
+    gen: (r) => genClouds({ f: 4, amp: 260 }, r),
+  },
 };
 
 // Наклоны (RG), тени от солнца (B) и яркость (A) — обычная текстура с мипами.
@@ -339,6 +376,26 @@ const SURFACE_GLSL = /* glsl */`
     if (w > 0.0) h += sin(dot(q.xz, vec2(1.3, 1.75)) + inoise(q / 18.0) * 6.0) * 0.05 * w * (1.0 - smoothstep(0.2, 0.5, slope));
     col *= 1.0 + sin(vY * 0.9 + inoise(q / 80.0) * 3.0) * 0.2 * smoothstep(0.35, 0.9, slope);
   #endif
+  #ifdef LAVA
+    // Пиррак: та же корка в сетке трещин, что видна с орбиты. Широкие разломы, сеть помельче
+    // и трещинки под ногами; лава стоит в низинах и на ровном, по крутым склонам не держится
+    // Шум одной октавы почти везде около 0,5, поэтому трещина — узкая полоса вокруг 0,5
+    float cr = abs(inoise(qr / 5200.0 + 3.0) * 0.65 + inoise(qs / 2100.0 + 8.0) * 0.35 - 0.5);
+    float cr2 = abs(inoise(qs / 1500.0 + 5.0) - 0.5);
+    float zone = smoothstep(0.4, 0.6, inoise(q / 3800.0 + 11.0));
+    float lava = 1.0 - smoothstep(0.003, 0.012, cr) + (1.0 - smoothstep(0.002, 0.007, cr2)) * 0.6 * zone;
+    w = lod(px, 900.0);
+    if (w > 0.0) lava += w * (1.0 - smoothstep(0.002, 0.006, abs(inoise(qr / 900.0) - 0.5))) * 0.5;
+    w = lod(px, 40.0);
+    if (w > 0.0) lava += w * (1.0 - smoothstep(0.004, 0.012, abs(inoise(qs / 40.0 + 2.0) - 0.5))) * 0.55 * zone;
+    w = lod(px, 6.0);
+    if (w > 0.0) lava += w * (1.0 - smoothstep(0.005, 0.015, abs(inoise(qr / 6.0) - 0.5))) * 0.4 * (1.0 - smoothstep(0.03, 0.1, cr));
+    lava = clamp(lava * (1.0 - smoothstep(0.35, 0.8, slope)), 0.0, 1.0);
+    float pulse = 0.85 + 0.15 * sin(uTime * 0.7 + inoise(q / 300.0) * 12.0);
+    h -= lava * 0.08;
+    col = mix(col, vec3(0.1, 0.03, 0.01), lava);
+    emi = mix(vec3(0.9, 0.18, 0.02), vec3(1.6, 0.75, 0.2), lava * lava) * lava * pulse * 1.6;
+  #endif
   }
 #elif STYLE == 2
   // Венера: базальт в трещинах, светлые наносы; в редких трещинах и ручьях светится лава
@@ -414,7 +471,7 @@ const SURFACE_GLSL = /* glsl */`
     bri *= 1.0 - smoothstep(0.66, 0.7, sp) * 0.45 - smoothstep(0.72, 0.75, sp) * 0.4;
     bri += alb * 0.25;
     col = mix(uColA, uColB, smoothstep(0.3, 1.0, bri)) * 0.25;
-    emi = mix(vec3(0.9, 0.14, 0.01), vec3(1.7, 0.62, 0.12), smoothstep(0.4, 1.05, bri)) * bri * bri;
+    emi = mix(uEmA, uEmB, smoothstep(0.4, 1.05, bri)) * bri * bri;
   }
 #else
   // Юпитер и Сатурн: полосы по одной оси, клубы и волокна, ветер их медленно сдвигает
@@ -443,7 +500,8 @@ const SURFACE_GLSL = /* glsl */`
 function terrainMaterial(M, uCam, uTime) {
   const L = M.look, mat = new THREE.MeshStandardMaterial({ roughness: 0.97, metalness: 0, envMapIntensity: 0 });
   mat.defines.STYLE = L.style;
-  mat.customProgramCacheKey = () => `planetmap${L.style}`;
+  if (L.lava) mat.defines.LAVA = 1;
+  mat.customProgramCacheKey = () => `planetmap${L.style}${L.lava ? 'lava' : ''}`;
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, {
       uCam, uTime, uRvI: { value: 1 / (2 * RV) },
@@ -451,6 +509,8 @@ function terrainMaterial(M, uCam, uTime) {
       uColA: { value: new THREE.Vector3(...L.a) }, uColB: { value: new THREE.Vector3(...L.b) }, uColC: { value: new THREE.Vector3(...L.c) },
       uDens: { value: L.dens }, uTanE: { value: M.tanE }, uShK: { value: L.shadow },
       uBands: { value: L.bands || 1 }, uWarp: { value: L.warp || 0 },
+      // Свечение плазмы (стиль 4): у Солнца оранжевое, у гипергиганта — голубое
+      uEmA: { value: new THREE.Vector3(...(L.emA || [0.9, 0.14, 0.01])) }, uEmB: { value: new THREE.Vector3(...(L.emB || [1.7, 0.62, 0.12])) },
     });
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
@@ -477,7 +537,7 @@ function terrainMaterial(M, uCam, uTime) {
         uniform sampler2D tNB, tNF;
         uniform float uTime, uTanE, uDens, uShK, uBands, uWarp;
         uniform vec2 uCam;
-        uniform vec3 uColA, uColB, uColC;
+        uniform vec3 uColA, uColB, uColC, uEmA, uEmB;
         varying vec2 vR; varying float vY;
         ${INOISE_GLSL}
         ${CRATER_GLSL}

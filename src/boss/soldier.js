@@ -6,11 +6,16 @@ import { lerp } from '../utils.js';
 // стреляют из наручей с дистанции. Несколько ударов — и солдат выходит из боя.
 
 const _d = new THREE.Vector3(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
-// Тяжесть волны: солдат держит серию из четырёх ударов, бьёт и стреляет больнее и чаще
-const SOLDIER_HP = 170;
-const MELEE_DMG = 8, BOLT_DMG = 2.5;
-const BOLT_GAP = 0.45;   // с между выстрелами всего отряда
-const LUNGE_GAP = [3, 3];   // с между бросками в ближний бой: от и плюс случайно до
+// Тяжесть волны: волна короткая, но злая. Солдат падает с трёх-четырёх ударов, зато бьёт и стреляет
+// больно и часто и знает приёмы генерала — слабее, чем у него (у генерала серия 7/10, пике 14, плечо 16)
+const SOLDIER_HP = 120;
+const MELEE_DMG = 8, BOLT_DMG = 3.5;
+const BOLT_GAP = 0.35;   // с между выстрелами всего отряда
+const LUNGE_GAP = [2, 2.2];   // с между бросками в ближний бой: от и плюс случайно до
+const COMBO_DMG = [5, 8];     // серия из 2–3 ударов: каждый и последний
+const DIVE_DMG = 9, DIVE_R = 16;   // пике сверху: урон и радиус удара о землю
+const SHOULDER_DMG = 10;           // рывок плечом: отбрасывает героя
+const SPECIAL_GAP = 4;             // с: пике и плечо — по одному солдату за раз, не чаще
 
 export class Soldier extends Kin {
   constructor(inv, index) {
@@ -19,6 +24,9 @@ export class Soldier extends Kin {
     this.ring = 18 + (index % 4) * 8;
     this.side = index % 2 ? 1 : -1;
   }
+
+  // Занят ближним боем: столько солдат за раз лезут к герою (meleeSlots)
+  get inMelee() { return this.state === 'lunge' || this.state === 'combo' || this.state === 'sdive' || this.state === 'shoulder'; }
 
   // Стоит в строю на месте слот
   stand(at, face) {
@@ -171,6 +179,12 @@ export class Soldier extends Kin {
       this.fight(dt, hero, dist);
     } else if (this.state === 'lunge') {
       this.lunge(dt, hero, dist);
+    } else if (this.state === 'combo') {
+      this.combo(dt, dist);
+    } else if (this.state === 'sdive') {
+      this.dive(dt, hero, dist);
+    } else if (this.state === 'shoulder') {
+      this.shoulder(dt, dist);
     } else {
       // В строю: стоит, пока не позовут; близкий противник — повод вступить в бой
       this.vel.set(0, 0, 0);
@@ -201,9 +215,9 @@ export class Soldier extends Kin {
     this.lungeT -= dt;
     if (this.lungeT <= 0 && dist < 70 && I.meleeSlots > 0) {
       I.meleeSlots--;
-      this.state = 'lunge';
       this.lT = 0;
       this.lungeT = LUNGE_GAP[0] + Math.random() * LUNGE_GAP[1];
+      this.pickMove(dist);
       return;
     }
     // Выстрел из наруча: рука вытягивается, через миг сгусток летит с упреждением
@@ -246,6 +260,119 @@ export class Soldier extends Kin {
       I.meleeSlots++;
       this.vel.multiplyScalar(0.15);
     }
+  }
+
+  // Что делать в ближнем бою: чаще серия, реже — пике или плечо (их по одному солдату за раз)
+  pickMove(dist) {
+    const I = this.inv, at = I.soldierSpecialAt;
+    const free = at == null || I.time < at || I.time - at > SPECIAL_GAP;
+    const r = Math.random();
+    if (free && r < 0.22) {
+      I.soldierSpecialAt = I.time;
+      this.state = 'sdive';
+      this.diving = false;
+      this.grounded = false;
+    } else if (free && r < 0.44 && dist > 12) {
+      I.soldierSpecialAt = I.time;
+      this.state = 'shoulder';
+      this.rushing = false;
+    } else if (r < 0.8) {
+      this.state = 'combo';
+      this.strikes = Math.random() < 0.5 ? 3 : 2;
+      this.strikeT = 0.38;
+      this.punched = false;
+    } else this.state = 'lunge';
+  }
+
+  // Конец приёма: обратно на своё место в круге
+  backToFight(slow = 0.15) {
+    this.state = 'fight';
+    this.charge = 0;
+    this.slamming = false;
+    this.vel.multiplyScalar(slow);
+  }
+
+  // Серия как у генерала, только короче и слабее: подлетает к удару, последний отбрасывает
+  combo(dt, dist) {
+    const I = this.inv;
+    this.lT += dt;
+    this.strikeT -= dt;
+    this.grounded = false;
+    if (dist > 2.2) {
+      const need = Math.max(30, (dist - 2.0) / Math.max(this.strikeT, 0.05));
+      _d.copy(this.aim).multiplyScalar(Math.min(need, lerp(320, 2200, spaceK(this.pos.y))));
+      this.vel.lerp(_d, 1 - Math.exp(-12 * dt));
+    } else this.vel.multiplyScalar(Math.exp(-10 * dt));
+    if (!this.punched && this.strikeT < 0.12) { this.startPunch(0); this.punched = true; }
+    if (this.lT > 3.5) { this.backToFight(); return; }
+    if (this.strikeT > 0) return;
+    const last = this.strikes <= 1;
+    if (dist < 3.6) I.meleeHit(this, last ? COMBO_DMG[1] : COMBO_DMG[0], last ? 120 : 18);
+    if (--this.strikes <= 0) { this.backToFight(); return; }
+    this.strikeT = 0.3;
+    this.punched = false;
+  }
+
+  // Пике: набирает высоту над героем и бьёт сверху, по земле расходится волна
+  dive(dt, hero, dist) {
+    const I = this.inv;
+    this.lT += dt;
+    if (!this.diving) {
+      _d.copy(hero.center);
+      _d.y += 42;
+      _d.sub(this.c);
+      const l = _d.length();
+      this.vel.lerp(_d.divideScalar(l || 1).multiplyScalar(lerp(150, 900, spaceK(this.pos.y))), 1 - Math.exp(-7 * dt));
+      if (l < 8 || this.lT > 1.1) {
+        this.diving = true;
+        this.slamming = true;
+        this.vel.copy(hero.center).addScaledVector(hero.vel, 0.15).sub(this.c).normalize().multiplyScalar(lerp(260, 1500, spaceK(this.pos.y)));
+        I.fx.play('rush', { gain: 0.5, pos: this.c }) || this.W.audio?.whoosh(0.6);
+      }
+      return;
+    }
+    if (dist < 4 || this.pos.y <= this.groundY + 1.2) this.slam(this.c.clone(), hero);
+    else if (this.lT > 4) this.backToFight();
+  }
+
+  slam(point, hero) {
+    const I = this.inv, W = this.W;
+    if (point.y < 700) W.city.damageRadius(point, 12, 160, 40);
+    this.crashFX(point, 0.55);
+    const d = hero.center.distanceTo(point);
+    if (d < DIVE_R && hero.dashT <= 0) {
+      const k = 1 - d / DIVE_R;
+      I.hurtHero(DIVE_DMG * (0.45 + 0.55 * k), _v.subVectors(hero.center, point).setY(4).normalize().multiplyScalar(40 + 90 * k).clone(), false, 0);
+    } else if (d < DIVE_R) I.onDodge(this);
+    this.grounded = point.y <= this.groundY + 2;
+    this.landT = 0.8;
+    this.backToFight(0);
+  }
+
+  // Плечом с разгона: короткий замах, рывок всем телом, героя отбрасывает
+  shoulder(dt, dist) {
+    const I = this.inv, sk = spaceK(this.pos.y);
+    this.lT += dt;
+    this.grounded = false;
+    if (this.lT < 0.3) { this.vel.multiplyScalar(Math.exp(-7 * dt)); this.charge = 0.3; return; }
+    this.charge = 0;
+    if (!this.rushing) {
+      this.rushing = true;
+      this.W.effects.shockwave(this.c.clone(), { type: 'disc', dir: this.aim.clone(), radius: 9, life: 0.35, opacity: 0.6 });
+      I.fx.play('rush', { gain: 0.6, pos: this.c });
+    }
+    this.vel.copy(this.aim).multiplyScalar(Math.max(200, Math.min(dist / 0.08, lerp(700, 2600, sk))));
+    if (dist > 3.4 && this.lT < 1.3) return;
+    if (dist < 3.8) {
+      if (I.player.dashT > 0) I.onDodge(this);
+      else {
+        const kick = _v.copy(this.aim).setY(Math.max(this.aim.y, 0.18)).normalize();
+        I.hurtHero(SHOULDER_DMG, kick.clone().multiplyScalar(lerp(320, 600, sk)), false, 0);
+        this.hitFX(I.heroC, this.aim, 0.8);
+        I.fx.thud(0.8);
+      }
+    }
+    this.backToFight();
   }
 }
 
