@@ -85,7 +85,7 @@ export class WildSound {
     return new THREE.Vector3(cam.x + Math.cos(ang) * r, cam.y + y0 + Math.random() * (y1 - y0), cam.z + Math.sin(ang) * r);
   }
 
-  update({ dt, camera, env, world, paused, menu = paused, slow = 1 }) {
+  update({ dt, camera, env, world, paused, menu = paused, slow = 1, away = false }) {
     const a = this.a;
     if (!a.ctx || !a.ambBus) return;
     if (!this.built) this.build();
@@ -94,7 +94,8 @@ export class WildSound {
     const r = Math.max(Math.abs(cam.x), Math.abs(cam.z));
     const outside = r > PLANE_HALF;
     const h = outside ? sampleTerrain(cam.x, cam.z) : 0;
-    const low = 1 - ss(cam.y - Math.max(0, h), 25, 220);
+    // Вдали от Земли (другая система, карта планеты, далёкий космос) природы нет
+    const low = away ? 0 : 1 - ss(cam.y - Math.max(0, h), 25, 220);
     const night = env.night, day = 1 - ss(night, 0.3, 0.7), rain = env.W.rain;
     const bt = r < HALF ? blockAt(cam.x, cam.z) : -1;
     const inBig = cam.x > BIG_PARK.minX && cam.x < BIG_PARK.maxX && cam.z > BIG_PARK.minZ && cam.z < BIG_PARK.maxZ;

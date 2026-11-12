@@ -392,7 +392,7 @@ export class Soundscape {
   }
 
   // ---------------------------------------------------------------- кадр
-  update({ dt, player, camera, people, traffic, city, env, paused }) {
+  update({ dt, player, camera, people, traffic, city, env, paused, away = false }) {
     const a = this.a;
     if (!a.ctx) return;
     if (!this.built) this.build();
@@ -504,13 +504,14 @@ export class Soundscape {
       if (right) e.pan.pan.setTargetAtTime(Math.max(-0.9, Math.min(0.9, _v.subVectors(c.pos, cam).normalize().dot(right))), t, 0.1);
     });
 
-    // ---- природа
-    const overSea = cam.x > QUAY_X - 20;
-    const coast = (overSea ? 1 : ss(QUAY_X - cam.x, 500, 40) * (Math.abs(cam.z) < PLANE_HALF ? 1 : 0)) * (1 - ss(cam.y, 30, 400));
+    // ---- природа (вдали от Земли — тишина: away)
+    const earth = away ? 0 : 1;
+    const overSea = !away && cam.x > QUAY_X - 20;
+    const coast = (overSea ? 1 : ss(QUAY_X - cam.x, 500, 40) * (Math.abs(cam.z) < PLANE_HALF ? 1 : 0)) * (1 - ss(cam.y, 30, 400)) * earth;
     this.surfGain.gain.setTargetAtTime(live * coast * 0.11, t, 0.6);
     const r = Math.max(Math.abs(cam.x), Math.abs(cam.z));
     const inPark = cam.x > BIG_PARK.minX && cam.x < BIG_PARK.maxX && cam.z > BIG_PARK.minZ && cam.z < BIG_PARK.maxZ;
-    const nature = Math.max(ss(r, 1500, 2700), inPark ? 1 : 0) * (1 - ss(cam.y, 20, 250));
+    const nature = Math.max(ss(r, 1500, 2700), inPark ? 1 : 0) * (1 - ss(cam.y, 20, 250)) * earth;
     this.cricketGain.gain.setTargetAtTime(live * nature * ss(env.night, 0.5, 0.9) * 0.012 * (1 - env.W.rain), t, 1);
     // Больше птиц в парке днём (используется фоновым щебетом движка)
     if (inPark) a.amb.park = Math.max(a.amb.park || 0, 1);
@@ -518,8 +519,8 @@ export class Soundscape {
     this.nextGull -= dt;
     if (!paused && this.nextGull <= 0) {
       this.nextGull = 2.5 + Math.random() * 6;
-      const port = Math.hypot(cam.x - (HALF - 60), 0) < 450 && Math.abs(cam.z) < HALF + 200 && cam.y < 250;
-      if ((port || overSea) && env.night < 0.6) this.gull(_v.set(cam.x + (Math.random() - 0.5) * 80, cam.y + 20, cam.z + (Math.random() - 0.5) * 80).clone());
+      const port = !away && Math.hypot(cam.x - (HALF - 60), 0) < 450 && Math.abs(cam.z) < HALF + 200 && cam.y < 250;
+      if ((port || (overSea && cam.y < 400)) && env.night < 0.6) this.gull(_v.set(cam.x + (Math.random() - 0.5) * 80, cam.y + 20, cam.z + (Math.random() - 0.5) * 80).clone());
     }
 
     // ---- музыка: накал боя растёт от разрушений, лазера и мощных ударов

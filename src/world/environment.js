@@ -777,6 +777,10 @@ export class Environment {
       shader.uniforms.uIsleTex = { value: isleTex };
       shader.uniforms.uIsle = { value: new THREE.Vector4(ISLE.x, ISLE.z, ISLE.size, 0) };
       shader.uniforms.uIsleRot = { value: new THREE.Vector2(Math.cos(ISLE.rot), Math.sin(ISLE.rot)) };
+      shader.uniforms.uCover = { value: new THREE.Vector4(PLANE_HALF, RIVER_Z, RIVER_HALF_W, QUAY_X) };
+      shader.uniforms.uCoverBeach = { value: new THREE.Vector3(BEACH.x0, BEACH.minZ, BEACH.maxZ) };
+      shader.uniforms.uCoverPond = { value: new THREE.Vector3(POND.x, POND.z, POND.r) };
+      shader.uniforms.uCoverTowns = { value: TOWNS.map((t) => new THREE.Vector3(t.x, t.z, (t.grid * CITY.block + 200) * 0.5)) };
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vWaterPos;')
         .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvWaterPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
@@ -787,8 +791,28 @@ export class Environment {
           uniform sampler2D uIsleTex;
           uniform vec4 uIsle;
           uniform vec2 uIsleRot;
+          uniform vec4 uCover;
+          uniform vec3 uCoverBeach, uCoverPond;
+          uniform vec3 uCoverTowns[${TOWNS.length}];
           float isleFoam = 0.0;`)
         .replace('#include <color_fragment>', `#include <color_fragment>
+          {
+            // Под плоской землёй города и пригородов (в 1,5 м выше) воду не рисуем: издалека
+            // буфер глубины их не различает, и вода пятнами проступает сквозь землю.
+            // Те же вырезы, что у земли (русло, море за набережной, пляж, пруд), с запасом 8 м
+            vec2 wp = vWaterPos.xz;
+            const float M = 8.0;
+            bool covered = abs(wp.x) < uCover.x - M && abs(wp.y) < uCover.x - M
+              && abs(wp.y - uCover.y) > uCover.z + M
+              && wp.x < uCover.w - M
+              && !(wp.x > uCoverBeach.x - M && wp.y > uCoverBeach.y - M && wp.y < uCoverBeach.z + M)
+              && length(wp - uCoverPond.xy) > uCoverPond.z + M;
+            for (int i = 0; i < ${TOWNS.length}; i++) {
+              vec3 t = uCoverTowns[i];
+              if (abs(wp.x - t.x) < t.z - M && abs(wp.y - t.y) < t.z - M) covered = true;
+            }
+            if (covered) discard;
+          }
           {
             // Лагуна у райского острова: бирюза на мелководье, лазурь глубже, сквозь воду — песок;
             // полосы пены идут по линиям равной глубины и бегут к берегу

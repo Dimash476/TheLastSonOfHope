@@ -34,7 +34,7 @@ import { Props } from './world/props.js';
 import { Space } from './world/space.js';
 import { BlackHole, WHITE_HOLE } from './world/blackhole.js';
 import { setRegion, regionAt } from './world/bodies.js';
-import { SPACE } from './config.js';
+import { SPACE, WORLD } from './config.js';
 import { Wormhole } from './world/wormhole.js';
 import { XARRON_GATE } from './world/portal.js';
 import { PlanetMap } from './world/planetmap.js';
@@ -727,17 +727,21 @@ function step(dt, active) {
   // Свечение: мягче днём, сильнее на закате и ночью — огни города «дышат»
   bloom.strength = 0.26 + env.night * 0.26;
   audio.listener = camera.position;
+  // Звуки Земли (город, птицы, сверчки, прибой) — только над земным миром: у Ксаррона, в межгалактике,
+  // на картах планет, в космосе вдали от Земли и под ней высота бывает «низкой», и природа включалась там
+  const cp = camera.position;
+  const away = regionAt(player.pos) !== 'sol' || planetMap.active || cp.y < -500 || Math.max(Math.abs(cp.x), Math.abs(cp.z)) > WORLD.terrainSize / 2 + 2000;
   // Фон мегаполиса: громче в центре и у земли, тише в пригороде и с высотой, нет в космосе
   {
-    const cp = camera.position, r = Math.max(Math.abs(cp.x), Math.abs(cp.z));
+    const r = Math.max(Math.abs(cp.x), Math.abs(cp.z));
     const inCity = 1 - THREE.MathUtils.smoothstep(r, 2400, 3800);
     const inSuburb = THREE.MathUtils.smoothstep(r, 2100, 2900) * (1 - THREE.MathUtils.smoothstep(r, HALF + 200, HALF + 1200));
-    const low = 1 - THREE.MathUtils.smoothstep(cp.y, 150, 1800);
+    const low = away ? 0 : 1 - THREE.MathUtils.smoothstep(cp.y, 150, 1800);
     audio.setAmbience(Math.max(inCity, inSuburb * 0.45) * low, inSuburb * low, env.night, env.W.rain);
   }
   audio.listenerRight = _camRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
-  soundscape.update({ dt, player, camera, people, traffic, city, env, paused });
-  wild.update({ dt: dt * slow.k, camera, env, world, paused: paused || photo.on, menu: paused, slow: slow.k });
+  soundscape.update({ dt, player, camera, people, traffic, city, env, paused, away });
+  wild.update({ dt: dt * slow.k, camera, env, world, paused: paused || photo.on, menu: paused, slow: slow.k, away });
   if (paused) air.mute();
   invasion.setPaused(paused || invasion.ended);
   audio.update(player.vel.length(), paused, player.pos.y < 1500 ? env.W.rain : 0, env.altitudeK);
