@@ -109,7 +109,7 @@ export class HUD {
     const petTxt = pet ? `<kbd>ПКМ</kbd> погладить ${pet.kind === 'dog' ? 'собаку' : 'кошку'}` : '';
     // Посадка: сверху — на сам шар, сбоку и снизу — перенос на отдельную карту. С карты — вверх, в космос
     const land = player.grounded ? ''
-      : player.world.planetMap.active ? (player.bodyAlt > 200 ? 'выше 3 км — выход в космос' : '')
+      : player.world.planetMap.active ? (player.bodyAlt > 200 ? `выше ${Math.ceil(player.world.planetMap.exitAlt / 1000)} км — выход в космос` : '')
       : nb && player.belowCap ? 'сверху — посадка на шар, сбоку — перенос на карту планеты' : '';
     const txt = player.petting ? '♥' : [petTxt, act, land].filter(Boolean).join(' &nbsp;·&nbsp; ');
     if (txt !== this.lastInteract) { this.el.interact.innerHTML = txt; this.lastInteract = txt; }

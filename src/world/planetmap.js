@@ -5,7 +5,12 @@ import { NOISE_GLSL, INOISE_GLSL, CRATER_GLSL, BUMP_GLSL } from './space.js';
 // Отдельная карта планеты: касание шара сбоку или снизу переносит героя сюда (сверху — обычная
 // посадка на шар). Карта стоит на настоящем верху тела: над головой те же звёзды, Солнце и кольца,
 // а сам шар на это время спрятан. Рельеф — в основной сцене, поэтому герой и камни отбрасывают
-// на него обычные тени. Подъём выше EXIT_ALT возвращает в космос.
+// на него обычные тени. Подъём выше EXIT_ALT (над самой высокой вершиной) возвращает в космос.
+//
+// Горы на твёрдых картах ломаются, как на Земле (terrainfx.js): таран на скорости прорубает проход,
+// пике оставляет воронку, края пролома осыпаются, срезанное разваливается на глыбы (rocks.js, от начала карты).
+// Ломается только то, что выше «равнины» (base): хребты, массивы, столовые горы и вулканы. Тайл
+// периодичен (~20 км), поэтому пролом есть и в его повторах. Сброс — K (repair).
 //
 // Высоты лежат в двух периодичных тайлах (большие формы и мелочь под ногами) — их читают и
 // вершинный шейдер, и физика. Сетка — вложенные квадраты (clipmap): CPU её не пересчитывает,
@@ -19,6 +24,11 @@ const RV = 200000;                                 // кривизна на ви
 const EXIT_ALT = 3000;                             // выше этого — выход в космос
 const CELL_S = 4, RANGE_S = 16;                    // мелкие камни: ячейка, м, и радиус в ячейках
 const CELL_B = 50, RANGE_B = 20;                   // валуны
+const RAM_R = 100;          // полуширина пролома при таране, м (2,5 ячейки крупного тайла)
+const CLEAR = 30;           // дно пролома ниже героя на столько, м
+const TALUS = 1.15;         // крутизна, при которой край пролома держится
+const COLLAPSE_R = 700;     // дальше от места удара склон не осыпается
+const ROCK_BUDGET = 60;     // глыб за кадр (остальной объём — пыль)
 
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const RIDGE = (v) => 1 - Math.abs(v);
@@ -100,10 +110,13 @@ const newTiles = () => ({
 function genRocky(o, rnd) {
   const T = newTiles(), H = T.bigH, N2 = TN * TN;
   const low = fbm(3, 3, 7, 0.5, rnd), rid = fbm(5, 5, 6, 0.5, rnd, RIDGE), mask = fbm(2, 2, 3, 0.5, rnd);
+  T.base = new Float32Array(N2);
   for (let k = 0; k < N2; k++) {
     const r = rid[k], m = smooth(-0.1, 0.3, mask[k]);
-    H[k] = o.hills * low[k] + o.mtn * m * r * r * r;
+    T.base[k] = o.hills * low[k];
+    H[k] = T.base[k] + o.mtn * m * r * r * r;
   }
+  if (o.massif) stampMassifs(H, o.massif, rnd);
   if (o.mesa) {
     const mm = fbm(3, 3, 3, 0.5, rnd), STEP = 70;
     for (let k = 0; k < N2; k++) {
@@ -133,11 +146,31 @@ function genRocky(o, rnd) {
   return T;
 }
 
+// Горные массивы: вытянутые узлы рваных хребтов в несколько км высотой, выше обычных гор
+function stampMassifs(H, o, rnd) {
+  const jag = fbm(12, 12, 5, 0.5, rnd, RIDGE);
+  for (let n = 0; n < o.n; n++) {
+    const cx = rnd() * BIG_P, cz = rnd() * BIG_P, r = 1200 + rnd() * 1000, el = 1.4 + rnd();
+    const hgt = o.h * (0.65 + rnd() * 0.35), a = rnd() * Math.PI, ca = Math.cos(a), sa = Math.sin(a);
+    const R = Math.ceil(r * el * 1.8 / BIG_SP), ci = Math.round(cx / BIG_SP), cj = Math.round(cz / BIG_SP);
+    for (let dj = -R; dj <= R; dj++) {
+      for (let di = -R; di <= R; di++) {
+        const dx = (ci + di) * BIG_SP - cx, dz = (cj + dj) * BIG_SP - cz;
+        const u = (dx * ca + dz * sa) / (r * el), v = (dz * ca - dx * sa) / r, d2 = u * u + v * v;
+        if (d2 > 3.2) continue;
+        const k = ((cj + dj) & MASK) * TN + ((ci + di) & MASK), j = jag[k];
+        H[k] += hgt * Math.exp(-d2 * 1.4) * smooth(3.2, 2, d2) * (0.3 + 0.7 * j * j);
+      }
+    }
+  }
+}
+
 // Венера: лавовые равнины и щитовые вулканы с кальдерами
 function genVenus(rnd) {
   const T = newTiles(), H = T.bigH, N2 = TN * TN;
   const low = fbm(3, 3, 6, 0.5, rnd), flow = fbm(6, 6, 5, 0.5, rnd, RIDGE);
   for (let k = 0; k < N2; k++) H[k] = 70 * low[k] + 70 * flow[k];
+  T.base = H.slice();
   for (let n = 0; n < 14; n++) {
     const cx = rnd() * BIG_P, cz = rnd() * BIG_P, r = 1400 + rnd() * 2800, hgt = 260 + rnd() * 520;
     const R = Math.ceil(r * 2.6 / BIG_SP), ci = Math.round(cx / BIG_SP), cj = Math.round(cz / BIG_SP);
@@ -186,18 +219,18 @@ const LOOKS = {
     style: 0, a: [0.2, 0.2, 0.195], b: [0.46, 0.45, 0.43], c: [0.3, 0.29, 0.28], dens: 0.6, rock: [0.28, 0.275, 0.265], rocks: 0.32, boulders: 0.24,
     sunEl: 17, sunI: 8.5, sunC: [1, 0.97, 0.93], hemiI: 1.8, hemiC: [0.5, 0.55, 0.65], hemiG: [0.3, 0.29, 0.27], exposure: 0.72, shadow: 1,
     earth: [-0.28, 0.42, -0.86],
-    gen: (r) => genRocky({ hills: 110, mtn: 900, craters: 150, craterMax: 2800, lump: 1.6, smallCraters: 320 }, r),
+    gen: (r) => genRocky({ hills: 110, mtn: 900, massif: { n: 5, h: 3200 }, craters: 150, craterMax: 2800, lump: 1.6, smallCraters: 320 }, r),
   },
   mercury: {
     style: 0, a: [0.2, 0.18, 0.165], b: [0.4, 0.36, 0.32], c: [0.26, 0.24, 0.22], dens: 0.75, rock: [0.24, 0.22, 0.2], rocks: 0.36, boulders: 0.28,
     sunEl: 26, sunI: 8.5, sunC: [1, 0.96, 0.9], hemiI: 1.8, hemiC: [0.5, 0.5, 0.55], hemiG: [0.28, 0.26, 0.24], exposure: 0.6, shadow: 1,
-    gen: (r) => genRocky({ hills: 70, mtn: 520, craters: 360, craterMax: 3200, lump: 1.4, smallCraters: 520 }, r),
+    gen: (r) => genRocky({ hills: 70, mtn: 520, massif: { n: 4, h: 2600 }, craters: 360, craterMax: 3200, lump: 1.4, smallCraters: 520 }, r),
   },
   mars: {
     style: 1, a: [0.3, 0.13, 0.06], b: [0.62, 0.3, 0.14], c: [0.36, 0.19, 0.11], dens: 0.3, rock: [0.3, 0.16, 0.1], rocks: 0.3, boulders: 0.24,
     sunEl: 30, sunI: 4.6, sunC: [1, 0.9, 0.78], hemiI: 1.3, hemiC: [0.85, 0.62, 0.45], hemiG: [0.5, 0.28, 0.16], exposure: 0.62, shadow: 0.92,
     fog: 0.000055, sky: { hor: [0.92, 0.6, 0.35], zen: [0.5, 0.31, 0.19], glow: [0.55, 0.58, 0.68], aH: 1, aZ: 0.97 },
-    gen: (r) => genRocky({ hills: 130, mtn: 1150, mesa: true, canyon: 420, craters: 28, craterMax: 1800, lump: 0.9, dunes: 1.3, smallCraters: 36 }, r),
+    gen: (r) => genRocky({ hills: 130, mtn: 1150, massif: { n: 4, h: 3800 }, mesa: true, canyon: 420, craters: 28, craterMax: 1800, lump: 0.9, dunes: 1.3, smallCraters: 36 }, r),
   },
   venus: {
     style: 2, a: [0.17, 0.1, 0.06], b: [0.42, 0.27, 0.13], c: [0.13, 0.085, 0.06], dens: 0, rock: [0.14, 0.09, 0.065], rocks: 0.26, boulders: 0.14,
@@ -236,18 +269,18 @@ const LOOKS = {
     style: 0, lava: true, a: [0.035, 0.032, 0.032], b: [0.1, 0.085, 0.08], c: [0.06, 0.05, 0.048], dens: 0.45, rock: [0.045, 0.04, 0.04], rocks: 0.36, boulders: 0.3,
     sunEl: 38, sunI: 7, sunC: [0.75, 0.86, 1.15], hemiI: 1.4, hemiC: [0.45, 0.4, 0.5], hemiG: [0.4, 0.14, 0.05], exposure: 0.62, shadow: 1,
     fog: 0.00002, sky: { hor: [0.42, 0.13, 0.04], zen: [0.03, 0.01, 0.005], glow: [0.35, 0.42, 0.65], aH: 0.85, aZ: 0.08 },
-    gen: (r) => genRocky({ hills: 90, mtn: 700, craters: 120, craterMax: 2200, lump: 1.8, smallCraters: 240 }, r),
+    gen: (r) => genRocky({ hills: 90, mtn: 700, massif: { n: 5, h: 2800 }, craters: 120, craterMax: 2200, lump: 1.8, smallCraters: 240 }, r),
   },
   xarron: {
     style: 1, a: [0.08, 0.075, 0.085], b: [0.3, 0.25, 0.22], c: [0.14, 0.13, 0.14], dens: 0.12, rock: [0.12, 0.11, 0.12], rocks: 0.28, boulders: 0.22,
     sunEl: 32, sunI: 4.4, sunC: [0.74, 0.86, 1.18], hemiI: 1.5, hemiC: [0.45, 0.55, 0.95], hemiG: [0.2, 0.18, 0.2], exposure: 0.62, shadow: 0.9,
     fog: 0.00006, sky: { hor: [0.42, 0.5, 0.85], zen: [0.12, 0.14, 0.38], glow: [0.5, 0.62, 1], aH: 1, aZ: 0.95, cloud: [0.78, 0.8, 0.88], cloudK: 0.3, scale: [1, 2.8] },
-    gen: (r) => genRocky({ hills: 160, mtn: 1600, mesa: true, canyon: 300, craters: 8, craterMax: 900, lump: 1.1, smallCraters: 10 }, r),
+    gen: (r) => genRocky({ hills: 160, mtn: 1600, massif: { n: 5, h: 3400 }, mesa: true, canyon: 300, craters: 8, craterMax: 900, lump: 1.1, smallCraters: 10 }, r),
   },
   tel: {
     style: 0, a: [0.19, 0.2, 0.22], b: [0.44, 0.45, 0.49], c: [0.29, 0.3, 0.33], dens: 0.55, rock: [0.27, 0.28, 0.3], rocks: 0.3, boulders: 0.22,
     sunEl: 20, sunI: 8.5, sunC: [0.74, 0.86, 1.18], hemiI: 1.8, hemiC: [0.5, 0.58, 0.8], hemiG: [0.3, 0.3, 0.32], exposure: 0.7, shadow: 1,
-    gen: (r) => genRocky({ hills: 100, mtn: 800, craters: 170, craterMax: 2600, lump: 1.5, smallCraters: 300 }, r),
+    gen: (r) => genRocky({ hills: 100, mtn: 800, massif: { n: 5, h: 3000 }, craters: 170, craterMax: 2600, lump: 1.5, smallCraters: 300 }, r),
   },
   gorgat: {
     style: 3, a: [0.5, 0.36, 0.72], b: [1.0, 0.97, 1.12], c: [0.72, 0.6, 0.92], dens: 0, rocks: 0, boulders: 0, bands: 3000, warp: 0.6,
@@ -266,9 +299,28 @@ const LOOKS = {
 // Наклоны (RG), тени от солнца (B) и яркость (A) — обычная текстура с мипами.
 // Тень хранится как высота луча над грунтом со знаком: граница получается гладкой, а не по текселям
 function bakeTexture(H, A, sp, tanE) {
-  const gap = new Float32Array(TN * TN), drop = sp * tanE, range = drop * 12;
-  for (let j = 0; j < TN; j++) {
-    const row = j * TN;
+  const B = { H, A, sp, tanE, gap: new Float32Array(TN * TN), px: new Uint8Array(TN * TN * 4) };
+  bakeRows(B, 0, TN - 1);
+  const t = new THREE.DataTexture(B.px, TN, TN, THREE.RGBAFormat, THREE.UnsignedByteType);
+  B.tex = t;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true;
+  t.anisotropy = 4;
+  t.needsUpdate = true;
+  return B;
+}
+
+// Пересчитать строки j0…j1 (можно за краем тайла — он замкнут): тень идёт вдоль строки целиком,
+// наклоны и размытие тени задевают соседние строки — их тоже
+const encS = (s) => Math.round((0.5 + 0.5 * s / (1 + Math.abs(s))) * 255);
+function bakeRows(B, j0, j1) {
+  const { H, A, sp, gap, px } = B, drop = sp * B.tanE, range = drop * 12;
+  const all = j1 - j0 + 4 >= TN;
+  const g0 = all ? 0 : j0 - 2, g1 = all ? TN - 1 : j1 + 2;
+  for (let jj = g0; jj <= g1; jj++) {
+    const row = (jj & MASK) * TN;
     let ray = -Infinity;
     // Идём от солнца (+x): луч опускается с каждым шагом, вершины его поднимают. Тайл замкнут — два прохода
     for (let pass = 0; pass < 2; pass++) {
@@ -280,30 +332,19 @@ function bakeTexture(H, A, sp, tanE) {
       }
     }
   }
-  // Лучи считаются по строкам независимо: чуть размываем поперёк, иначе край тени идёт зубцами
-  const soft = new Float32Array(TN * TN);
-  for (let j = 0, k = 0; j < TN; j++) {
-    const j0 = ((j - 1) & MASK) * TN, j1 = ((j + 1) & MASK) * TN;
-    for (let i = 0; i < TN; i++, k++) soft[k] = (gap[j0 + i] + 2 * gap[k] + gap[j1 + i]) * 0.25;
-  }
-  const px = new Uint8Array(TN * TN * 4), enc = (s) => Math.round((0.5 + 0.5 * s / (1 + Math.abs(s))) * 255);
-  for (let j = 0, k = 0; j < TN; j++) {
-    const j0 = ((j - 1) & MASK) * TN, j1 = ((j + 1) & MASK) * TN, row = j * TN;
-    for (let i = 0; i < TN; i++, k++) {
-      px[k * 4] = enc((H[row + ((i + 1) & MASK)] - H[row + ((i - 1) & MASK)]) / (2 * sp));
-      px[k * 4 + 1] = enc((H[j1 + i] - H[j0 + i]) / (2 * sp));
-      px[k * 4 + 2] = Math.round((0.5 + 0.5 * Math.max(-1, Math.min(1, soft[k] / range))) * 255);
+  const p0 = all ? 0 : j0 - 1, p1 = all ? TN - 1 : j1 + 1;
+  for (let jj = p0; jj <= p1; jj++) {
+    const j = jj & MASK, r0 = ((j - 1) & MASK) * TN, r1 = ((j + 1) & MASK) * TN, row = j * TN;
+    for (let i = 0; i < TN; i++) {
+      const k = row + i;
+      // Лучи считаются по строкам независимо: чуть размываем поперёк, иначе край тени идёт зубцами
+      const soft = (gap[r0 + i] + 2 * gap[k] + gap[r1 + i]) * 0.25;
+      px[k * 4] = encS((H[row + ((i + 1) & MASK)] - H[row + ((i - 1) & MASK)]) / (2 * sp));
+      px[k * 4 + 1] = encS((H[r1 + i] - H[r0 + i]) / (2 * sp));
+      px[k * 4 + 2] = Math.round((0.5 + 0.5 * Math.max(-1, Math.min(1, soft / range))) * 255);
       px[k * 4 + 3] = Math.round((0.5 + 0.5 * Math.max(-1, Math.min(1, A[k]))) * 255);
     }
   }
-  const t = new THREE.DataTexture(px, TN, TN, THREE.RGBAFormat, THREE.UnsignedByteType);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.magFilter = THREE.LinearFilter;
-  t.minFilter = THREE.LinearMipmapLinearFilter;
-  t.generateMipmaps = true;
-  t.anisotropy = 4;
-  t.needsUpdate = true;
-  return t;
 }
 
 function heightTexture(H) {
@@ -624,6 +665,7 @@ function cellHash(x, z, s) {
 
 const _m = new THREE.Matrix4(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _q = new THREE.Quaternion(), _e = new THREE.Euler();
 const _b = { x: 0, z: 0, s: 0 };
+const _d = new THREE.Vector3(), _r = new THREE.Vector3();
 
 export class PlanetMap {
   constructor(scene, space, world) {
@@ -635,6 +677,11 @@ export class PlanetMap {
     this.uCam = { value: new THREE.Vector2() };
     this.uTime = { value: 0 };
     this.blackT = 0;
+    this.queue = [];         // осыпь: { i, j, t, ox, oz } — ячейка крупного тайла проверит соседей через t с
+    this.dirty = null;       // строки крупного тайла, изменённые за кадр: [j0, j1]
+    this.fxT = 0;
+    this.budget = ROCK_BUDGET;
+    this.flow = new THREE.Vector3();
     this.fade = document.getElementById('map-fade');
     this.createGrid();
     this.createRocks();
@@ -725,14 +772,23 @@ export class PlanetMap {
     const look = LOOKS[body.id], el = THREE.MathUtils.degToRad(look.sunEl), tanE = Math.tan(el);
     const T = look.gen(mulberry32(Math.floor(body.r) + body.id.charCodeAt(1)));
     const color = (c) => new THREE.Color().setRGB(c[0], c[1], c[2]);
+    let top = -Infinity;
+    for (let k = 0; k < T.bigH.length; k++) top = Math.max(top, T.bigH[k]);
     const M = {
-      look, tanE, bigH: T.bigH, fineH: T.fineH,
+      look, tanE, bigH: T.bigH, fineH: T.fineH, bigA: T.bigA, base: T.base || null, touched: false,
+      top: T.base ? top : 0,   // самая высокая вершина твёрдой карты: выход в космос — выше неё
       sunDir: new THREE.Vector3(Math.cos(el), Math.sin(el), 0),
       sunC: color(look.sunC), hemiC: color(look.hemiC), hemiG: color(look.hemiG),
       fogC: color(look.sky ? look.sky.hor : [0, 0, 0]),
       tBig: heightTexture(T.bigH), tFine: heightTexture(T.fineH),
-      tNB: bakeTexture(T.bigH, T.bigA, BIG_SP, tanE), tNF: bakeTexture(T.fineH, T.fineA, FINE_SP, tanE),
+      bakeB: bakeTexture(T.bigH, T.bigA, BIG_SP, tanE), tNF: bakeTexture(T.fineH, T.fineA, FINE_SP, tanE).tex,
     };
+    M.tNB = M.bakeB.tex;
+    if (M.base) {
+      const c = new THREE.Color().setRGB(...look.rock).lerp(new THREE.Color().setRGB(...look.b), 0.15).multiplyScalar(0.85);
+      M.stone = [1, 0.8, 1.15, 0.7].map((k) => c.clone().multiplyScalar(k));
+      M.dust = new THREE.Color().setRGB(...look.b).getHex();
+    }
     M.mat = terrainMaterial(M, this.uCam, this.uTime);
     if (look.rocks || look.boulders) M.rockMat = rockMaterial(M, this.uCam);
     return M;
@@ -760,8 +816,11 @@ export class PlanetMap {
         this.pending = null;
         this.enter(hero, body, n, speed);
       }
-    } else if (this.active && hero.pos.y - this.O.y > EXIT_ALT) this.exit(hero);
+    } else if (this.active && hero.pos.y - this.O.y > this.exitAlt) this.exit(hero);
   }
+
+  // Высота выхода в космос над нулём карты: 3 км, а над высокими горами — на 1,5 км выше вершин
+  get exitAlt() { return Math.max(EXIT_ALT, (this.cur?.top || 0) + 1500); }
 
   enter(hero, body, n, speed) {
     const M = this.maps[body.id] || (this.maps[body.id] = this.build(body)), L = M.look;
@@ -777,6 +836,9 @@ export class PlanetMap {
       if (M.rockMat) m.material = M.rockMat;
     }
     this.sx = this.bx = NaN;
+    this.queue.length = 0;
+    this.dirty = null;
+    if (M.base) this.world.rocks?.setFrame(O, (x, z) => this.heightLocal(x, z), M.stone);
     const S = L.sky, u = this.dome.material.uniforms;
     this.dome.visible = !!S;
     if (S) {
@@ -818,6 +880,9 @@ export class PlanetMap {
   leave() {
     this.pending = null;
     if (!this.active) return;
+    if (this.cur.base) this.world.rocks?.setFrame(null);
+    this.queue.length = 0;
+    this.flush();
     this.active = false;
     this.body = this.cur = null;
     this.terrain.visible = this.rocksS.visible = this.rocksB.visible = this.dome.visible = false;
@@ -898,6 +963,202 @@ export class PlanetMap {
         this.rocksB.count = n;
         this.rocksB.instanceMatrix.needsUpdate = true;
       }
+    }
+  }
+
+  // ---------------------------------------------------------------- ломаемые горы
+  // Узел крупного тайла (индексы без обёртки) и есть ли в нём камень выше равнины
+  rockAbove(i, j) {
+    const M = this.cur, k = (j & MASK) * TN + (i & MASK);
+    return M.bigH[k] > M.base[k] + 2;
+  }
+
+  // Таран: путь p0 → p1 за кадр (мировые координаты). Где склон на пути — гора над героем и перед ним
+  // разваливается. Возвращает true, если что-то обрушилось
+  ram(p0, p1, speed) {
+    if (!this.active || !this.cur.base) return false;
+    _d.subVectors(p1, p0);
+    const len = _d.length(), lead = Math.min(40, 6 + speed * 0.02), total = len + lead;
+    const steps = Math.min(64, Math.max(1, Math.ceil(total / (BIG_SP * 0.5))));
+    if (len > 1e-6) _d.divideScalar(len); else _d.set(0, 0, 0);
+    this.flow.copy(_d).multiplyScalar(Math.min(70, 15 + speed * 0.08));
+    let cut = 0;
+    for (let s = 0; s <= steps; s++) {
+      _r.copy(p0).addScaledVector(_d, total * s / steps).sub(this.O);
+      const x = _r.x, y = _r.y, z = _r.z;
+      if (!this.rockAbove(Math.round(x / BIG_SP), Math.round(z / BIG_SP))) continue;
+      // Ломаем, только если склон на пути (выше ног), а не когда просто летим низко над ним
+      if (this.heightLocal(x, z) <= y - 1) continue;
+      const floor = y - CLEAR;
+      cut += this.carve(x, z, RAM_R, (d, i, j) => floor - cellHash(i, j, 21) * 30 - d * 20, 0.8, 'ram');
+    }
+    if (cut > 0) this.ramFX(p1, cut);
+    return cut > 0;
+  }
+
+  // Воронка от пике (мировые координаты точки удара)
+  crater(point, r, depth) {
+    if (!this.active || !this.cur.base) return false;
+    const x = point.x - this.O.x, z = point.z - this.O.z;
+    if (!this.rockAbove(Math.round(x / BIG_SP), Math.round(z / BIG_SP))) return false;
+    const h0 = Math.min(point.y - this.O.y, this.heightLocal(x, z));
+    this.flow.set(x, 0, z);   // для «воронки» flow — её центр
+    const cut = this.carve(x, z, r, (d, i, j) => h0 - depth * (1 - d * d) - cellHash(i, j, 22) * 8, 0, 'crater');
+    if (cut <= 0) return false;
+    this.burst(point, Math.min(1, cut / 2e4 + 0.4));
+    this.world.audio?.crumble(1, 'concrete', point.clone());
+    this.world.audio?.boom(0.8, point.clone());
+    return true;
+  }
+
+  // Срезать узлы крупного тайла в радиусе r (локальные координаты карты) до target(d, i, j), но не ниже равнины.
+  // Срезанное — глыбами, края — в очередь осыпи. Возвращает срезанный объём (условно)
+  carve(x, z, r, target, edge, kind) {
+    const M = this.cur, H = M.bigH, B = M.base;
+    if (!M.orig) { M.orig = H.slice(); M.origA = M.bigA.slice(); }
+    const fi = x / BIG_SP, fj = z / BIG_SP, rc = r / BIG_SP;
+    let cut = 0;
+    for (let j = Math.floor(fj - rc); j <= Math.ceil(fj + rc); j++) {
+      for (let i = Math.floor(fi - rc); i <= Math.ceil(fi + rc); i++) {
+        const d = Math.hypot(i - fi, j - fj) / rc;
+        if (d >= 1) continue;
+        const k = (j & MASK) * TN + (i & MASK), h = H[k], t = target(d, i, j);
+        const want = edge > 0 ? t + (h - t) * smooth(edge, 1, d) : t;
+        if (want >= h - 0.01) continue;
+        const nh = Math.max(want, B[k]);
+        if (nh >= h - 0.01) continue;
+        cut += h - nh;
+        H[k] = nh;
+        this.mark(j);
+        this.crumble(i, j, nh, h, kind);
+        this.queue.push({ i, j, t: 0.05 + Math.random() * 0.1, ox: i, oz: j });
+      }
+    }
+    if (cut > 0) M.touched = true;
+    return cut;
+  }
+
+  // Столб камня от nh до h над узлом теряет опору и разваливается на глыбы
+  crumble(i, j, nh, h, kind) {
+    const dh = h - nh, R = this.world.rocks;
+    if (dh < 3 || !R || this.budget <= 0) return;
+    const n = Math.min(this.budget, Math.min(5, Math.ceil(dh / 50)));
+    this.budget -= n;
+    const s = Math.min(60, Math.max(4, dh / n * 0.5)), F = this.flow;
+    for (let m = 0; m < n; m++) {
+      const y = nh + dh * (m + 0.3 + Math.random() * 0.4) / n;
+      const px = (i + (Math.random() - 0.5) * 0.8) * BIG_SP, pz = (j + (Math.random() - 0.5) * 0.8) * BIG_SP;
+      let vx, vy, vz;
+      if (kind === 'crater') {
+        const ox = px - F.x, oz = pz - F.z, l = Math.hypot(ox, oz) || 1, f = 20 + Math.random() * 35;
+        vx = ox / l * f; vy = 25 + Math.random() * 45; vz = oz / l * f;
+      } else if (kind === 'ram') {
+        vx = F.x * (0.4 + Math.random() * 0.7) + (Math.random() - 0.5) * 30;
+        vy = F.y * 0.3 + (Math.random() - 0.3) * 18;
+        vz = F.z * (0.4 + Math.random() * 0.7) + (Math.random() - 0.5) * 30;
+      } else {
+        vx = (Math.random() - 0.5) * 10; vy = -2 - Math.random() * 6; vz = (Math.random() - 0.5) * 10;
+      }
+      R.add(px, y, pz, s * (0.65 + Math.random() * 0.6), vx, vy, vz);   // глыбы — от начала карты
+    }
+  }
+
+  // Осыпь краёв: узел держится, пока перепад с соседом не круче TALUS, иначе обрушивается и тянет соседей
+  collapse(dt) {
+    const Q = this.queue, M = this.cur, H = M.bigH, B = M.base;
+    if (!Q.length) return;
+    let n = 0;
+    const keep = [];
+    for (let q = 0; q < Q.length; q++) {
+      const c = Q[q];
+      c.t -= dt;
+      if (c.t > 0 || n > 260) { keep.push(c); continue; }
+      n++;
+      const hc = H[(c.j & MASK) * TN + (c.i & MASK)];
+      for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) {
+        if (!a && !b) continue;
+        const i = c.i + a, j = c.j + b;
+        if (Math.hypot(i - c.ox, j - c.oz) * BIG_SP > COLLAPSE_R) continue;
+        const k = (j & MASK) * TN + (i & MASK), h = H[k];
+        const lim = hc + TALUS * BIG_SP * Math.hypot(a, b) * (0.85 + cellHash(i, j, 23) * 0.3);
+        if (h <= lim + 2) continue;
+        const nl = Math.max(lim, B[k]);
+        if (h <= nl + 2) continue;
+        H[k] = nl;
+        this.mark(j);
+        this.crumble(i, j, nl, h, 'slide');
+        keep.push({ i, j, t: 0.08 + Math.random() * 0.22, ox: c.ox, oz: c.oz });
+        if (this.fxT <= 0 && h - lim > 25) {
+          this.fxT = 0.18;
+          _r.set(i * BIG_SP, lim + (h - lim) * 0.5, j * BIG_SP).add(this.O);
+          this.world.dust?.burst(_r.clone(), 16, { size: [25, 70], speed: 14, life: [3, 7], color: M.dust, gravity: 0.8 });
+          this.world.audio?.crumble(0.7, 'concrete', _r.clone());
+        }
+      }
+    }
+    this.queue = keep;
+  }
+
+  mark(j) {
+    const D = this.dirty;
+    if (!D) this.dirty = [j, j];
+    else { D[0] = Math.min(D[0], j); D[1] = Math.max(D[1], j); }
+  }
+
+  // Пыль и грохот там, где герой проламывается; не чаще ~12 раз в секунду
+  ramFX(p, cut) {
+    if (this.fxT > 0) return;
+    this.fxT = 0.08;
+    const k = Math.min(1, cut / 2e4 + 0.35), A = this.world.audio;
+    this.burst(p, k);
+    if (A) { A.crumble(0.6 + 0.4 * k, 'concrete', p.clone()); if (Math.random() < 0.4) A.boom(0.5 + 0.4 * k, p.clone()); }
+    this.world.effects?.impactFX(0.25 + 0.3 * k, p, 0.1, 2 * k);
+  }
+
+  burst(p, k) {
+    const W = this.world;
+    W.dust?.burst(p.clone(), Math.round(16 + 30 * k), { size: [14, 40 + 50 * k], speed: 20 + 40 * k, life: [3, 7], color: this.cur.dust, gravity: 1.2 });
+    W.effects?.shockwave(p.clone(), { type: 'ring', radius: 70 + 140 * k, life: 0.8, opacity: 0.45, color: 0xcbbfa8 });
+  }
+
+  // Раз в шаг (main.js): осыпь, затем изменённые строки — в текстуры (высоты, наклоны, тени, светлый скол)
+  fx(dt) {
+    this.fxT -= dt;
+    this.budget = ROCK_BUDGET;
+    if (!this.active || !this.cur.base) return;
+    this.collapse(dt);
+    this.flush();
+  }
+
+  flush() {
+    const D = this.dirty, M = this.cur;
+    if (!D || !M) return;
+    this.dirty = null;
+    const H = M.bigH, A = M.bigA;
+    for (let jj = D[0] - 1; jj <= D[1] + 1; jj++) {
+      const row = (jj & MASK) * TN;
+      for (let i = 0; i < TN; i++) {
+        const k = row + i, fresh = smooth(2, 40, M.orig[k] - H[k]);
+        A[k] = M.origA[k] + 0.18 * fresh;   // свежий скол светлее
+      }
+    }
+    M.tBig.needsUpdate = true;
+    bakeRows(M.bakeB, D[0], D[1]);
+    M.tNB.needsUpdate = true;
+    this.sx = this.bx = NaN;   // мелкие камни и валуны — на новый грунт
+  }
+
+  // Горы как были (K, новый режим)
+  repair() {
+    this.queue.length = 0;
+    this.dirty = null;
+    for (const M of Object.values(this.maps)) {
+      if (!M.touched) continue;
+      M.touched = false;
+      M.bigH.set(M.orig);
+      M.bigA.set(M.origA);
+      bakeRows(M.bakeB, 0, TN - 1);
+      M.tBig.needsUpdate = M.tNB.needsUpdate = true;
     }
   }
 

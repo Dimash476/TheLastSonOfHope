@@ -6,6 +6,7 @@ import { groundHeight } from './layout.js';
 // летят, кувыркаются, бьются о склон, скатываются, раскалываются от сильного удара на части,
 // громоздятся друг на друга (столкновения через пространственный хэш), полежав — уходят в осыпь.
 // Герой на скорости пробивает глыбу насквозь, удары и взрывы (explode) их расталкивают.
+// На карте планеты глыбы живут от её начала (setFrame): позиции во float32 у Ксаррона иначе рассыпались бы.
 
 const S_NONE = 0, S_FLY = 1, S_REST = 2, S_SINK = 3;
 const MAX = 1200;
@@ -84,10 +85,29 @@ export class Rocks {
     this.live = 0;
     this.fxT = 0;                         // пауза между пылью и грохотом от падений
     this.dirty = new Uint8Array(KINDS);
+    this.o = new THREE.Vector3();         // начало координат глыб (на Земле — ноль)
+    this.ground = groundHeight;           // земля под глыбой в её координатах
+    this.waterY = WORLD.waterLevel;
+    this.stone = STONE;
   }
 
-  // Новая глыба размером s (м); snow — доля снега на ней (0..1)
+  // Где лежат глыбы: на Земле (без аргументов) или на карте планеты — от её начала O,
+  // с её рельефом ground(x, z), цветом камня stone и без воды. Прежние глыбы убираются
+  setFrame(O, ground, stone) {
+    this.reset();
+    this.o.set(O ? O.x : 0, O ? O.y : 0, O ? O.z : 0);
+    this.ground = ground || groundHeight;
+    this.waterY = O ? -Infinity : WORLD.waterLevel;
+    this.stone = stone || STONE;
+    for (const m of this.meshes) m.position.copy(this.o);
+  }
+
+  // Новая глыба размером s (м) в мировых координатах; snow — доля снега на ней (0..1)
   spawn(x, y, z, s, vx, vy, vz, snow = 0) {
+    return this.add(x - this.o.x, y - this.o.y, z - this.o.z, s, vx, vy, vz, snow);
+  }
+
+  add(x, y, z, s, vx, vy, vz, snow = 0) {
     let i = this.next;
     // Не затираем ту, что ещё летит: ищем свободную или лежащую
     for (let k = 0; k < 16 && this.state[i] === S_FLY; k++) i = (i + 1) % MAX;
@@ -110,7 +130,7 @@ export class Rocks {
     this.life[i] = LIFE * (0.8 + Math.random() * 0.4);
     this.calm[i] = 0;
     this.state[i] = S_FLY;
-    _c.copy(STONE[(Math.random() * STONE.length) | 0]).multiplyScalar(0.8 + Math.random() * 0.35);
+    _c.copy(this.stone[(Math.random() * this.stone.length) | 0]).multiplyScalar(0.8 + Math.random() * 0.35);
     if (snow > 0) _c.lerp(SNOW, snow * (0.4 + Math.random() * 0.5));
     const m = this.meshes[i % KINDS];
     m.setColorAt((i / KINDS) | 0, _c);
@@ -147,27 +167,27 @@ export class Rocks {
       const ox = (Math.random() - 0.5) * r, oy = (Math.random() - 0.3) * r, oz = (Math.random() - 0.5) * r;
       const out = (6 + Math.random() * 18) * push;
       const l = Math.hypot(ox, oy, oz) || 1;
-      this.spawn(x + ox, y + oy, z + oz, s * (0.7 + Math.random() * 0.5),
+      this.add(x + ox, y + oy, z + oz, s * (0.7 + Math.random() * 0.5),
         vx + ox / l * out, vy + Math.abs(oy / l) * out * 0.6 + 4, vz + oz / l * out);
     }
-    // Мелочь и пыль — как от обломков зданий
-    const W = this.world;
-    _c.copy(STONE[1]);
-    for (let k = 0; k < Math.min(10, 3 + r); k++) {
+    // Мелочь и пыль — как от обломков зданий (обломки считаются в мировых числах — на карте планеты без них)
+    const W = this.world, O = this.o, home = !O.x && !O.y && !O.z;
+    _c.copy(this.stone[1]);
+    for (let k = 0; home && k < Math.min(10, 3 + r); k++) {
       const a = Math.random() * 6.28, q = 0.6 + Math.random() * Math.random() * Math.min(5, r * 0.35);
       W.debris?.spawn(x, y, z, q, q * 0.7, q * 0.8, vx * 0.5 + Math.cos(a) * 15 * push, vy * 0.5 + 6 + Math.random() * 14, vz * 0.5 + Math.sin(a) * 15 * push, _c, 0);
     }
-    W.dust?.burst(_p.set(x, y, z).clone(), Math.round(6 + r), { size: [r * 0.6, r * 1.6], speed: 8 + r * 0.6, life: [2, 5], color: 0x8a7e72, gravity: 1.2 });
+    W.dust?.burst(_p.set(x, y, z).add(O).clone(), Math.round(6 + r), { size: [r * 0.6, r * 1.6], speed: 8 + r * 0.6, life: [2, 5], color: 0x8a7e72, gravity: 1.2 });
   }
 
   // Ударная волна или взрыв расталкивает глыбы; совсем близкие раскалывает
   explode(center, radius, force) {
-    const r2 = radius * radius;
+    const r2 = radius * radius, cx = center.x - this.o.x, cy = center.y - this.o.y, cz = center.z - this.o.z;
     for (let i = 0; i < this.high; i++) {
       const st = this.state[i];
       if (st !== S_FLY && st !== S_REST) continue;
       const i3 = i * 3;
-      const dx = this.pos[i3] - center.x, dy = this.pos[i3 + 1] - center.y, dz = this.pos[i3 + 2] - center.z;
+      const dx = this.pos[i3] - cx, dy = this.pos[i3 + 1] - cy, dz = this.pos[i3 + 2] - cz;
       const d2 = dx * dx + dy * dy + dz * dz;
       if (d2 > r2) continue;
       const d = Math.sqrt(d2) + 0.01, k = 1 - d / radius;
@@ -231,7 +251,7 @@ export class Rocks {
     if (speed > 14 && r > 4 && this.fxT <= 0) {
       this.fxT = 0.12;
       const i3 = i * 3, W = this.world;
-      _p.set(this.pos[i3], this.pos[i3 + 1] - r * 0.6, this.pos[i3 + 2]);
+      _p.set(this.pos[i3], this.pos[i3 + 1] - r * 0.6, this.pos[i3 + 2]).add(this.o);
       W.dust?.burst(_p.clone(), Math.round(4 + r * 0.4), { size: [r * 0.5, r * 1.4], speed: 4 + speed * 0.15, life: [2, 5], color: 0x8a7e72, gravity: 1 });
       if (r > 9) W.audio?.crumble(Math.min(1, 0.3 + r * 0.02 + speed * 0.005), 'concrete', _p.clone());
     }
@@ -242,7 +262,7 @@ export class Rocks {
     if (!this.live) return;
     this.fxT -= dt;
     this.buildHash();
-    const P = this.pos, V = this.vel;
+    const P = this.pos, V = this.vel, O = this.o, groundHeight = this.ground;
     const hp = player?.pos, hv = player?.vel, hs = hv ? hv.length() : 0;
     for (let i = 0; i < this.high; i++) {
       const st = this.state[i];
@@ -258,7 +278,7 @@ export class Rocks {
 
       // Герой на скорости проходит сквозь глыбу, она разлетается по его ходу
       if (hp && hs > 40) {
-        const dx = P[i3] - hp.x, dy = P[i3 + 1] - hp.y, dz = P[i3 + 2] - hp.z, R = r + 3;
+        const dx = P[i3] + O.x - hp.x, dy = P[i3 + 1] + O.y - hp.y, dz = P[i3 + 2] + O.z - hp.z, R = r + 3;
         if (dx * dx + dy * dy + dz * dz < R * R) {
           const k = Math.min(0.6, 25 / hs + 0.15);
           this.shatter(i, hv.x * k, hv.y * k + 5, hv.z * k, 1.4);
@@ -303,7 +323,7 @@ export class Rocks {
         this.ang[i3 + 2] = (nx * V[i3 + 1] - ny * V[i3]) * w;
         contact = ny > 0.62;      // на крутой стене не задерживается — скатывается
       }
-      if (P[i3 + 1] < WORLD.waterLevel - r) { this.state[i] = S_SINK; continue; }
+      if (P[i3 + 1] < this.waterY - r) { this.state[i] = S_SINK; continue; }
       const onRock = this.collide(i);
 
       _a.set(this.ang[i3] * dt, this.ang[i3 + 1] * dt, this.ang[i3 + 2] * dt);

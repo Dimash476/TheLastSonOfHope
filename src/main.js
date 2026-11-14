@@ -267,21 +267,21 @@ function enterMode(m) {
   if (m === 'boss') { resetWorld(true); battle.start(); }
   else if (m === 'invasion') { resetWorld(true); invasion.start(); }
   else if (mode === 'boss' || mode === 'invasion') resetWorld(true);
-  setCosmos(m === 'invasion');
   mode = m;
+  setCosmos(m !== 'boss');
   kbm.spinF = m === 'invasion';
 }
-// Чёрная дыра, путь к Ксаррону и галактики (W + Shift + Tab) — пока только во Вторжении: в бою и в свободном
-// полёте после победы. В Симуляторе и Битве — одна Солнечная система (решение автора: сперва доработать во Вторжении)
+// Чёрная дыра, галактики, система Ксаррона, W + Shift + R и Tab — во Вторжении и в Симуляторе; в Битве — одна Солнечная система.
+// В Симуляторе дыра ведёт к Ксаррону, только когда герой сам туда долетел (wormhole.flown), до того — выбрасывает над Землёй
 let cosmos = true;
 function setCosmos(on) {
-  if (cosmos === on) return;
+  const was = cosmos;
   cosmos = on;
   blackHole.off = whiteHole.off = !on;
   galaxy.off = !on;
   kbm.tabOK = on;
   // Герой был у Ксаррона, в межгалактике или падал в дыру — домой, к городу
-  if (!on && (regionAt(player.pos) !== 'sol' || blackHole.fall || whiteHole.fall)) resetWorld(true);
+  if ((was && !on && (regionAt(player.pos) !== 'sol' || whiteHole.fall)) || (blackHole.off && blackHole.fall)) resetWorld(true);
 }
 setCosmos(false);
 function startMode(m) {
@@ -540,8 +540,6 @@ window.addEventListener('keydown', (e) => {
     else hud.toast(soundscape.toggleScore() ? 'МУЗЫКА: ВКЛ' : 'МУЗЫКА: ВЫКЛ');
   }
   if (e.code === 'KeyG' && !paused) { qualityIndex = (qualityIndex + 1) % QUALITY.length; hud.toast(applyQuality(qualityIndex)); }
-  // ВРЕМЕННО, для отладки: L во Вторжении — сразу к финалу победы (потом убрать)
-  if (e.code === 'KeyL' && !paused && invasion.active && invasion.debugWin()) hud.toast('ОТЛАДКА: ФИНАЛ');
 });
 
 function resetWorld(quiet = false) {
@@ -567,6 +565,7 @@ function resetWorld(quiet = false) {
   beach.reset();
   nature.reset();
   planetMap.leave();
+  planetMap.repair();
   player.spawn();
   // Регион — сразу: иначе в этом же кадре «беговая дорожка» межгалактики вернула бы героя обратно
   // и сдвинула всё небо (герой будто проваливался вниз)
@@ -663,6 +662,7 @@ function step(dt, active) {
     critters.update(gdt, player, camera.position, env.night);
     countryside.update(gdt, camera.position);
     terrainFX.update(gdt);
+    planetMap.fx(gdt);
     rocks.update(gdt, player);
     fire.update(gdt);
     dust.update(gdt);

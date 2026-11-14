@@ -631,6 +631,9 @@ export class Player {
     if (map.active) {
       // Отдельная карта планеты: вместо шаров и города — её рельеф
       this.nearBody = this.onBody = map.body;
+      // Горы карты ломаются, как на Земле: таран прорубает проход (пике — воронку, в groundImpact)
+      const sp = this.vel.length(), dive = -this.vel.y > 0.8 * Math.hypot(this.vel.x, this.vel.z);
+      if (sp >= P.ramSpeed && !this.grounded && !dive) map.ram(_p0, this.pos, sp);
       this.groundY = map.heightAt(this.pos.x, this.pos.z);
       this.bodyAlt = this.pos.y - this.groundY;
       this.belowCap = false;
@@ -929,6 +932,7 @@ export class Player {
     if (point.y < 1) W.effects.crater(point, 10 + 22 * k);
     // В горах — воронка в самом склоне
     if (!this.onBody && !W.planetMap.active) W.terrainFX?.crater(point, 180 + 180 * k, 20 + 60 * k);
+    if (W.planetMap.active) W.planetMap.crater(point, 120 + 140 * k, 15 + 50 * k);
     W.effects.shockwave(point.clone().setY(point.y + 0.6), { type: 'ring', radius: r * 2.2, life: 0.9, opacity: 0.9 });
     W.effects.shockwave(point, { type: 'sphere', radius: r * 1.1, life: 0.6, opacity: 0.35 });
     W.debris.explode(point, r * 1.6, 25 + 45 * k);

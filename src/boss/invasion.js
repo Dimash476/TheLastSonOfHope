@@ -530,14 +530,6 @@ export class Invasion {
     }
   }
 
-  // ВРЕМЕННО, для отладки (L в main.js): сразу к финалу победы, минуя бой. Потом убрать
-  debugWin() {
-    if (this.ended || this.endT !== null || this.finale.on || !this.pool || !this.xarg) return false;
-    if (this.stage !== 'duel') { this.startFight(); this.beginDuel(); }
-    this.onXargDown(_v.subVectors(this.xarg.pos, this.player.pos).setY(0).normalize().clone());
-    return true;
-  }
-
   // Генерал убит. Сцена сама скажет, когда показать итог
   onXargDown(dir) {
     if (this.endT !== null) return;

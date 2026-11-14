@@ -146,7 +146,8 @@ export class TerrainFX {
     const R = this.world.rocks;
     const x = this.cellX(i), z = this.cellZ(j);
     const snow = ss(h, 3300, 4200);
-    if (!R || this.budget <= 0) return;
+    // На карте планеты глыбы живут в её координатах: осыпь Земли там без глыб
+    if (!R || this.budget <= 0 || this.world.planetMap?.active) return;
     const n = Math.min(this.budget, Math.min(5, Math.ceil(dh / 70)));
     this.budget -= n;
     const s = Math.min(75, Math.max(5, dh / n * 0.5));

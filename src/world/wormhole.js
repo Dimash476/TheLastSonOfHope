@@ -11,9 +11,9 @@ import { Portal, XARRON_GATE, EARTH_GATE, XARRON_GATE_SUN } from './portal.js';
 // W + Shift + R). Белая дыра никого не впускает (решение автора): домой — только через врата на орбите
 // Ксаррона: земные врата открываются только в тот миг, когда герой выходит из них, прилетев с Ксаррона. Вернулся домой — коллапс стихает, но путь
 // уже открыт навсегда: падение в чёрную дыру всегда ведёт к Ксаррону (просьба автора), а над Землёй ходят врата.
-// Что путь открыт, помнится в браузере (localStorage), биты: 1 — дыра коллапсирует, 2 — земные врата открыты,
-// 4 — во время этого коллапса герой уже долетел до Ксаррона (вернулся в нашу систему любым путём — коллапс стихает),
-// 8 — путь найден: после первой победы дыра всегда ведёт к Ксаррону, даже когда не коллапсирует.
+// В браузере (localStorage) помнится только найденный путь, биты: 8 — после первой победы дыра всегда ведёт
+// к Ксаррону, даже когда не коллапсирует; 16 — герой сам долетел до системы Ксаррона: тогда дыра ведёт туда
+// и в Симуляторе (до того — выбрасывает над Землёй). Биты 1, 2 и 4 (коллапс, врата) были в старых сохранениях: из них берём только 1 как «путь найден».
 // Ключ новый: в старом бит 2 ставился и при возврате через белую дыру — оттуда берём только коллапс
 
 const KEY = 'tlsoh.xarronPath';
@@ -51,6 +51,7 @@ export class Wormhole {
     this.gatesOpen = false;
     this.away = false;           // после этой победы герой уже был у Ксаррона
     this.known = !!(s & 9);      // путь к Ксаррону найден (старые сохранения с коллапсом — тоже)
+    this.flown = !!(s & 16);     // герой сам долетел до Ксаррона: с этого мига дыра и в Симуляторе ведёт туда
     this.onsetIn = -1;
     this.nextWave = 3;
     this.blocked = null;   // () => true, пока идёт бой: тогда дыра ведёт себя по-старому
@@ -67,7 +68,7 @@ export class Wormhole {
 
   get open() { return this.collapse; }
   // Сохраняется только то, что путь к Ксаррону найден
-  save() { save(this.known ? 8 : 0); }
+  save() { save((this.known ? 8 : 0) | (this.flown ? 16 : 0)); }
 
   // Врата: на орбите Ксаррона (космическая сцена) и над Землёй (основная)
   build(scene, space, env) {
@@ -115,16 +116,16 @@ export class Wormhole {
 
   // Для проверок: вернуть дыру в прежнее состояние
   lock() {
-    this.collapse = this.gatesOpen = this.away = this.known = false;
+    this.collapse = this.gatesOpen = this.away = this.known = this.flown = false;
     this.save();
     this.onsetIn = -1;
     this.black.unstable = 0;
     EARTH_GATE.hidden = true;
   }
 
-  // Путь ещё не найден (до первой победы, или коллапс после неё ещё не начался) или идёт бой — старое падение с выбросом над Землёй
+  // Путь ещё не найден (ни победы, ни своего полёта к Ксаррону) или идёт бой — старое падение с выбросом над Землёй
   capture(h, player) {
-    if (!this.known || this.blocked?.()) { h.startFall(player); return true; }
+    if (!(this.known || this.flown) || this.blocked?.()) { h.startFall(player); return true; }
     h.startFall(player, true);
     this.transitSound();
     return true;
@@ -201,6 +202,7 @@ export class Wormhole {
 
   update(dt, player, camRig) {
     this.gates(dt, player, camRig);
+    if (REGION === 'xarron' && !this.flown) { this.flown = true; this.save(); }
     if (!this.collapse) return;
     // Долетел до Ксаррона — запомнить; потом оказался дома (врата, меню, перезагрузка) — коллапс стихает
     if (REGION === 'xarron' && !this.away) { this.away = true; this.save(); }
