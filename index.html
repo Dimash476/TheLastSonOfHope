@@ -19,6 +19,8 @@
 
   <!-- HUD -->
   <div id="hud" class="hidden">
+    <!-- Затемнение сцен сюжета: под титрами и репликами -->
+    <div id="story-fade"></div>
     <div id="crosshair"></div>
 
     <div id="speedo">
@@ -53,7 +55,7 @@
       <kbd>X</kbd> (держать) удар о землю · <kbd>Z</kbd> (держать) лазер из глаз · вместе с ним <kbd>ЛКМ</kbd> (держать) усиление<br />
       <kbd>E</kbd> действие рядом: мяч собаке, привет людям, помочь подняться<br />
       <kbd>P</kbd> фоторежим · <kbd>V</kbd> замедление времени · <kbd>O</kbd> вид от первого лица<br />
-      <kbd>T</kbd> время суток · <kbd>U</kbd> погода · <kbd>M</kbd> своя музыка · <kbd>N</kbd> музыка игры<br />
+      <kbd>T</kbd> время суток · <kbd>U</kbd> погода · <kbd>N</kbd> или <kbd>M</kbd> музыка игры<br />
       <kbd>Ctrl</kbd> управление: ПК / камера (жесты с веб-камеры)<br />
       <kbd>G</kbd> качество графики · <kbd>K</kbd> восстановить город и вернуться на Землю · <kbd>Esc</kbd> пауза<br />
       <span class="dim">Во Вторжении: <kbd>ЛКМ</kbd> — герой сам долетает до врага и бьёт; каждый следующий удар серии — новое нажатие, пока враг не собрался<br />
@@ -94,6 +96,11 @@
       <div id="dialog-keys" class="dialog-keys hidden"><kbd>1</kbd>–<kbd>4</kbd> ответ · мышь вверх-вниз и <kbd>ЛКМ</kbd> — выбрать</div>
     </div>
 
+    <!-- Сюжет -->
+    <div id="story-sub" class="hidden"><div id="story-sub-who"></div><div id="story-sub-text"></div></div>
+    <div id="story-radio" class="hidden"></div>
+    <div id="story-card"><div id="story-card-kicker"></div><div id="story-card-title"></div></div>
+
     <div id="toast"></div>
     <div id="interact"></div>
     <div id="slowmo-badge">ЗАМЕДЛЕНИЕ</div>
@@ -132,13 +139,23 @@
           <div class="mode-title">Вторжение</div>
           <div class="mode-desc">С Ксаррона прилетает генерал Ксарг. Сначала он предложит сдаться. Откажешься — бой за Землю, от города до космоса.</div>
         </button>
-        <button class="mode locked" id="mode-story">
-          <span class="badge">Скоро</span>
+        <button class="mode story" id="mode-story">
+          <span class="badge">В работе</span>
           <div class="mode-title">Сюжет</div>
           <div class="mode-desc">История героя: кто он, откуда пришёл и что ему предстоит.</div>
         </button>
       </div>
-      <div id="story-note" class="hidden">Сюжетная часть сейчас в разработке. А пока — свободный полёт в симуляторе!</div>
+      <!-- Сюжет: продолжить, новая игра, главы -->
+      <div id="story-menu" class="hidden">
+        <div id="story-menu-btns">
+          <button id="story-continue"><b>Продолжить</b><span id="story-continue-sub"></span></button>
+          <button id="story-new"><b>Новая игра</b><span>с пролога</span></button>
+        </div>
+        <div id="story-confirm" class="hidden">Начать заново? Прогресс сюжета сотрётся. <button id="story-confirm-yes">Да, заново</button> <button id="story-confirm-no">Нет</button></div>
+        <div class="story-head">Главы</div>
+        <div id="story-chapters"></div>
+        <button id="story-back">Назад</button>
+      </div>
       <!-- Итог битвы -->
       <div id="battle-end" class="hidden">
         <div id="end-title"></div>
@@ -148,8 +165,10 @@
       <!-- Пауза -->
       <div id="pause-btns" class="hidden">
         <button id="play-btn">Продолжить</button>
+        <button id="notes-btn" class="hidden">Записи</button>
         <button id="menu-btn">Главное меню</button>
       </div>
+      <div id="story-notes" class="hidden"></div>
       <div class="hint">Клик — захват мыши. Esc — пауза.</div>
       <div class="credits">Модель персонажа: «Free Rigged Male Basemesh» by Filip (Sketchfab), CC-BY-4.0</div>
     </div>

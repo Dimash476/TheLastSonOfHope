@@ -257,3 +257,66 @@ kbd {
 #end-retry:hover { background: #7af0cc; }
 #end-menu { color: #cfe9e1; background: transparent; border: 1px solid rgba(63, 224, 176, 0.5); }
 #end-menu:hover { border-color: #3fe0b0; color: #fff; }
+
+/* ---------- Сюжет ---------- */
+.mode.story { border-color: rgba(242, 200, 120, 0.5); }
+.mode.story .mode-title { color: #f2c878; }
+.mode.story:hover { border-color: #f2c878; background: rgba(40, 32, 18, 0.86); }
+#story-menu { margin-top: 30px; width: min(760px, 92vw); margin-left: auto; margin-right: auto; }
+#story-menu.hidden, #story-notes.hidden, #story-confirm.hidden, #notes-btn.hidden { display: none; }
+#story-menu-btns { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+#story-menu-btns button {
+  min-width: 240px; padding: 14px 22px; cursor: pointer; font-family: inherit; text-align: left;
+  color: #f6efe2; background: rgba(30, 24, 14, 0.75); border: 1px solid rgba(242, 200, 120, 0.45); border-radius: 8px;
+}
+#story-menu-btns button:hover { border-color: #f2c878; background: rgba(52, 40, 20, 0.9); }
+#story-menu-btns b { display: block; font-size: 17px; letter-spacing: 3px; text-transform: uppercase; color: #f2c878; }
+#story-menu-btns span { display: block; margin-top: 4px; font-size: 13px; opacity: 0.75; }
+#story-continue:disabled { opacity: 0.35; cursor: default; }
+#story-confirm { margin-top: 14px; font-size: 14px; color: #f2c878; }
+#story-confirm button, #story-back {
+  margin-left: 8px; padding: 6px 14px; cursor: pointer; font-family: inherit; color: #f6efe2;
+  background: transparent; border: 1px solid rgba(242, 200, 120, 0.5); border-radius: 5px;
+}
+#story-back { margin: 22px 0 0; padding: 10px 26px; letter-spacing: 2px; text-transform: uppercase; }
+.story-head { margin: 26px 0 10px; font-size: 12px; font-weight: 800; letter-spacing: 5px; color: rgba(242, 200, 120, 0.75); }
+#story-chapters { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; text-align: left; }
+.story-ch {
+  padding: 9px 12px; font-family: inherit; text-align: left; color: #e9e2d4; cursor: pointer;
+  background: rgba(14, 14, 18, 0.6); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px;
+}
+.story-ch:hover:not(:disabled) { border-color: #f2c878; }
+.story-ch:disabled { cursor: default; opacity: 0.32; }
+.story-ch .n { font-size: 10px; letter-spacing: 2px; opacity: 0.6; }
+.story-ch .t { margin-top: 2px; font-size: 14px; font-weight: 700; }
+.story-ch.now { border-color: rgba(242, 200, 120, 0.7); }
+#notes-btn {
+  margin-top: 32px; padding: 14px 30px; font-size: 15px; font-weight: 700; letter-spacing: 2px; cursor: pointer;
+  color: #f6e4c0; background: transparent; border: 1px solid rgba(242, 200, 120, 0.5); border-radius: 6px; text-transform: uppercase;
+}
+#story-notes { margin: 22px auto 0; width: min(620px, 90vw); max-height: 40vh; overflow-y: auto; text-align: left; }
+#story-notes .note { padding: 10px 14px; margin-bottom: 8px; background: rgba(10, 10, 14, 0.6); border-left: 2px solid #f2c878; }
+#story-notes .note b { display: block; font-size: 11px; letter-spacing: 3px; color: #f2c878; text-transform: uppercase; }
+#story-notes .note div { margin-top: 5px; font-size: 15px; line-height: 1.45; color: #f3ece0; }
+#story-notes .empty { text-align: center; opacity: 0.6; font-size: 14px; }
+
+/* Реплика с именем: имя мелко сверху, текст крупно */
+#story-sub {
+  position: absolute; left: 50%; bottom: 13vh; transform: translateX(-50%); width: min(780px, 88vw); text-align: center;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.95), 0 0 2px #000; pointer-events: none;
+}
+#story-sub.hidden, #story-radio.hidden, #story-sub-who.hidden { display: none; }
+#story-sub-who { font-size: 12px; font-weight: 800; letter-spacing: 4px; color: #f2c878; }
+#story-sub-text { margin-top: 4px; font-size: 20px; line-height: 1.42; color: #f6efe6; }
+#story-radio { position: absolute; left: 24px; bottom: 24vh; max-width: min(400px, 60vw); font: 12px/1.45 ui-monospace, Consolas, monospace; letter-spacing: 0.5px; color: #d8d0b8; text-shadow: 0 1px 3px #000, 0 0 2px #000; pointer-events: none; }
+/* Титр главы */
+#story-card { position: absolute; left: 0; right: 0; top: 38vh; text-align: center; opacity: 0; transition: opacity 1.4s ease; pointer-events: none; }
+#story-card.on { opacity: 1; }
+#story-card-kicker { font-size: 13px; font-weight: 700; letter-spacing: 8px; color: rgba(242, 200, 120, 0.85); }
+#story-card-title { margin-top: 10px; font-size: clamp(30px, 5vw, 58px); font-weight: 300; letter-spacing: 10px; text-transform: uppercase; color: #f8f1e4; text-shadow: 0 0 30px rgba(0, 0, 0, 0.8); }
+#story-fade { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; }
+#story-fade.on { opacity: 1; }
+#hud.cine #story-radio { bottom: 15vh; }
+
+/* В сценах сюжета названия мест и подсказки не всплывают */
+#hud.story-cine #toast, #hud.story-cine #slowmo-badge, #hud.story-cine .body-marker { display: none; }

@@ -26,6 +26,7 @@ export class GameAudio {
     this.trackIndex = 0;
     this.musicOn = true;
     this.musicHold = false;  // своя музыка на паузе, пока играет тема боя (boss/theme.js)
+    this.musicAllowed = false; // треки из music/ (саундтрек боя) играют только во Вторжении, см. allowMusic
     this.themeOn = false;    // тема боя звучит: фоновая музыка игры молчит
     this.music = null;
     this.listener = null; // позиция камеры (Vector3), задаётся снаружи
@@ -39,7 +40,7 @@ export class GameAudio {
   }
 
   init() {
-    if (this.ctx) { this.ctx.resume(); this.music?.paused && this.musicOn && !this.musicHold && this.music.play().catch(() => {}); return; }
+    if (this.ctx) { this.ctx.resume(); this.music?.paused && this.musicOn && !this.musicHold && this.musicAllowed && this.music.play().catch(() => {}); return; }
     const ctx = this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     // Браузер может приостановить звук (переключение окна, гарнитура) — сразу возобновляем
     ctx.onstatechange = () => { if (ctx.state !== 'running' && ctx.state !== 'closed' && !this.paused) ctx.resume().catch(() => {}); };
@@ -517,7 +518,7 @@ export class GameAudio {
       m.addEventListener('ended', () => { m.currentTime = 0; this.playTrack(this.trackIndex + 1); });
     }
     this.music = this.players[url];
-    if (this.musicOn && !this.musicHold) this.music.play().catch(() => {});
+    if (this.musicOn && !this.musicHold && this.musicAllowed) this.music.play().catch(() => {});
   }
 
   // Тема боя играет — своя музыка ждёт на паузе (или наоборот)
@@ -525,7 +526,15 @@ export class GameAudio {
     this.musicHold = on;
     if (!this.music) return;
     if (on) this.music.pause();
-    else if (this.musicOn) this.music.play().catch(() => {});
+    else if (this.musicOn && this.musicAllowed) this.music.play().catch(() => {});
+  }
+
+  // Треки из music/ разрешены только во Вторжении; в остальных режимах — своя музыка игры (soundscape, сюжет)
+  allowMusic(on) {
+    this.musicAllowed = on;
+    if (!this.music) return;
+    if (!on) this.music.pause();
+    else if (this.musicOn && !this.musicHold && this.ctx) this.music.play().catch(() => {});
   }
 
   // M: следующий трек; единственный трек ставит на паузу и снимает с неё; если треков нет — ничего
