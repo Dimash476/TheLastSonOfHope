@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CITY, TRAFFIC, DEBRIS } from '../config.js';
-import { HALF, isBridgeRoad, BIG_PARK, BEACH, inMega } from './layout.js';
+import { HALF, isBridgeRoad, BIG_PARK, BEACH, inMega, STEPPE, roadCut } from './layout.js';
 import { VEHICLE_TYPES, createVehicleMaterial } from './vehicles.js';
 import { createGlowPoolMaterial } from './props.js';
 
@@ -63,7 +63,11 @@ export class Traffic {
     const k2 = k + d[0], l2 = l + d[1];
     if (k2 < 0 || l2 < 0 || k2 >= N_NODES || l2 >= N_NODES) return false;
     // Дорога вдоль Z через реку — только там, где мост
-    if (d[1] !== 0 && Math.min(l, l2) === CITY.riverRow && !isBridgeRoad(k)) return false;
+    if (STEPPE) {
+      // Улиц нет внутри суперкварталов, в степи и вдоль береговой полосы (кроме мостов)
+      if (d[0] !== 0) { const i = Math.min(k, k2); if (roadCut(i, l - 1, i, l)) return false; }
+      else { const j = Math.min(l, l2); if (roadCut(k - 1, j, k, j)) return false; }
+    } else if (d[1] !== 0 && Math.min(l, l2) === CITY.riverRow && !isBridgeRoad(k)) return false;
     // Внутри центрального парка дорог нет
     const mx = -HALF + (k + k2) * CITY.block / 2, mz = -HALF + (l + l2) * CITY.block / 2;
     if (mx > BIG_PARK.minX && mx < BIG_PARK.maxX && mz > BIG_PARK.minZ && mz < BIG_PARK.maxZ) return false;

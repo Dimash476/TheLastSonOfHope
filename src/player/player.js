@@ -4,6 +4,10 @@ import { newReel, tickReel, HeroModel } from './model.js';
 import { clamp, damp, lerp, smoothstep } from '../utils.js';
 import { EyeLaser } from './laser.js';
 import { BODIES, CAP_NY, REGION, REGIONS, nearestBody, bodyGroundAt } from '../world/bodies.js';
+import { STEPPE, DISTRICTS } from '../world/layout.js';
+
+// Точка старта: крыша в деловом центре (в степной столице он на левом берегу)
+const SPAWN = STEPPE ? DISTRICTS.downtown : { x: 0, z: 0 };
 
 const _qI = new THREE.Quaternion();
 const CAPE_INERTIA = 0.6;  // доля поворота тела, которую плащ «не замечает» (инерция ткани)
@@ -87,13 +91,13 @@ export class Player {
     const city = this.world.city;
     let best = null, bestTop = 0;
     for (const b of city.buildings) {
-      if (b.kind !== 'building' || Math.hypot(b.x, b.z) > 300) continue;
+      if (b.kind !== 'building' || Math.hypot(b.x - SPAWN.x, b.z - SPAWN.z) > 300) continue;
       const top = city.segs[b.segs[b.segs.length - 1]];
       const h = top.y0 + top.h;
       if (top.alive && h > 60 && h < 140 && h > bestTop) { best = top; bestTop = h; }
     }
     if (best) this.pos.set(best.x, bestTop, best.z);
-    else this.pos.set(0, 0, 0);
+    else this.pos.set(SPAWN.x, 0, SPAWN.z);
     this.onBody = this.nearBody = null;
     this.vel.set(0, 0, 0);
     this.grounded = true;

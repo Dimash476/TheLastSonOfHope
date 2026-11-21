@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CITY } from '../config.js';
-import { HALF, RIVER_Z, RIVER_HALF_W, BIG_PARK, inMega } from './layout.js';
+import { HALF, RIVER_Z, RIVER_HALF_W, BIG_PARK, inMega, riverZAt, riverHWAt, roadCut } from './layout.js';
 
 const CELL = 60;
 const CHUNK = 200;
@@ -39,15 +39,18 @@ export class Props {
     for (let k = 0; k <= CITY.grid; k++) {
       const line = -HALF + k * CITY.block;
       if (Math.abs(line) > lim) continue;
+      const wet = (x, z) => Math.abs(z - riverZAt(x)) < riverHWAt(x) + 2;
       for (let seg = -HALF; seg < HALF; seg += CITY.block) {
         if (seg < -lim || seg >= lim) continue;
+        // Улицы, которых нет (суперкварталы, степь в Сарыдале), — без фонарей
+        const si = Math.round((seg + HALF) / CITY.block), cutX = roadCut(si, k - 1, si, k), cutZ = roadCut(k - 1, si, k, si);
         for (const t of [33, 66]) {
           for (const side of [-1, 1]) {
             // Фонари вдоль дорог по X (z = line) и по Z (x = line)
-            if (!inPark(seg + t, line + side * offset)) this.addLamp(groups, seg + t, line + side * offset, side > 0 ? Math.PI : 0);
+            if (!cutX && !inPark(seg + t, line + side * offset) && !wet(seg + t, line + side * offset)) this.addLamp(groups, seg + t, line + side * offset, side > 0 ? Math.PI : 0);
             const z = seg + t;
-            if (inPark(line + side * offset, z)) continue;
-            if (Math.abs(z - RIVER_Z) < RIVER_HALF_W + 2) continue; // не ставим на мостах
+            if (cutZ || inPark(line + side * offset, z)) continue;
+            if (wet(line + side * offset, z)) continue; // не ставим на мостах
             this.addLamp(groups, line + side * offset, z, side > 0 ? -Math.PI / 2 : Math.PI / 2);
           }
         }

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CITY } from '../config.js';
 import { mulberry32 } from '../utils.js';
-import { HALF, RIVER_Z, RIVER_HALF_W, BIG_PARK, BLOCK, blockAt, inMega } from './layout.js';
+import { HALF, RIVER_Z, RIVER_HALF_W, BIG_PARK, BLOCK, blockAt, inMega, riverZAt, riverHWAt, roadCut } from './layout.js';
 import { VEHICLE_TYPES, createVehicleMaterial } from './vehicles.js';
 
 // Уличная жизнь: светофоры на перекрёстках, скамейки, урны, гидранты, остановки
@@ -45,7 +45,7 @@ export class StreetLife {
       this.cells.get(ck).push(it);
     };
     const inPark = (x, z) => (x > BIG_PARK.minX + 12 && x < BIG_PARK.maxX - 12 && z > BIG_PARK.minZ + 12 && z < BIG_PARK.maxZ - 12) || !!inMega(x, z, 12);
-    const onBridge = (z) => Math.abs(z - RIVER_Z) < RIVER_HALF_W + 4;
+    const onBridge = (x, z) => Math.abs(z - riverZAt(x)) < riverHWAt(x) + 4;
     const lim = CITY.urbanHalf;
     const rnd = mulberry32(CITY.seed + 51);
     const curb = CITY.road / 2, walk = CITY.road / 2 + CITY.sidewalk;
@@ -53,8 +53,11 @@ export class StreetLife {
     // Светофоры: на каждом перекрёстке центра — 4 столба по углам
     for (let k = 0; k <= CITY.grid; k++) for (let l = 0; l <= CITY.grid; l++) {
       const x = -HALF + k * CITY.block, z = -HALF + l * CITY.block;
-      if (Math.max(Math.abs(x), Math.abs(z)) > lim || inPark(x, z) || onBridge(z)) continue;
+      if (Math.max(Math.abs(x), Math.abs(z)) > lim || inPark(x, z) || onBridge(x, z)) continue;
       if (blockAt(x + 1, z + 1) !== BLOCK.URBAN && blockAt(x - 1, z - 1) !== BLOCK.URBAN) continue;
+      // Светофор — только на настоящем перекрёстке (в Сарыдале часть улиц убрана суперкварталами)
+      const arms = !roadCut(k, l - 1, k, l) + !roadCut(k - 1, l - 1, k - 1, l) + !roadCut(k - 1, l, k, l) + !roadCut(k - 1, l - 1, k, l - 1);
+      if (arms < 3) continue;
       const o = curb + 0.9;
       // Каждый столб смотрит навстречу своему потоку машин
       add('signal', x + o, z + o, Math.PI);
@@ -71,13 +74,15 @@ export class StreetLife {
       if (Math.abs(line) > lim) continue;
       for (let seg = -HALF; seg < HALF; seg += CITY.block) {
         if (seg < -lim || seg >= lim) continue;
+        const si = Math.round((seg + HALF) / CITY.block), cut = [roadCut(si, k - 1, si, k), roadCut(k - 1, si, k, si)];
         for (const side of [-1, 1]) for (const axis of [0, 1]) {
+          if (cut[axis]) continue;
           for (const t of [18, 50, 82]) {
             const a = seg + t;
             // axis 0: улица вдоль X (z = line); axis 1: вдоль Z (x = line)
             const px = (o) => (axis === 0 ? a : line + side * o), pz = (o) => (axis === 0 ? line + side * o : a);
             const rot = axis === 0 ? (side > 0 ? Math.PI : 0) : (side > 0 ? -Math.PI / 2 : Math.PI / 2);
-            if (inPark(px(walk), pz(walk)) || (axis === 1 && onBridge(a))) continue;
+            if (inPark(px(walk), pz(walk)) || onBridge(px(walk), pz(walk))) continue;
             const bt = blockAt(px(walk + 2), pz(walk + 2));
             if (bt !== BLOCK.URBAN && bt !== BLOCK.PARK) continue;
             const r = rnd();
@@ -103,12 +108,14 @@ export class StreetLife {
       if (Math.abs(line) > lim) continue;
       for (let seg = -HALF; seg < HALF; seg += CITY.block) {
         if (seg < -lim || seg >= lim) continue;
+        const si = Math.round((seg + HALF) / CITY.block), cut = [roadCut(si, k - 1, si, k), roadCut(k - 1, si, k, si)];
         for (const side of [-1, 1]) for (const axis of [0, 1]) {
+          if (cut[axis]) continue;
           for (const t of [24, 36, 64, 76]) {
             if (rnd() > 0.22) continue;
             const a = seg + t, off = curb - 1.6;
             const x = axis === 0 ? a : line + side * off, z = axis === 0 ? line + side * off : a;
-            if (inPark(x, z) || (axis === 1 && onBridge(a))) continue;
+            if (inPark(x, z) || onBridge(x, z)) continue;
             const bt = blockAt(axis === 0 ? x : line + side * (walk + 2), axis === 0 ? line + side * (walk + 2) : z);
             if (bt !== BLOCK.URBAN && bt !== BLOCK.SUBURB) continue;
             const name = PARK[Math.floor(rnd() * PARK.length)], T = typeOf[name];

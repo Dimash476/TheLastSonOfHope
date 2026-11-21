@@ -84,12 +84,12 @@ export function createGradePass() {
       tDiffuse: { value: null }, uTime: { value: 0 },
       uShadow: { value: new THREE.Vector3(-0.02, 0.03, 0.06) },
       uHigh: { value: new THREE.Vector3(0.05, 0.02, -0.03) },
-      uSat: { value: 1.08 }, uContrast: { value: 0.18 }, uGrain: { value: 0.02 },
+      uSat: { value: 1.08 }, uVibr: { value: 0 }, uContrast: { value: 0.18 }, uGrain: { value: 0.02 },
       uFilter: { value: 0 }, uVig: { value: 0 }, uLetter: { value: 0 },
       uTexel: { value: new THREE.Vector2(1 / 1024, 1 / 768) }, uSharp: { value: 0.2 },
     },
     vertexShader: VERT,
-    fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime, uSat, uContrast, uGrain, uFilter, uVig, uLetter, uSharp; uniform vec2 uTexel; uniform vec3 uShadow, uHigh; varying vec2 vUv;
+    fragmentShader: `uniform sampler2D tDiffuse; uniform float uTime, uSat, uVibr, uContrast, uGrain, uFilter, uVig, uLetter, uSharp; uniform vec2 uTexel; uniform vec3 uShadow, uHigh; varying vec2 vUv;
       float h(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
       void main() {
         vec4 base = texture2D(tDiffuse, vUv);
@@ -108,6 +108,12 @@ export function createGradePass() {
         // Раздельное тонирование: тени и светлые тона (белое не трогаем — без пересвета)
         c += uShadow * (1.0 - l) * (1.0 - l) + uHigh * l * l * (1.0 - l) * 3.0;
         c = mix(vec3(l), c, uSat);
+        // Сочность (тропики): бледные цвета насыщаются сильнее ярких — без кислотных пятен
+        if (uVibr > 0.001) {
+          float mxc = max(c.r, max(c.g, c.b)), mnc = min(c.r, min(c.g, c.b));
+          float sat = (mxc - mnc) / max(mxc, 1e-3);
+          c = clamp(mix(vec3(l), c, 1.0 + uVibr * (1.0 - sat)), 0.0, 1.0);
+        }
         c += (h(vUv * 1000.0 + fract(uTime) * 91.0) - 0.5) * uGrain; // зерно
         // Фильтры фоторежима: 1 кино, 2 нуар, 3 тёплый закат, 4 винтаж, 5 холод
         if (uFilter > 0.5) {
@@ -164,8 +170,9 @@ export function updateCinematic({ env, camera, godRays, grade, dt, quality }) {
   if (tk > 0) {
     u.uShadow.value.lerp(_tropic.s, tk);
     u.uHigh.value.lerp(_tropic.h, tk);
-    u.uSat.value += 0.14 * tk;
+    u.uSat.value += 0.2 * tk;
   }
+  u.uVibr.value = 0.9 * tk;
   u.uContrast.value = 0.2 + golden * 0.06 + night * 0.04;
   u.uTime.value += dt;
 }

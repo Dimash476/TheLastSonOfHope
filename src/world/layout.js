@@ -1,4 +1,5 @@
-import { CITY, WORLD } from '../config.js';
+import { CITY, WORLD, MAP } from '../config.js';
+import * as SP from './steppeplan.js';
 import { mulberry32, clamp, smoothstep, lerp } from '../utils.js';
 
 // Общая раскладка карты: типы кварталов, районы, река, мосты, набережная,
@@ -8,17 +9,20 @@ import { mulberry32, clamp, smoothstep, lerp } from '../utils.js';
 export const BLOCK = {
   URBAN: 0, PARK: 1, SUBURB: 2, RIVER: 3, EMPTY: 4,
   BIGPARK: 5, INDUSTRIAL: 6, PORT: 7, STADIUM: 8, BEACH: 9, MEGA: 10,
+  // Только у степной карты: проспект-бульвар, развязка с монументом, двор микрорайона, частный сектор
+  AVENUE: 11, ROUND: 12, YARD: 13, PRIVATE: 14,
 };
+export const STEPPE = MAP === 'steppe';
 
 export const HALF = CITY.grid * CITY.block * 0.5;          // 4400 м — край сетки
 export const PLANE_HALF = HALF + 250;                      // плоская «городская» земля
 export const RIVER_Z = -HALF + CITY.riverRow * CITY.block + CITY.block / 2; // центр русла
 export const RIVER_HALF_W = CITY.block / 2 - CITY.road / 2 - CITY.sidewalk; // 38 м
-export const QUAY_X = HALF + CITY.road / 2 + CITY.sidewalk + 12;          // набережная: восточнее — море
+export const QUAY_X = STEPPE ? 1e7 : HALF + CITY.road / 2 + CITY.sidewalk + 12; // набережная: восточнее — море (в степи моря нет)
 export const SEA_BED = -14;
 
 // Районы (центры и радиусы, м). Центры новых районов — в центрах кварталов.
-export const DISTRICTS = {
+export const DISTRICTS = STEPPE ? SP.S_DISTRICTS : {
   downtown: { x: 0, z: 0, r: 560, h: 340 },
   midtown: { x: 1250, z: -1100, r: 380, h: 280 },
   westgate: { x: -2050, z: -850, r: 400, h: 300 },     // деловой квартал на западе с башнями-близнецами
@@ -29,13 +33,13 @@ export const DISTRICTS = {
   campus: { x: 850, z: -2550, r: 250 },                // университетский городок
 };
 // Телебашня «Надежда» — на своей площади у южного берега реки (центр квартала)
-export const TV_TOWER = { x: -1650, z: 450 };
-export const LANDMARK = { x: -50, z: -150 };                // главный небоскрёб
-export const BIG_PARK = { minX: -700, minZ: -1500, maxX: -300, maxZ: -1100 };
-export const POND = { x: -500, z: -1300, r: 58 };
-export const STADIUM = { x: 850, z: 950 };
+export const TV_TOWER = STEPPE ? SP.S_TV_TOWER : { x: -1650, z: 450 };
+export const LANDMARK = STEPPE ? SP.S_LANDMARK : { x: -50, z: -150 };                // главный небоскрёб
+export const BIG_PARK = STEPPE ? SP.S_BIG_PARK : { minX: -700, minZ: -1500, maxX: -300, maxZ: -1100 };
+export const POND = STEPPE ? SP.S_POND : { x: -500, z: -1300, r: 58 };
+export const STADIUM = STEPPE ? SP.S_STADIUM : { x: 850, z: 950 };
 // Городской пляж на юго-востоке: от прибрежной улицы (x = HALF − 100) песок уходит в море
-export const BEACH = { x0: HALF - 100 + CITY.road / 2 + CITY.sidewalk, minZ: 2000, maxZ: HALF, x1: PLANE_HALF };
+export const BEACH = STEPPE ? { x0: 1e7, minZ: 0, maxZ: 0, x1: 1e7 } : { x0: HALF - 100 + CITY.road / 2 + CITY.sidewalk, minZ: 2000, maxZ: HALF, x1: PLANE_HALF };
 export const inBeach = (x, z) => x > BEACH.x0 - 0.5 && z > BEACH.minZ && z < BEACH.maxZ && x < BEACH.x1 + 400;
 // Пирс развлечений: от набережной над пляжем в море, в конце — широкая площадка с аттракционами
 export const PIER = { z: 2750, len: 370, w: 18, platFrom: 230, platW: 66 };
@@ -51,7 +55,7 @@ export function beachHeight(x) {
 }
 
 // Городки вдали (центры кратны 100 м — дороги совпадают с сеткой шейдера)
-export const TOWNS = [
+export const TOWNS = STEPPE ? SP.S_TOWNS : [
   { x: -8000, z: -6000, grid: 10, seed: 11 },
   { x: -3000, z: 10000, grid: 8, seed: 22 },
   { x: 9000, z: -11000, grid: 6, seed: 33 },
@@ -59,6 +63,13 @@ export const TOWNS = [
   { x: 1500, z: -14500, grid: 6, seed: 55 },
 ];
 
+// Парадная ось левого берега (в духе новой столицы): цепочка площадей 3×3 вдоль одной линии —
+// шатёр, бульвар с фонтанами, башня с золотым шаром, бульвар, золотые башни, бульвар, дворец.
+// На правом берегу напротив — пирамида, к северо-западу — большая мечеть.
+export const AXIS = STEPPE ? SP.S_AXIS : { z: 750, kinds: [[-550, 'tent'], [-250, 'boulevard'], [50, 'crownTower'], [350, 'boulevard'], [650, 'twinGold'], [950, 'boulevard'], [1250, 'palace']] };
+// Мечеть — южнее прежнего места гигантской сферы (−1150; −150), чтобы сфера стояла там же, где всегда
+export const AXIS_EXTRA = STEPPE ? SP.S_AXIS_EXTRA : [[1250, -50, 'pyramid'], [-1250, -750, 'mosque']];
+export const RIVERSIDE_HALF = STEPPE ? 0 : 2600;                 // набережные-скверы: |x| меньше этого
 const inRect = (x, z, R) => x > R.minX && x < R.maxX && z > R.minZ && z < R.maxZ;
 const inCircle = (x, z, D) => Math.hypot(x - D.x, z - D.z) < D.r;
 export const inOldTown = (x, z) => inCircle(x, z, DISTRICTS.oldtown);
@@ -67,7 +78,7 @@ export const inCampus = (x, z) => inCircle(x, z, DISTRICTS.campus);
 export const inNewCity = (x, z) => inCircle(x, z, DISTRICTS.newcity);
 
 // ---------------------------------------------------------------- кварталы
-export const blockTypes = (() => {
+export const blockTypes = STEPPE ? SP.steppeBlockTypes(BLOCK, HALF, CITY.grid, CITY.block) : (() => {
   const g = CITY.grid, rnd = mulberry32(CITY.seed + 5);
   const t = new Uint8Array(g * g);
   for (let i = 0; i < g; i++) for (let j = 0; j < g; j++) {
@@ -82,12 +93,26 @@ export const blockTypes = (() => {
     else if (inCampus(cx, cz)) type = BLOCK.URBAN;                                  // кампус — сплошь корпуса и дворы
     else if (inSleeper(cx, cz)) type = rnd() < 0.08 ? BLOCK.PARK : BLOCK.URBAN;     // спальный район (и скверы)
     else if (inNewCity(cx, cz)) type = BLOCK.URBAN;                                 // «новый сити» среди пригорода
+    // Набережные: по обоим берегам реки в центре — полосы скверов вместо застройки
+    else if (Math.abs(j - CITY.riverRow) === 1 && Math.abs(cx) < RIVERSIDE_HALF) type = BLOCK.PARK;
     else if (Math.max(Math.abs(cx), Math.abs(cz)) < CITY.urbanHalf) type = Math.hypot(cx, cz) > 260 && rnd() < 0.06 ? BLOCK.PARK : BLOCK.URBAN;
     else type = rnd() < 0.06 ? BLOCK.PARK : BLOCK.SUBURB;
     t[j * g + i] = type;
   }
+  // Сквер у центрального парка: во Вторжении здесь стоит камера подлёта корабля (−263; −935) и
+  // смотрит вверх на него — дома закрывали корабль. Ставится после раздачи, чтобы не сбить случайность
+  for (const [x, z] of [[-350, -1050], [-250, -1050], [-350, -950], [-250, -950]]) {
+    t[Math.floor((z + HALF) / CITY.block) * g + Math.floor((x + HALF) / CITY.block)] = BLOCK.PARK;
+  }
   return t;
 })();
+
+// Характер застройки квартала (только в степи, иначе нули): см. ZONE_ID в steppeplan.js
+export const blockZones = STEPPE ? SP.S_ZONES : new Uint8Array(CITY.grid * CITY.grid);
+export const zoneAt = (x, z) => {
+  const i = Math.floor((x + HALF) / CITY.block), j = Math.floor((z + HALF) / CITY.block);
+  return i < 0 || j < 0 || i >= CITY.grid || j >= CITY.grid ? 0 : blockZones[j * CITY.grid + i];
+};
 
 export function blockAt(x, z) {
   const i = Math.floor((x + HALF) / CITY.block), j = Math.floor((z + HALF) / CITY.block);
@@ -109,11 +134,21 @@ export function skylineAt(x, z) {
 // центра, старого города и реки, на городской или пригородной застройке.
 // Площади 5×5 (≈500 м): гигантская сфера и новые гиганты BIG_KINDS (см. landmarks.js)
 export const BIG_KINDS = ['gate', 'chalice', 'spiral', 'ring', 'halo'];
+// Место высадки Вторжения (SITE в boss/invasion.js) и его сцены: мега-площади обходят его стороной
+const INVASION_SITE = { x: -400, z: -1050 };
 export const MEGA_SITES = (() => {
   const g = CITY.grid, rnd = mulberry32(CITY.seed + 777), B = CITY.block;
   const cell = (x) => Math.floor((x + HALF) / B);
   // Площадь телебашни 3×3 — первой, остальные обходят её стороной
   const tower = { i: cell(TV_TOWER.x), j: cell(TV_TOWER.z), x: TV_TOWER.x, z: TV_TOWER.z, half: B * 1.5, tower: true, n: 1 };
+  const axisSite = (x, z, kind) => ({ i: cell(x), j: cell(z), x, z, half: B * 1.5, n: 1, kind, axis: true });
+  // Ось и её соседи — раньше остальных площадей; случайные площади их обходят
+  const axis = [];
+  for (const [x, kind] of AXIS.kinds) axis.push(axisSite(x, AXIS.z, kind));
+  for (const [x, z, kind] of AXIS_EXTRA) axis.push(axisSite(x, z, kind));
+  for (const s of axis) for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) blockTypes[(s.j + b) * g + (s.i + a)] = BLOCK.MEGA;
+  // В степной столице только свои доминанты: без телебашни, сферы и случайных гигантов
+  if (STEPPE) return axis;
   const free = (i, j, n) => {
     for (let a = -n; a <= n; a++) for (let b = -n; b <= n; b++) {
       const t = blockTypes[(j + b) * g + (i + a)];
@@ -127,6 +162,8 @@ export const MEGA_SITES = (() => {
     if (Math.abs(j - CITY.riverRow) < 4 || !free(i, j, 2)) continue;
     const x = -HALF + (i + 0.5) * B, z = -HALF + (j + 0.5) * B;
     if (inOldTown(x, z) || Math.hypot(x - tower.x, z - tower.z) < 700) continue;
+    // У центрального парка во Вторжении садится корабль и стоит камера сцены — гигантов там нет
+    if (Math.hypot(x - INVASION_SITE.x, z - INVASION_SITE.z) < 900) continue;
     const score = Math.abs(Math.hypot(x - LANDMARK.x, z - LANDMARK.z) - 1100);
     if (score < giantScore) { giantScore = score; giant = { i, j, x, z, half: B * 2.5, giant: true, n: 2 }; }
   }
@@ -136,10 +173,11 @@ export const MEGA_SITES = (() => {
     if (i < n + 1 || j < n + 1 || i >= g - n - 1 || j >= g - n - 1 || Math.abs(j - CITY.riverRow) < n + 2 || !free(i, j, n)) return false;
     const x = -HALF + (i + 0.5) * B, z = -HALF + (j + 0.5) * B;
     if (skylineAt(x, z) > 0.3 || inOldTown(x, z) || Math.hypot(x - LANDMARK.x, z - LANDMARK.z) < 700) return false;
+    if (Math.hypot(x - INVASION_SITE.x, z - INVASION_SITE.z) < 700 + n * 100) return false;
     if (Math.hypot(x - DISTRICTS.sleeper.x, z - DISTRICTS.sleeper.z) < DISTRICTS.sleeper.r + 150 + n * 100) return false;
     return Math.hypot(x - DISTRICTS.campus.x, z - DISTRICTS.campus.z) >= DISTRICTS.campus.r + 150 + n * 100;
   };
-  const sites = giant ? [tower, giant] : [tower];
+  const sites = giant ? [tower, giant, ...axis] : [tower, ...axis];
   const far = (c, d) => !sites.some((s) => Math.hypot(s.x - c.x, s.z - c.z) < d + (s.n - 1) * 150);
   // Новые гиганты на площадях 5×5 — кольцом в 1,6–3,8 км от главного небоскрёба, далеко друг от друга
   const big = [];
@@ -165,6 +203,23 @@ export const MEGA_SITES = (() => {
   for (const s of sites) for (let a = -s.n; a <= s.n; a++) for (let b = -s.n; b <= s.n; b++) blockTypes[(s.j + b) * g + (s.i + a)] = BLOCK.MEGA;
   return sites;
 })();
+// Суперкварталы степной столицы (после мега-площадей: их клетки уже помечены)
+export const SUPERS = STEPPE ? SP.buildSuper(blockTypes, BLOCK, CITY.grid, HALF, CITY.block) : [];
+// Нет ли улицы между соседними кварталами (i0, j0) и (i1, j1). У приморского города улицы есть везде.
+// За краем сетки — степь: улица у края есть, только если квартал не степь
+export function roadCut(i0, j0, i1, j1) {
+  if (!STEPPE) return false;
+  const g = CITY.grid;
+  if (j0 === j1) {
+    const i = Math.min(i0, i1);
+    if (i < 0 || i >= g - 1) { const k = i < 0 ? 0 : g - 1; return j0 >= 0 && j0 < g && blockTypes[j0 * g + k] === BLOCK.EMPTY; }
+    return j0 >= 0 && j0 < g && SP.JOIN_E[j0 * g + i] === 1;
+  }
+  const j = Math.min(j0, j1);
+  if (j < 0 || j >= g - 1) { const k = j < 0 ? 0 : g - 1; return i0 >= 0 && i0 < g && blockTypes[k * g + i0] === BLOCK.EMPTY; }
+  return i0 >= 0 && i0 < g && SP.JOIN_N[j * g + i0] === 1;
+}
+
 // Мега-площадь, в которую попадает точка (pad > 0 — отступ внутрь от краёв, например под тротуары)
 export function inMega(x, z, pad = 0) {
   for (const s of MEGA_SITES) if (Math.abs(x - s.x) < s.half - pad && Math.abs(z - s.z) < s.half - pad) return s;
@@ -172,7 +227,7 @@ export function inMega(x, z, pad = 0) {
 }
 
 // Дороги вдоль оси Z (x = -HALF + k*block) пересекают реку. Мост — на каждой второй.
-export const isBridgeRoad = (k) => k % 2 === 0;
+export const isBridgeRoad = STEPPE ? SP.sBridgeRoad : (k) => k % 2 === 0;
 
 // ---------------------------------------------------------------- шум
 function hash2(ix, iz) {
@@ -201,6 +256,7 @@ function ridged(x, z, oct = 5) {
 
 // Береговая линия: у города море подходит прямо к набережной, дальше — неровный берег
 export const coastX = (z) => {
+  if (STEPPE) return 1e7;
   const wild = HALF + 750 + (fbm(z * 0.0004, 3.7, 3) - 0.5) * 900;
   return lerp(QUAY_X, wild, smoothstep(PLANE_HALF, PLANE_HALF + 2500, Math.abs(z)));
 };
@@ -208,24 +264,27 @@ export const coastX = (z) => {
 // Равнины (0..1): широкие луга и поля между горными массивами
 export function plainK(x, z) {
   const far = smoothstep(PLANE_HALF + 300, PLANE_HALF + 2200, Math.max(Math.abs(x), Math.abs(z)));
+  if (STEPPE) return far;   // степь — сплошь равнина
   return far * smoothstep(0.6, 0.44, fbm(x * 0.00011 + 3.3, z * 0.00011 - 5.1, 3));
 }
 
 // Лес на холмах вокруг города (маска 0..1): нужна и рельефу (цвет), и деревьям
 export function forestMask(x, z, h) {
   const d = Math.hypot(x, z);
+  // В степи лес — только редкие берёзовые колки
+  if (STEPPE) return smoothstep(PLANE_HALF + 300, PLANE_HALF + 1200, Math.max(Math.abs(x), Math.abs(z))) * smoothstep(0.64, 0.7, fbm(x * 0.0016 + 13.1, z * 0.0016 - 7.7, 3)) * smoothstep(-2, 2, h);
   const ring = smoothstep(PLANE_HALF + 200, PLANE_HALF + 900, Math.max(Math.abs(x), Math.abs(z))) * (1 - smoothstep(10000, 15000, d)) * (1 - 0.85 * plainK(x, z));
   const n = smoothstep(0.47, 0.56, fbm(x * 0.0009 + 13.1, z * 0.0009 - 7.7, 4));
   // Хвойный пояс поднимается по склонам до ~1,7 км, выше — альпийские луга
   return ring * n * (1 - smoothstep(1300, 1800, h)) * smoothstep(2, 10, h);
 }
 
-const LAKES = [
+const LAKES = STEPPE ? SP.S_LAKES : [
   { x: -6500, z: 2500, r: 950 },
   { x: 2500, z: -6800, r: 700 },
   { x: -4200, z: -9200, r: 600 },
 ];
-const ISLANDS = [
+const ISLANDS = STEPPE ? [] : [
   { x: 6400, z: 1600, r: 520, h: 45 },
   { x: 7800, z: -2600, r: 850, h: 140 },
   { x: 5600, z: 4600, r: 420, h: 30 },
@@ -272,15 +331,39 @@ const SAND_W = 115;
 const smin = (a, b, k) => { const h = Math.max(k - Math.abs(a - b), 0) / k; return Math.min(a, b) - h * h * k * 0.25; };
 
 // Подробные данные точки острова: высота, расстояние от берега (м, > 0 — суша), скалы
-export function islandSample(x, z) {
-  const [u, v] = isleToLocal(x, z);
-  if (Math.abs(u) > ISLE.size / 2 + 2 || Math.abs(v) > ISLE.size / 2 + 2) return null;
+function isleSD(u, v) {
   const ang = Math.atan2(v / ISLE.rz, u / ISLE.rx);
   let e = Math.hypot(u / ISLE.rx, v / ISLE.rz);
   // Неровный берег: шум по углу (непрерывен по кругу)
   e *= 1 + (fbm(Math.cos(ang) * 1.8 + 3.1, Math.sin(ang) * 1.8 - 2.3, 3) - 0.5) * 0.2;
   let sd = (1 - e) * 1250;
   for (const B of ISLE_BAYS) sd = smin(sd, Math.hypot(u - B.cu, v - B.cv) - B.r, 70);
+  return sd;
+}
+// Настоящая кромка берега под углом phi (шум сдвигает её от эллипса): точка и нормаль к морю
+export function isleShoreAt(phi, out = 0) {
+  const S = isleShore(phi);
+  let lo = -400, hi = 400;                 // смещение вдоль нормали: sd(lo) > 0, sd(hi) < 0
+  for (let i = 0; i < 24; i++) { const m = (lo + hi) / 2; if (isleSD(S.u + S.nu * m, S.v + S.nv * m) > 0) lo = m; else hi = m; }
+  return { u: S.u + S.nu * (lo + out), v: S.v + S.nv * (lo + out), nu: S.nu, nv: S.nv };
+}
+// Точка в системе пляжа тусовки (как Island.at: a — вдоль берега, b — вглубь суши), локально
+function partyLocal(a, b) {
+  const B0 = ISLE_BAYS[0], k = B0.r + 50;
+  const pu = B0.cu - B0.nu * k, pv = B0.cv - B0.nv * k;
+  return { u: pu - B0.nv * a - B0.nu * b, v: pv + B0.nu * a - B0.nv * b };
+}
+// Водопад в джунглях за пляжем тусовки: озерцо у подножия обрыва (чаша в рельефе)
+export const ISLE_FALL = { ...partyLocal(250, 440), r: 30, h: null };
+// Мыс маяка: лавовая скала у кромки к северу от пляжа тусовки
+const lhShore = isleShoreAt(0.95, 25);
+export const ISLE_LIGHTHOUSE = { u: lhShore.u, v: lhShore.v, nu: lhShore.nu, nv: lhShore.nv };
+ISLE_ROCKS.push({ u: lhShore.u, v: lhShore.v, r: 62, h: 24 });
+
+export function islandSample(x, z, noPool = false) {
+  const [u, v] = isleToLocal(x, z);
+  if (Math.abs(u) > ISLE.size / 2 + 2 || Math.abs(v) > ISLE.size / 2 + 2) return null;
+  const sd = isleSD(u, v);
   const wl = WORLD.waterLevel;
   let h;
   if (sd < 0) {
@@ -303,6 +386,17 @@ export function islandSample(x, z) {
     hv *= 0.58 + 0.42 * rid;
     h = base + hv * smoothstep(80, 600, sd);
   }
+  // Чаша озерца под водопадом: дно на 3 м ниже уровня воды, берег плавно сходит к ней
+  let pool = 0;
+  if (!noPool) {
+    const F = ISLE_FALL, dp = Math.hypot(u - F.u, v - F.v);
+    if (dp < F.r * 2.6) {
+      if (F.h === null) { const [fx, fz] = isleToWorld(F.u, F.v); F.h = islandSample(fx, fz, true).h; }
+      const bowl = F.h - 3.2 * Math.max(0, 1 - (dp / F.r) ** 2) + 0.6;
+      h = lerp(h, Math.min(h, bowl), smoothstep(F.r * 2.6, F.r * 1.05, dp));
+      pool = smoothstep(F.r * 1.6, F.r * 1.0, dp);
+    }
+  }
   // Чёрные лавовые скалы
   let rock = 0;
   for (const R of ISLE_ROCKS) {
@@ -313,7 +407,7 @@ export function islandSample(x, z) {
       rock = Math.max(rock, smoothstep(0, 0.5, k));
     }
   }
-  return { h, sd, rock, u, v };
+  return { h, sd, rock, u, v, pool };
 }
 export function islandHeight(x, z) {
   const s = islandSample(x, z);
@@ -356,6 +450,7 @@ export const terrainHeightRaw = (x, z) => terrainCore(x, z, true);
 export const terrainBaseRaw = (x, z) => terrainCore(x, z, false);
 const BASE_KEEP = 120;
 function terrainCore(x, z, withMountains) {
+  if (STEPPE) return steppeTerrain(x, z);
   const dCity = Math.max(Math.abs(x), Math.abs(z));
   // Под городской плоскостью рельеф прячем глубже русла (иначе он закрыл бы реку и море)
   if (dCity < PLANE_HALF - 150) return x > QUAY_X ? SEA_BED : WORLD.riverBed - 3;
@@ -409,6 +504,29 @@ function terrainCore(x, z, withMountains) {
   return h;
 }
 
+// Степь: едва заметные увалы у города, дальше пологие сопки; река уходит за горизонт
+// той же излучиной, что и в городе; мелкие озёра. Гор нет — ломать за городом нечего
+function steppeTerrain(x, z) {
+  const dCity = Math.max(Math.abs(x), Math.abs(z));
+  if (dCity < PLANE_HALF - 150) return WORLD.riverBed - 3;
+  let h = (fbm(x * 0.00025, z * 0.00025, 4) - 0.42) * 70 + (fbm(x * 0.0011 + 4.0, z * 0.0011, 3) - 0.5) * 16;
+  h += Math.pow(Math.max(0, fbm(x * 0.00009 + 9.0, z * 0.00009 - 2.0, 4) - 0.5) * 2, 2) * 520 * smoothstep(8000, 15000, Math.hypot(x, z));
+  h = Math.max(h, 2) * smoothstep(PLANE_HALF, PLANE_HALF + 2500, dCity);
+  for (const L of LAKES) {
+    const d = Math.hypot(x - L.x, z - L.z) * (1 + 0.25 * (fbm(x * 0.002, z * 0.002, 2) - 0.5));
+    h = lerp(-6, h, smoothstep(L.r * 0.65, L.r * 1.25, d));
+  }
+  for (const t of TOWNS) {
+    const r = t.grid * CITY.block * 0.5;
+    const d = Math.max(Math.abs(x - t.x), Math.abs(z - t.z));
+    h = lerp(-0.3, h, smoothstep(r + 100, r + 1400, d));
+  }
+  h = lerp(h, -0.3, 1 - smoothstep(PLANE_HALF - 100, PLANE_HALF + 600, dCity));
+  // Русло — после выравнивания у города, иначе оно засыпало бы реку на краю плоскости
+  const w = SP.riverHW(x), dz = Math.abs(z - SP.riverZ(x));
+  return lerp(h, WORLD.riverBed + 1, 1 - smoothstep(w * 0.85, w * 2.2, dz));
+}
+
 // ---------------------------------------------------------------- сетка высот для физики
 export const TERRAIN_RES = 512;   // ячейка ~86 м
 export const TERRAIN_TILE = 32;   // плитка сетки рельефа (16×16 плиток по ~2,75 км)
@@ -432,7 +550,21 @@ export function sampleTerrain(x, z) {
   return u + v <= 1 ? h00 + (h10 - h00) * u + (h01 - h00) * v : h11 + (h01 - h11) * (1 - u) + (h10 - h11) * (1 - v);
 }
 
-export const inRiver = (x, z) => Math.abs(z - RIVER_Z) < RIVER_HALF_W && Math.abs(x) < PLANE_HALF;
+// Центр русла и полуширина реки в точке x (в приморском городе река прямая)
+export const riverZAt = STEPPE ? SP.riverZ : () => RIVER_Z;
+export const riverHWAt = STEPPE ? SP.riverHW : () => RIVER_HALF_W;
+export const inRiver = (x, z) => Math.abs(z - riverZAt(x)) < riverHWAt(x) && Math.abs(x) < PLANE_HALF;
+// Высота берега степной реки: гранитный откос или пологий пляж уходит к дну
+export function steppeBankHeight(x, z) {
+  const dz = z - SP.riverZ(x), t = SP.riverHW(x) - Math.abs(dz);
+  if (t < 0) return 0;
+  return Math.max(WORLD.riverBed, t * WORLD.riverBed / SP.bankRun(x, dz > 0 ? 1 : -1));
+}
+// Шейдерные функции реки: riverZ(x), riverHW(x), beachK(x, side)
+export const RIVER_GLSL = STEPPE ? SP.RIVER_GLSL : `
+  float riverZ(float x) { return ${RIVER_Z.toFixed(1)}; }
+  float riverHW(float x) { return ${RIVER_HALF_W.toFixed(1)}; }
+  float beachK(float x, float side) { return 0.0; }`;
 export const inPond = (x, z) => Math.hypot(x - POND.x, z - POND.z) < POND.r;
 
 // ---------------------------------------------------------------- дорожки парков
@@ -459,8 +591,10 @@ export function groundHeight(x, z) {
   if (Math.abs(x) < PLANE_HALF && Math.abs(z) < PLANE_HALF) {
     if (inBeach(x, z)) return beachHeight(x);
     if (x > QUAY_X) return SEA_BED;
+    if (STEPPE) return inPond(x, z) ? WORLD.riverBed : steppeBankHeight(x, z);
     return inRiver(x, z) || inPond(x, z) ? WORLD.riverBed : 0;
   }
+  if (STEPPE) return sampleTerrain(x, z);
   // Райский остров — точная высота (пляж, скалы, склоны вулкана)
   const ih = islandHeight(x, z);
   if (ih !== null) return ih;

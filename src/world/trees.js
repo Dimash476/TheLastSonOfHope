@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { CITY } from '../config.js';
 import { mulberry32 } from '../utils.js';
-import { HALF, BLOCK, blockTypes, BIG_PARK, POND, PLANE_HALF, forestMask, groundHeight, fbm, parkPathDist, bigParkPaths, bigParkPathDist, PARK_RING, MEGA_SITES } from './layout.js';
+import { HALF, BLOCK, blockTypes, BIG_PARK, POND, PLANE_HALF, forestMask, groundHeight, fbm, parkPathDist, bigParkPaths, bigParkPathDist, PARK_RING, MEGA_SITES, STEPPE, blockZones, riverZAt, riverHWAt, roadCut } from './layout.js';
+import { beachK } from './steppeplan.js';
 
 const CELL = 60;
 const CHUNK = 500;      // крупные участки — меньше вызовов отрисовки
@@ -40,6 +41,8 @@ export class Trees {
       return r < 0.52 ? 'broad' : r < 0.74 ? 'oak' : r < 0.93 ? 'birch' : 'conifer';
     };
     const add = (x, z, y = 0, scale = 1, forest = false) => {
+      // У камеры подлёта корабля во Вторжении (сквер у центрального парка) деревьев нет — не закрывают кадр
+      if (!STEPPE && Math.hypot(x + 263, z + 935) < 32) return;
       const t = { x, z, y, forest, kind: pick(forest, y), alive: true, s: (0.75 + rnd() * 0.6) * scale, rot: rnd() * Math.PI * 2, shade: 0.8 + rnd() * 0.35 };
       this.list.push(t);
       const key = Math.floor(x / CELL) * 100000 + Math.floor(z / CELL);
@@ -62,14 +65,36 @@ export class Trees {
           const x = bx + 15 + rnd() * 70, z = bz + 15 + rnd() * 70;
           if (parkPathDist(x, z) > 6.5 && Math.hypot(x - cx, z - cz) > PARK_RING + 8) add(x, z);
         }
-      } else if (type === BLOCK.URBAN || type === BLOCK.SUBURB) {
+      } else if (STEPPE && type === BLOCK.AVENUE) {
+        // Проспект: два ряда деревьев вдоль аллеи бульвара; на перекрёстке — кольцо вокруг площадки
+        const cx = bx + B / 2, cz = bz + B / 2, zone = blockZones[j * g + i];
+        if (zone > 3) {
+          // Трасса в степи: лесополосы по обе стороны, с разрывами
+          for (let t = 4; t < B; t += 7) for (const s of [-36, -42, 36, 42]) if (rnd() < 0.75) zone === 4 ? add(cx + s, bz + t, 0, 1.1) : add(bx + t, cz + s, 0, 1.1);
+        } else if (zone === 3) for (let a = 0; a < 14; a++) { const an = a / 14 * Math.PI * 2; add(cx + Math.cos(an) * 22, cz + Math.sin(an) * 22, 0, 1.1); }
+        else for (let t = 16; t <= 84; t += 8.5) for (const s of [-7, 7, -27, 27]) zone === 1 ? add(cx + s, bz + t, 0, 1.1) : add(bx + t, cz + s, 0, 1.1);
+      } else if (STEPPE && type === BLOCK.PRIVATE) {
+        // Сады частного сектора: яблони и вишни в глубине участков
+        for (let a = 0; a < 4; a++) for (let b = 0; b < 2; b++) if (rnd() < 0.7) add(bx + 12 + 19 * a + 4 + rnd() * 11, bz + 50 + (b ? 6 + rnd() * 14 : -6 - rnd() * 14), 0, 0.6);
+      } else if (STEPPE && type === BLOCK.RIVER) {
+        // Набережная: деревья вдоль дорожки сквера (не на пляжах)
+        for (let x = bx + 5; x < bx + B; x += 11) {
+          const rz = riverZAt(x), side = (bz + B / 2) > rz ? 1 : -1;
+          if (beachK(x, side) > 0.2) continue;
+          for (const off of [24, 48]) { const z = rz + side * (riverHWAt(x) + off); if (z > bz + 12 && z < bz + B - 12) add(x, z, 0, 1.05); }
+        }
+      } else if (type === BLOCK.URBAN || type === BLOCK.SUBURB || (STEPPE && type === BLOCK.YARD)) {
         // Деревья на тротуаре (в городе) или на газоне у дороги (в пригороде)
         const inset = type === BLOCK.URBAN ? 10.8 : 14;
         const steps = type === BLOCK.URBAN ? [17, 50, 83] : [20, 40, 60, 80];
+        // Только вдоль настоящих улиц (внутри суперкварталов Сарыдалы улиц нет)
+        const open = [!roadCut(i, j - 1, i, j), !roadCut(i, j, i, j + 1), !roadCut(i - 1, j, i, j), !roadCut(i, j, i + 1, j)];
         for (const t of steps) {
           if (rnd() < 0.15) continue;
-          add(bx + t, bz + inset); add(bx + t, bz + B - inset);
-          add(bx + inset, bz + t); add(bx + B - inset, bz + t);
+          if (open[0]) add(bx + t, bz + inset);
+          if (open[1]) add(bx + t, bz + B - inset);
+          if (open[2]) add(bx + inset, bz + t);
+          if (open[3]) add(bx + B - inset, bz + t);
         }
       }
     }
@@ -79,6 +104,8 @@ export class Trees {
     for (const s of MEGA_SITES) {
       const r = s.half - 12 - 8;
       for (let t = -r; t <= r; t += 14) for (const [x, z] of [[t, -r], [t, r], [-r, t], [r, t]]) add(s.x + x, s.z + z, 0, 1.15);
+      // Бульвар оси: по газонам вдоль бассейна — двойные аллеи
+      if (s.kind === 'boulevard') for (const oz of [-40, -52, 40, 52, -98, -110, 98, 110]) for (let t = -r + 10; t <= r - 10; t += 12) add(s.x + t, s.z + oz, 0, 1.1);
     }
     // Центральный парк: густые рощи, поляны и берег пруда без деревьев
     const P = BIG_PARK;

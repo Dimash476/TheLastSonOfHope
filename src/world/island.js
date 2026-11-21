@@ -6,6 +6,7 @@ import { ISLE, ISLE_BAYS, ISLE_ROCKS, isleToWorld, islandSample, islandHeight } 
 import { makeBeachGeometries, createTintMaterial } from './beach.js';
 import { makePersonGeometry, createPeopleMaterial } from './people.js';
 import { createGlowPoolMaterial } from './props.js';
+import { IslePlaces } from './isleplaces.js';
 
 // Райский остров: вулкан с зелёными гребнями, золотой пляж на закат, бирюзовая лагуна
 // (её рисует вода — см. environment.js), пальмы и джунгли, пляжная тусовка
@@ -73,6 +74,7 @@ export class Island {
     this.buildParty(rnd);
     this.buildCove(rnd);
     this.buildCozy(rnd);
+    this.places = new IslePlaces(this);
     this.lastZone = null;
   }
 
@@ -195,7 +197,7 @@ export class Island {
       const u = (rnd() - 0.5) * 2 * half, v = (rnd() - 0.5) * 2 * half;
       const [x, z] = isleToWorld(u, v);
       const s = islandSample(x, z);
-      if (!s || s.rock > 0.05 || inParty(x, z) || nearCove(x, z)) continue;
+      if (!s || s.rock > 0.05 || s.pool > 0 || inParty(x, z) || nearCove(x, z)) continue;
       if (s.sd > 85 && s.sd < 150 && crest < 760) {
         const [nx, nz] = outward(x, z);
         const tall = rnd() < 0.35;
@@ -214,7 +216,7 @@ export class Island {
       const ju = u + (rnd() - 0.5) * step, jv = v + (rnd() - 0.5) * step;
       const [x, z] = isleToWorld(ju, jv);
       const s = islandSample(x, z);
-      if (!s || s.rock > 0.05 || s.sd < 165 || s.h > 760 || inParty(x, z) || nearCove(x, z)) continue;
+      if (!s || s.rock > 0.05 || s.pool > 0 || s.sd < 165 || s.h > 760 || inParty(x, z) || nearCove(x, z)) continue;
       const low = 1 - THREE.MathUtils.smoothstep(s.h, 220, 640);
       const clump = THREE.MathUtils.smoothstep(0.32, 0.55, fbmLike(x * 0.004, z * 0.004));
       // Полоса леса за пляжем — самая густая чаща (из неё выходишь к морю)
@@ -764,6 +766,7 @@ export class Island {
     this.uTime.value = this.t;
     const d = Math.hypot(camPos.x - ISLE.x, camPos.z - ISLE.z);
     this.near.visible = d < 6000;
+    this.places.update(dt, camPos, env, this.near.visible);
     if (!this.near.visible) return;
     for (const c of this.vegChunks) {
       const dc = Math.hypot(camPos.x - c.x, camPos.z - c.z);

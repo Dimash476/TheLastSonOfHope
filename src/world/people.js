@@ -51,6 +51,10 @@ export class People {
     this.head = mk(geo.head, N);
     this.hairShort = mk(geo.hairShort, N);
     this.hairLong = mk(geo.hairLong, N);
+    this.hairTail = mk(geo.hairTail, N);
+    this.beard = mk(geo.beard, N);
+    this.glasses = mk(geo.glasses, N);
+    this.beard.castShadow = this.glasses.castShadow = false;
     this.arms = mk(geo.arm, N * 2);
     this.legs = mk(geo.leg, N * 2);
     // Аксессуары: рюкзак, кепка, юбка, телефон в руке (снимают героя)
@@ -59,7 +63,7 @@ export class People {
     this.skirt = mk(geo.skirt, N);
     this.phone = mk(geo.phone, N);
     this.bag.castShadow = this.cap.castShadow = this.phone.castShadow = false;
-    this.meshes = [this.torso, this.head, this.hairShort, this.hairLong, this.arms, this.legs, this.bag, this.cap, this.skirt, this.phone];
+    this.meshes = [this.torso, this.head, this.hairShort, this.hairLong, this.hairTail, this.beard, this.glasses, this.arms, this.legs, this.bag, this.cap, this.skirt, this.phone];
 
     // Вспышки камер телефонов (селфи с героем)
     const fc = document.createElement('canvas');
@@ -86,13 +90,17 @@ export class People {
         slot: i, state: 'none', pos: new THREE.Vector3(), vel: new THREE.Vector3(), quat: new THREE.Quaternion(),
         ang: new THREE.Vector3(), heading: 0, phase: Math.random() * 6, block: [0, 0], s: 0, dirSign: 1,
         speed: 1.4, timer: 0, from: new THREE.Vector3(), target: new THREE.Vector3(),
-        h: 0.9 + Math.random() * 0.18,                   // рост
+        h: Math.random() < 0.08 ? 0.6 + Math.random() * 0.14 : 0.9 + Math.random() * 0.18,   // рост (иногда — дети)
         hair: r < 0.35 ? 'long' : r < 0.92 ? 'short' : 'none',
         gesture: Math.random(),                           // кто показывает рукой, кто машет
         look: 0, armL: 0, armR: 0, wave: 0, phone: 0,
         w: 0.88 + Math.random() * 0.24,                  // телосложение
       };
       p.skirt = p.hair === 'long' && Math.random() < 0.5;
+      // Часть длинноволосых — с хвостом; у взрослых коротко стриженных бывает борода; очки — у любого
+      p.tail = p.hair === 'long' && Math.random() < 0.35;
+      p.beard = p.hair === 'short' && p.h > 0.85 && Math.random() < 0.25;
+      p.glasses = Math.random() < 0.18;
       p.bag = Math.random() < 0.22;
       p.cap = p.hair !== 'long' && Math.random() < 0.2;
       const skin = pick(SKIN);
@@ -117,6 +125,7 @@ export class People {
       this.legs.setColorAt(i * 2, c.pants); this.legs.setColorAt(i * 2 + 1, c.pants);
       this.head.setColorAt(i, c.skin);
       this.hairShort.setColorAt(i, c.hair); this.hairLong.setColorAt(i, c.hair);
+      this.hairTail.setColorAt(i, c.hair); this.beard.setColorAt(i, c.hair);
       this.skirt.setColorAt(i, c.skirt);
       this.bag.setColorAt(i, c.bag);
       this.cap.setColorAt(i, c.cap);
@@ -580,7 +589,10 @@ export class People {
     _m2.compose(_v.set(0, NECK_Y, 0), _q2.setFromAxisAngle(RX, -p.look), _s.set(1 / w, 1, 1 / w)).premultiply(_m);
     this.head.setMatrixAt(slot, _m2);
     this.hairShort.setMatrixAt(slot, p.hair === 'short' && !p.cap ? _m2 : _zero);
-    this.hairLong.setMatrixAt(slot, p.hair === 'long' ? _m2 : _zero);
+    this.hairLong.setMatrixAt(slot, p.hair === 'long' && !p.tail ? _m2 : _zero);
+    this.hairTail.setMatrixAt(slot, p.hair === 'long' && p.tail ? _m2 : _zero);
+    this.beard.setMatrixAt(slot, p.beard ? _m2 : _zero);
+    this.glasses.setMatrixAt(slot, p.glasses ? _m2 : _zero);
     this.cap.setMatrixAt(slot, p.cap ? _m2 : _zero);
     _s.set(1 / w, 1, 1 / w);
     for (let k = 0; k < 2; k++) {
@@ -638,41 +650,87 @@ export function makePersonGeometry() {
     return geo;
   };
   const merge = (list) => mergeGeometries(list);
-  // Торс: грудь шире талии, плечи, воротник, таз
+  const S = (r, w, h, sx, sy, sz, x, y, z) => new THREE.SphereGeometry(r, w, h).scale(sx, sy, sz).translate(x, y, z);
+  // Торс: грудь шире талии, округлые плечи, воротник, ремень с пряжкой, таз, молния куртки
   const torso = merge([
-    part(new THREE.CylinderGeometry(0.2, 0.16, 0.42, 8).scale(1, 1, 0.62).translate(0, 1.22, 0), 0xffffff, 1),
-    part(new THREE.SphereGeometry(0.2, 8, 4, 0, Math.PI * 2, 0, Math.PI / 2).scale(1.05, 0.45, 0.62).translate(0, 1.42, 0), 0xffffff, 1),
-    part(new THREE.CylinderGeometry(0.165, 0.17, 0.16, 8).scale(1, 1, 0.66).translate(0, 0.98, 0), 0xffffff, 1),
+    part(new THREE.CylinderGeometry(0.2, 0.165, 0.42, 12).scale(1, 1, 0.62).translate(0, 1.22, 0), 0xffffff, 1),
+    part(S(0.2, 12, 5, 1.05, 0.45, 0.62, 0, 1.42, 0), 0xffffff, 1),
+    part(S(0.075, 8, 6, 1, 0.9, 1, 0.19, 1.395, 0), 0xffffff, 1),
+    part(S(0.075, 8, 6, 1, 0.9, 1, -0.19, 1.395, 0), 0xffffff, 1),
+    part(new THREE.CylinderGeometry(0.06, 0.075, 0.05, 10).scale(1, 1, 0.9).translate(0, 1.47, 0.005), 0xffffff, 1),
+    part(new THREE.CylinderGeometry(0.168, 0.168, 0.045, 12).scale(1, 1, 0.66).translate(0, 1.02, 0), 0x2a2420, 0),
+    part(new THREE.BoxGeometry(0.045, 0.035, 0.012).translate(0, 1.02, 0.112), 0xb8a878, 0),
+    part(new THREE.CylinderGeometry(0.165, 0.175, 0.17, 12).scale(1, 1, 0.68).translate(0, 0.94, 0), 0xffffff, 1),
+    part(new THREE.BoxGeometry(0.008, 0.36, 0.006).translate(0, 1.23, 0.126), 0x3a3a3c, 0),
   ]);
-  // Голова: шея, череп, нос, уши
+  // Голова: шея, череп, скулы, нос, уши; лицо — белки и радужки глаз, брови, губы, подбородок
+  const eye = (sx) => [
+    part(S(0.013, 8, 6, 1.25, 0.8, 0.5, sx * 0.034, 0.182, 0.096), 0xf2efe8, 0),
+    part(S(0.0075, 6, 5, 1, 1, 0.5, sx * 0.034, 0.182, 0.1015), 0x2a1c14, 0),
+    part(new THREE.BoxGeometry(0.03, 0.006, 0.01).translate(sx * 0.034, 0.1925, 0.097), 0xffffff, 1),
+  ];
   const head = merge([
-    part(new THREE.CylinderGeometry(0.048, 0.055, 0.1, 6).translate(0, 0.03, 0), 0xffffff, 1),
-    part(new THREE.SphereGeometry(0.1, 10, 8).scale(0.88, 1.08, 1).translate(0, 0.17, 0.005), 0xffffff, 1),
-    part(new THREE.BoxGeometry(0.03, 0.045, 0.04).translate(0, 0.155, 0.098), 0xffffff, 1),
-    part(new THREE.SphereGeometry(0.022, 5, 4).scale(0.5, 1, 0.8).translate(0.088, 0.16, 0), 0xffffff, 1),
-    part(new THREE.SphereGeometry(0.022, 5, 4).scale(0.5, 1, 0.8).translate(-0.088, 0.16, 0), 0xffffff, 1),
-    // Лицо: глаза, брови, губы, подбородок
-    part(new THREE.SphereGeometry(0.011, 5, 4).scale(1.2, 0.8, 0.5).translate(0.034, 0.182, 0.099), 0x1a1410, 0),
-    part(new THREE.SphereGeometry(0.011, 5, 4).scale(1.2, 0.8, 0.5).translate(-0.034, 0.182, 0.099), 0x1a1410, 0),
-    part(new THREE.BoxGeometry(0.032, 0.007, 0.008).rotateZ(-0.12).translate(0.035, 0.205, 0.097), 0x2a1c14, 0),
-    part(new THREE.BoxGeometry(0.032, 0.007, 0.008).rotateZ(0.12).translate(-0.035, 0.205, 0.097), 0x2a1c14, 0),
-    part(new THREE.BoxGeometry(0.036, 0.007, 0.008).translate(0, 0.118, 0.092), 0x8a4a42, 0),
-    part(new THREE.SphereGeometry(0.03, 6, 4).scale(1.1, 0.7, 0.8).translate(0, 0.095, 0.07), 0xffffff, 1),
+    part(new THREE.CylinderGeometry(0.048, 0.056, 0.1, 8).translate(0, 0.03, 0), 0xffffff, 1),
+    part(S(0.1, 14, 10, 0.88, 1.08, 1, 0, 0.17, 0.005), 0xffffff, 1),
+    part(S(0.045, 8, 6, 1, 0.8, 0.7, 0.045, 0.14, 0.06), 0xffffff, 1),
+    part(S(0.045, 8, 6, 1, 0.8, 0.7, -0.045, 0.14, 0.06), 0xffffff, 1),
+    part(new THREE.BoxGeometry(0.022, 0.05, 0.03).translate(0, 0.16, 0.098), 0xffffff, 1),
+    part(S(0.016, 6, 5, 1.2, 0.9, 1, 0, 0.14, 0.11), 0xffffff, 1),
+    part(S(0.024, 6, 5, 0.45, 1, 0.8, 0.088, 0.16, 0), 0xffffff, 1),
+    part(S(0.024, 6, 5, 0.45, 1, 0.8, -0.088, 0.16, 0), 0xffffff, 1),
+    ...eye(1), ...eye(-1),
+    part(new THREE.BoxGeometry(0.034, 0.008, 0.008).rotateZ(-0.12).translate(0.035, 0.207, 0.097), 0x2a1c14, 0),
+    part(new THREE.BoxGeometry(0.034, 0.008, 0.008).rotateZ(0.12).translate(-0.035, 0.207, 0.097), 0x2a1c14, 0),
+    part(S(0.02, 8, 4, 1.1, 0.28, 0.5, 0, 0.12, 0.094), 0x9a5048, 0),
+    part(S(0.018, 8, 4, 1.1, 0.32, 0.5, 0, 0.112, 0.092), 0xa85a50, 0),
+    part(S(0.03, 8, 5, 1.1, 0.7, 0.8, 0, 0.095, 0.07), 0xffffff, 1),
   ]);
-  const hairShort = part(new THREE.SphereGeometry(0.106, 10, 5, 0, Math.PI * 2, 0, Math.PI * 0.55).scale(0.92, 1.0, 1.05).translate(0, 0.19, -0.008), 0xffffff, 1);
+  // Короткая стрижка с чёлкой; длинные волосы до лопаток с прядями у лица
+  const hairShort = merge([
+    part(new THREE.SphereGeometry(0.106, 14, 6, 0, Math.PI * 2, 0, Math.PI * 0.55).scale(0.92, 1.0, 1.05).translate(0, 0.19, -0.008), 0xffffff, 1),
+    part(S(0.05, 8, 4, 1.4, 0.35, 0.6, 0.015, 0.255, 0.075).rotateZ(-0.15), 0xffffff, 1),
+    part(new THREE.SphereGeometry(0.104, 12, 5, Math.PI * 0.55, Math.PI * 0.9, Math.PI * 0.3, Math.PI * 0.4).scale(0.95, 1, 1.05).translate(0, 0.17, -0.01), 0xffffff, 1),
+  ]);
   const hairLong = merge([
-    part(new THREE.SphereGeometry(0.108, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.6).scale(0.95, 1.02, 1.06).translate(0, 0.185, -0.01), 0xffffff, 1),
-    part(new THREE.BoxGeometry(0.19, 0.24, 0.06).translate(0, 0.08, -0.075), 0xffffff, 1),
+    part(new THREE.SphereGeometry(0.108, 14, 7, 0, Math.PI * 2, 0, Math.PI * 0.6).scale(0.95, 1.02, 1.06).translate(0, 0.185, -0.01), 0xffffff, 1),
+    part(new THREE.CapsuleGeometry(0.075, 0.2, 3, 10).scale(1.25, 1, 0.5).translate(0, 0.07, -0.075), 0xffffff, 1),
+    part(new THREE.CapsuleGeometry(0.022, 0.14, 2, 6).translate(0.085, 0.1, 0.04).rotateZ(0.05), 0xffffff, 1),
+    part(new THREE.CapsuleGeometry(0.022, 0.14, 2, 6).translate(-0.085, 0.1, 0.04).rotateZ(-0.05), 0xffffff, 1),
   ]);
-  // Рука висит из плеча: рукав, кисть
+  // Хвост на затылке (вариант длинных волос) и борода (цвет волос)
+  const hairTail = merge([
+    part(new THREE.SphereGeometry(0.108, 14, 7, 0, Math.PI * 2, 0, Math.PI * 0.58).scale(0.94, 1.0, 1.06).translate(0, 0.186, -0.01), 0xffffff, 1),
+    part(S(0.03, 8, 6, 1, 1, 1, 0, 0.2, -0.105), 0xffffff, 1),
+    part(new THREE.CapsuleGeometry(0.03, 0.18, 2, 8).rotateX(0.35).translate(0, 0.1, -0.14), 0xffffff, 1),
+  ]);
+  const beard = merge([
+    part(new THREE.SphereGeometry(0.098, 12, 6, 0, Math.PI * 2, Math.PI * 0.55, Math.PI * 0.32).scale(0.9, 1.1, 1.02).translate(0, 0.17, 0.008), 0xffffff, 1),
+    part(new THREE.BoxGeometry(0.05, 0.012, 0.012).translate(0, 0.128, 0.1), 0xffffff, 1),
+  ]);
+  const glasses = merge([
+    part(new THREE.TorusGeometry(0.018, 0.0028, 4, 12).translate(0.034, 0.183, 0.106), 0x1a1a1c, 0),
+    part(new THREE.TorusGeometry(0.018, 0.0028, 4, 12).translate(-0.034, 0.183, 0.106), 0x1a1a1c, 0),
+    part(new THREE.BoxGeometry(0.03, 0.004, 0.004).translate(0, 0.186, 0.106), 0x1a1a1c, 0),
+    part(new THREE.BoxGeometry(0.004, 0.004, 0.1).translate(0.054, 0.186, 0.058), 0x1a1a1c, 0),
+    part(new THREE.BoxGeometry(0.004, 0.004, 0.1).translate(-0.054, 0.186, 0.058), 0x1a1a1c, 0),
+  ]);
+  // Рука из плеча: плечо и предплечье (локоть чуть согнут), манжета, кисть с большим пальцем
   const arm = merge([
-    part(new THREE.CapsuleGeometry(0.048, 0.46, 2, 6).translate(0, -0.27, 0), 0xffffff, 1),
-    part(new THREE.SphereGeometry(0.045, 6, 4).scale(0.8, 1.2, 0.6).translate(0, -0.6, 0.01), 0xc99a78, 0),
+    part(new THREE.CapsuleGeometry(0.05, 0.22, 3, 8).translate(0, -0.15, 0), 0xffffff, 1),
+    part(new THREE.CapsuleGeometry(0.044, 0.22, 3, 8).rotateX(-0.18).translate(0, -0.41, 0.025), 0xffffff, 1),
+    part(new THREE.CylinderGeometry(0.047, 0.047, 0.03, 8).rotateX(-0.18).translate(0, -0.53, 0.047), 0xffffff, 1),
+    part(new THREE.BoxGeometry(0.05, 0.085, 0.07).translate(0, -0.6, 0.055), 0xc99a78, 0),
+    part(S(0.03, 6, 4, 0.9, 1.1, 1.1, 0, -0.655, 0.055), 0xc99a78, 0),
+    part(new THREE.CapsuleGeometry(0.012, 0.035, 1, 4).rotateX(0.5).translate(0.02, -0.6, 0.095), 0xc99a78, 0),
   ]);
-  // Нога из бедра: брючина сужается книзу, ботинок
+  // Нога из бедра: бедро, колено, голень сужается к лодыжке, кроссовок с белой подошвой и шнуровкой
   const leg = merge([
-    part(new THREE.CylinderGeometry(0.085, 0.058, 0.82, 7).translate(0, -0.41, 0), 0xffffff, 1),
-    part(new THREE.BoxGeometry(0.1, 0.08, 0.25).translate(0, -0.87, 0.04), 0x1c1a19, 0),
+    part(new THREE.CylinderGeometry(0.088, 0.068, 0.44, 10).translate(0, -0.22, 0), 0xffffff, 1),
+    part(S(0.07, 8, 6, 1, 0.8, 1, 0, -0.45, 0.01), 0xffffff, 1),
+    part(new THREE.CylinderGeometry(0.066, 0.052, 0.38, 10).translate(0, -0.64, 0), 0xffffff, 1),
+    part(new THREE.CapsuleGeometry(0.048, 0.15, 2, 8).rotateX(Math.PI / 2).scale(1.05, 0.8, 1).translate(0, -0.855, 0.045), 0x1c1a19, 0),
+    part(new THREE.BoxGeometry(0.104, 0.025, 0.26).translate(0, -0.895, 0.045), 0xe8e4dc, 0),
+    part(new THREE.BoxGeometry(0.05, 0.012, 0.08).rotateX(-0.35).translate(0, -0.82, 0.075), 0xd8d4cc, 0),
   ]);
   // Рюкзак, кепка с козырьком, юбка, телефон (в правой руке, экран к владельцу)
   const bag = merge([
@@ -690,5 +748,5 @@ export function makePersonGeometry() {
     part(new THREE.BoxGeometry(0.072, 0.01, 0.145).translate(0, -0.65, 0.0), 0x161618, 0),
     part(new THREE.BoxGeometry(0.062, 0.002, 0.128).translate(0, -0.644, 0.0), 0xa8dcff, 0),
   ]);
-  return { torso, head, hairShort, hairLong, arm, leg, bag, cap, skirt, phone };
+  return { torso, head, hairShort, hairLong, hairTail, beard, glasses, arm, leg, bag, cap, skirt, phone };
 }

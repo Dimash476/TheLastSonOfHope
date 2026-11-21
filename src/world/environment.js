@@ -3,7 +3,137 @@ import { Sky } from 'three/addons/objects/Sky.js';
 import { CITY, WORLD, SPACE } from '../config.js';
 import { mulberry32, smoothstep, lerp } from '../utils.js';
 import { SUN } from './bodies.js';
+import { STEPPE, RIVER_GLSL, riverZAt, riverHWAt, blockZones, fbm } from './layout.js';
+import { beachK, bankRun, JOIN_E, JOIN_N, S_LAKES } from './steppeplan.js';
 import { HALF, PLANE_HALF, RIVER_Z, RIVER_HALF_W, TOWNS, blockTypes, TERRAIN_RES, TERRAIN_TILE, terrainHeights, coastX, forestMask, QUAY_X, SEA_BED, BIG_PARK, POND, STADIUM, BEACH, plainK, MEGA_SITES, ISLE, isleToWorld, islandSample, DISTRICTS } from './layout.js';
+
+const STEPPE_COMMON = `
+          uniform sampler2D uJoinMap;
+          float typeAt(vec2 b) { b = clamp(b, 0.0, uGrid - 1.0); return floor((texture2D(uBlockMap, (b + 0.5) / uGrid).r * 255.0 + 0.5) / 16.0); }
+          // Слит ли квартал b с соседом по X (s = ±1) / по Z: улицы между ними нет (суперквартал, степь).
+          // За краем сетки — степь: улица у края есть, только если сам квартал не степь
+          float joinX(vec2 b, float s, float type) {
+            vec2 c = s < 0.0 ? b - vec2(1.0, 0.0) : b;
+            if (c.x < -0.5 || c.x > uGrid - 1.5) return abs(type - 4.0) < 0.5 ? 1.0 : 0.0;
+            return step(0.5, texture2D(uJoinMap, (c + 0.5) / uGrid).r);
+          }
+          float joinY(vec2 b, float s, float type) {
+            vec2 c = s < 0.0 ? b - vec2(0.0, 1.0) : b;
+            if (c.y < -0.5 || c.y > uGrid - 1.5) return abs(type - 4.0) < 0.5 ? 1.0 : 0.0;
+            return step(0.5, texture2D(uJoinMap, (c + 0.5) / uGrid).g);
+          }`;
+const STEPPE_ROADS = `
+            float village = 0.0, drive = 0.0;
+            if (inMain > 0.5) {
+              float sx = lp.x < uBlock * 0.5 ? -1.0 : 1.0, sy = lp.y < uBlock * 0.5 ? -1.0 : 1.0;
+              float tV = typeAt(bidx0 + vec2(sx, 0.0));
+              float tH = typeAt(bidx0 + vec2(0.0, sy));
+              // Улицы нет внутри суперквартала, между клетками степи и вдоль береговой полосы
+              if (joinX(bidx0, sx, type) > 0.5) d.x = 99.0;
+              if (joinY(bidx0, sy, type) > 0.5) d.y = 99.0;
+              minD = min(d.x, d.y);
+              // Грунтовка — между участками частного сектора и на краю посёлка у степи
+              float tn = d.x < d.y ? tV : tH;
+              bool pv = abs(type - 14.0) < 0.5, pn = abs(tn - 14.0) < 0.5;
+              village = ((pv && (pn || abs(tn - 4.0) < 0.5)) || (abs(type - 4.0) < 0.5 && pn)) ? 1.0 : 0.0;
+            }`;
+const STEPPE_BLOCKS = `
+            {
+              vec2 lq = lp - uBlock * 0.5;
+              vec3 lawnS = mix(vec3(0.15, 0.25, 0.09), vec3(0.24, 0.33, 0.13), vnoise(p * 0.05) * 0.7 + vnoise(p * 0.4) * 0.3);
+              float e = max(abs(lq.x), abs(lq.y));
+              if (type > 2.5 && type < 3.5) {
+                // Набережная: газон с извилистой дорожкой, у воды гранитный променад, местами пляж
+                float rz = riverZ(p.x), side = p.y > rz ? 1.0 : -1.0;
+                float wd = abs(p.y - rz) - riverHW(p.x);
+                float bk = beachK(p.x, side);
+                float path = abs(wd - 36.0 - 9.0 * sin(p.x * 0.013));
+                col = mix(lawnS, vec3(0.55, 0.5, 0.42), 1.0 - smoothstep(1.8, 2.4, path));
+                vec2 tl = abs(fract(p / vec2(2.0, 1.0)) - 0.5);
+                vec3 granite = vec3(0.52, 0.5, 0.47) * (0.92 + 0.08 * vnoise(p * 0.3)) * (1.0 - step(0.46, max(tl.x, tl.y)) * 0.12);
+                col = mix(col, granite, (1.0 - smoothstep(13.0, 14.0, wd)) * (1.0 - bk));
+                vec3 sand = vec3(0.76, 0.68, 0.5) * (0.9 + 0.1 * vnoise(p * 0.6));
+                col = mix(col, sand, bk * (1.0 - smoothstep(40.0, 48.0, wd)));
+              }
+              if (abs(type - 4.0) < 0.5 && inMain > 0.5) col = grass;                  // степь за чертой города
+              if (type > 10.5 && type < 11.5 && zone > 3.5) {
+                // Трасса за городом: две проезжие части, между ними разделительная полоса с отбойником
+                float a = zone < 4.5 ? abs(lq.x) : abs(lq.y);
+                col = grass;
+                col = mix(col, vec3(0.52, 0.51, 0.48), 1.0 - step(1.2, a));
+                col = mix(col, vec3(0.75, 0.74, 0.7), step(abs(a - 0.9), 0.15));
+              } else if (type > 10.5 && type < 11.5 && zone > 2.5) {
+                // Перекрёсток проспектов: сквер с площадкой и диагональными дорожками
+                float r = length(lq);
+                float pd = min(abs(abs(lq.x) - abs(lq.y)) * 0.7071, abs(r - 16.0));
+                col = mix(lawnS, vec3(0.56, 0.53, 0.47), 1.0 - smoothstep(1.6, 2.1, pd));
+                col = mix(col, vec3(0.6, 0.58, 0.54), 1.0 - smoothstep(9.0, 9.4, r));
+              } else if (type > 10.5 && type < 11.5) {
+                // Проспект: посередине бульвар с аллеей, по сторонам — ряд парковки, газон
+                // со вторым рядом деревьев и тротуар у дороги
+                float a = zone < 1.5 ? abs(lq.x) : abs(lq.y);
+                float along = zone < 1.5 ? p.y : p.x;
+                col = mix(lawnS, vec3(0.56, 0.53, 0.47) * (0.92 + 0.08 * vnoise(p * 0.4)), 1.0 - smoothstep(2.2, 2.6, a));
+                float park = step(14.4, a) * step(a, 20.5);
+                col = mix(col, vec3(0.36, 0.36, 0.37), park);
+                col = mix(col, vec3(0.82), step(0.9, fract(along / 2.7)) * step(15.5, a) * step(a, 20.5) * 0.9);
+                col = mix(col, vec3(0.58, 0.57, 0.55), step(14.0, a) * step(a, 14.4) + step(20.5, a) * step(a, 21.0));
+                col = mix(col, vec3(0.62, 0.6, 0.57) * (0.94 + 0.06 * vnoise(p * 0.5)), step(32.5, a));
+              }
+              if (type > 11.5 && type < 12.5) {
+                // Развязка: кольцо вокруг монумента, газон по углам
+                float r = length(lq);
+                col = asphalt * 1.05;
+                col = mix(col, vec3(0.85), step(abs(r - 29.0), 0.13) * step(0.5, fract(atan(lq.y, lq.x) * 6.0)));
+                col = mix(col, lawnS, smoothstep(37.0, 37.5, r));
+                col = mix(col, vec3(0.6, 0.58, 0.54), 1.0 - smoothstep(20.5, 21.0, r));
+                col = mix(col, lawnS, 1.0 - smoothstep(19.0, 19.5, r));
+                col = mix(col, vec3(0.62, 0.6, 0.55), 1.0 - smoothstep(8.0, 8.4, r));
+              }
+              if (type > 12.5 && type < 13.5) {
+                // Двор микрорайона: проезд с парковкой по периметру, газон, тропинки, детская и спортивная площадки
+                float hv = h21(floor((p + uHalf) / uBlock));
+                col = mix(vec3(0.15, 0.25, 0.09), vec3(0.24, 0.32, 0.12), vnoise(p * 0.07) * 0.7 + vnoise(p * 0.5) * 0.3);
+                col = mix(col, vec3(0.33, 0.3, 0.24), (1.0 - smoothstep(0.8, 1.6, abs(lq.x - lq.y * (hv - 0.5) * 1.6))) * 0.7);
+                // Проезд с парковкой — только вдоль улиц; внутри суперквартала газон без швов
+                float jx = joinX(bidx0, lq.x < 0.0 ? -1.0 : 1.0, type), jy = joinY(bidx0, lq.y < 0.0 ? -1.0 : 1.0, type);
+                float ring = step(31.5, abs(lq.x)) * step(abs(lq.x), 35.5) * step(abs(lq.y), 35.5 + jy * 15.0) * (1.0 - jx)
+                           + step(31.5, abs(lq.y)) * step(abs(lq.y), 35.5) * step(abs(lq.x), 35.5 + jx * 15.0) * (1.0 - jy);
+                col = mix(col, vec3(0.4, 0.4, 0.41), clamp(ring, 0.0, 1.0));
+                vec2 pg = abs(lq - vec2((hv - 0.5) * 10.0, 0.0)) - vec2(7.0, 5.0);
+                float pgD = max(pg.x, pg.y);
+                col = mix(col, vec3(0.70, 0.64, 0.50), 1.0 - step(1.2, pgD));
+                vec3 rubber = mix(vec3(0.55, 0.24, 0.19), vec3(0.20, 0.42, 0.52), step(0.5, hv));
+                col = mix(col, rubber, 1.0 - step(0.0, pgD));
+              }
+              if (type > 13.5 && type < 14.5) {
+                // Частный сектор: участки за заборами, огороды с грядками, грунтовая обочина
+                vec2 pc = floor((lq + 38.0) / vec2(19.0, 38.0)), pf = fract((lq + 38.0) / vec2(19.0, 38.0));
+                float pr = h21(pc + floor((p + uHalf) / uBlock) * 7.0);
+                vec3 garden = mix(vec3(0.3, 0.36, 0.14), vec3(0.46, 0.42, 0.22), pr);
+                col = garden * (1.0 - step(0.5, fract(lq.x * 0.9)) * step(0.55, pr) * step(0.5, pf.y) * 0.2);
+                float fence = max(max(step(pf.x, 0.03), step(0.97, pf.x)), max(step(pf.y, 0.015), step(0.985, pf.y)));
+                col = mix(col, vec3(0.44, 0.38, 0.29), fence * 0.6);
+                col = mix(col, vec3(0.42, 0.4, 0.24), step(37.0, e));
+              }
+              if (type < 0.5 && inMain > 0.5) {
+                // Обычные кварталы: дворы по характеру района
+                if (zone > 0.5 && zone < 1.5) {           // деловой центр: светлая плитка
+                  vec2 tl = abs(fract(p / 1.5) - 0.5);
+                  col = vec3(0.56, 0.54, 0.5) * (0.92 + 0.08 * vnoise(p * 0.2)) * (1.0 - step(0.46, max(tl.x, tl.y)) * 0.12);
+                } else if (zone > 1.5 && zone < 2.5) {    // жилые комплексы: зелёный двор, дорожки, площадка
+                  col = mix(lawnS, vec3(0.6, 0.57, 0.5), 1.0 - smoothstep(1.4, 1.8, min(abs(abs(lq.x) - 14.0), abs(length(lq) - 10.0))));
+                  col = mix(col, vec3(0.22, 0.44, 0.55), 1.0 - step(5.0, length(lq)));
+                } else if (zone > 2.5 && zone < 3.5) {    // среднеэтажные: газон, асфальтовый проезд вдоль домов, дорожки
+                  col = mix(lawnS, vec3(0.34, 0.34, 0.33), step(abs(e - 24.0), 3.0));
+                  col = mix(col, vec3(0.55, 0.52, 0.46), 1.0 - smoothstep(1.0, 1.5, min(abs(lq.x), abs(lq.y))));
+                } else if (zone > 3.5 && zone < 4.5) {    // старый центр: асфальт двора, старые деревья
+                  col = vec3(0.24, 0.24, 0.23) * (0.85 + 0.3 * vnoise(p * 0.2));
+                  col = mix(col, lawnS * 0.9, smoothstep(0.55, 0.6, vnoise(p * 0.08)));
+                }
+              }
+              col = mix(col, vec3(0.4, 0.4, 0.41), drive);
+            }`;
 
 const _toSun = new THREE.Vector3(), _qSun = new THREE.Quaternion(), _qI = new THREE.Quaternion(), _white = new THREE.Color();
 
@@ -26,13 +156,14 @@ export class Environment {
     u.uOpacity = { value: 1 };
     u.uSkyGain = { value: 1 };
     u.uTwilight = { value: 0 };   // сила сумеречного свечения (солнце чуть за горизонтом)
+    u.uTropic = { value: 0 };     // насыщенная палитра «Тропиков»
     // Чёрная дыра проглядывает сквозь дневное небо, как Луна днём
     u.uHoleDir = { value: new THREE.Vector3(0, 1, 0) };
     u.uHoleK = { value: 0 };
     sky.material.transparent = true;
     sky.material.depthWrite = false;
     sky.material.fragmentShader = sky.material.fragmentShader
-      .replace('void main() {', 'uniform float uOpacity; uniform float uSkyGain; uniform float uTwilight; uniform vec3 uHoleDir; uniform float uHoleK;\nvoid main() {')
+      .replace('void main() {', 'uniform float uOpacity; uniform float uSkyGain; uniform float uTwilight; uniform float uTropic; uniform vec3 uHoleDir; uniform float uHoleK;\nvoid main() {')
       .replace(/gl_FragColor = vec4\(\s*retColor,\s*1\.0\s*\);/, `
         // Фиолетовый час: у горизонта со стороны заката — розово-оранжевая полоса, переходящая
         // в лиловую; выше — глубокий фиолетовый. Модель неба сама этого почти не даёт.
@@ -43,12 +174,23 @@ export class Environment {
         vec3 band = mix( vec3( 0.42, 0.16, 0.42 ), vec3( 1.0, 0.42, 0.26 ), pow( toward, 4.0 ) ) * exp( -up * 7.0 );
         vec3 zenith = vec3( 0.13, 0.07, 0.3 ) * ( 0.35 + 0.65 * smoothstep( 0.0, 0.7, up ) );
         vec3 tw = ( band * ( 0.55 + 0.45 * toward ) + zenith ) * uTwilight;
+        vec3 skyC = retColor * uSkyGain;
+        if ( uTropic > 0.001 ) {
+          // Тропики: сочнее само небо, у солнца — горячее кораллово-золотое зарево,
+          // напротив заката — розовый «пояс Венеры» над синевой, зенит — густая лаванда
+          float sl = dot( skyC, vec3( 0.2126, 0.7152, 0.0722 ) );
+          skyC = max( mix( vec3( sl ), skyC, 1.0 + 0.7 * uTropic ), 0.0 );
+          vec3 glow = mix( vec3( 1.0, 0.2, 0.42 ), vec3( 1.0, 0.6, 0.12 ), pow( toward, 12.0 ) ) * exp( -up * 4.5 ) * ( 0.25 + 0.75 * pow( toward, 3.0 ) );
+          vec3 belt = vec3( 0.95, 0.36, 0.66 ) * exp( -pow( ( up - 0.1 ) * 8.0, 2.0 ) ) * ( 1.0 - toward );
+          vec3 deep = vec3( 0.2, 0.06, 0.42 ) * smoothstep( 0.15, 0.8, up );
+          tw += ( glow * 0.7 + belt * 0.32 + deep * 0.35 ) * uTropic;
+        }
         float twA = clamp( dot( tw, vec3( 0.33 ) ) * 6.0, 0.0, 1.0 );
         // Цвет с уже умноженной прозрачностью: в круге чёрной дыры небо не гаснет, а космос
         // под ним добавляется сверху — тень не темнит небо, светится только диск
         float holeK = uHoleK * smoothstep( 0.984, 0.995, dot( twDir, uHoleDir ) );
         float skyA = max( uOpacity, twA );
-        gl_FragColor = vec4( ( retColor * uSkyGain + tw ) * skyA, skyA * ( 1.0 - holeK ) );`);
+        gl_FragColor = vec4( ( skyC + tw ) * skyA, skyA * ( 1.0 - holeK ) );`);
     sky.material.blending = THREE.CustomBlending;
     sky.material.blendSrc = THREE.OneFactor;
     sky.material.blendDst = THREE.OneMinusSrcAlphaFactor;
@@ -102,7 +244,7 @@ export class Environment {
     this.terrain = this.createTerrain();
     scene.add(this.terrain);
     scene.add(this.createRiverChannel());
-    scene.add(this.createQuay());
+    if (!STEPPE) scene.add(this.createQuay());
     scene.add(this.createPond());
     this.water = this.createWater();
     scene.add(this.water);
@@ -222,6 +364,8 @@ export class Environment {
       // Фиолетовый час уже начинается: лиловый зенит, пурпурно-оранжевая полоса у горизонта
       u.uTwilight.value = Math.max(u.uTwilight.value, 0.85 * tk);
     } else u.mieDirectionalG.value = 0.82;
+    u.uTropic.value = tk;
+    this.water.material.userData.uTropic.value = tk;
     // Солнце идёт с востока (6 ч) через юг (12 ч) на запад (18 ч)
     this.setSun(T.elev, this.sunAz());
     // Ночью тени отбрасывает луна
@@ -332,16 +476,24 @@ export class Environment {
   createGroundMaterial() {
     const g = CITY.grid;
     const data = new Uint8Array(g * g);
-    for (let k = 0; k < g * g; k++) data[k] = blockTypes[k] * 25;
+    // Тип квартала — в старших 4 битах, характер застройки (степь) — в младших
+    for (let k = 0; k < g * g; k++) data[k] = blockTypes[k] * 16 + blockZones[k];
     const tex = new THREE.DataTexture(data, g, g, THREE.RedFormat, THREE.UnsignedByteType);
     tex.magFilter = tex.minFilter = THREE.NearestFilter;
     tex.needsUpdate = true;
+
+    // Слияния кварталов (степь): R — улицы нет с соседом по +X, G — по +Z
+    const jd = new Uint8Array(g * g * 4);
+    for (let k = 0; k < g * g; k++) { jd[k * 4] = JOIN_E[k] * 255; jd[k * 4 + 1] = JOIN_N[k] * 255; jd[k * 4 + 3] = 255; }
+    const jtex = new THREE.DataTexture(jd, g, g, THREE.RGBAFormat, THREE.UnsignedByteType);
+    jtex.magFilter = jtex.minFilter = THREE.NearestFilter;
+    jtex.needsUpdate = true;
 
     const mat = new THREE.MeshStandardMaterial({ roughness: 0.92, metalness: 0 });
     mat.userData.uWet = { value: 0 };
     mat.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, {
-        uBlockMap: { value: tex },
+        uBlockMap: { value: tex }, uJoinMap: { value: jtex },
         uGrid: { value: g }, uBlock: { value: CITY.block }, uHalf: { value: HALF },
         uRoad: { value: CITY.road * 0.5 }, uWalk: { value: CITY.road * 0.5 + CITY.sidewalk },
         uRiver: { value: new THREE.Vector2(RIVER_Z, RIVER_HALF_W) },
@@ -352,8 +504,9 @@ export class Environment {
         uBeach: { value: new THREE.Vector3(BEACH.x0, BEACH.minZ, BEACH.maxZ) },
         uTowns: { value: TOWNS.map((t) => new THREE.Vector3(t.x, t.z, t.grid * CITY.block * 0.5)) },
         uMega: { value: (MEGA_SITES.length ? MEGA_SITES : [{ x: 1e6, z: 1e6, half: 1 }]).map((s) => new THREE.Vector3(s.x, s.z, s.half)) },
-        uSleeper: { value: new THREE.Vector3(DISTRICTS.sleeper.x, DISTRICTS.sleeper.z, DISTRICTS.sleeper.r) },
-        uCampus: { value: new THREE.Vector3(DISTRICTS.campus.x, DISTRICTS.campus.z, DISTRICTS.campus.r) },
+        // В степи свои дворы (см. ниже), узоры спального района и кампуса приморского города выключены
+        uSleeper: { value: new THREE.Vector3(DISTRICTS.sleeper.x, DISTRICTS.sleeper.z, STEPPE ? 0 : DISTRICTS.sleeper.r) },
+        uCampus: { value: new THREE.Vector3(DISTRICTS.campus.x, DISTRICTS.campus.z, STEPPE ? 0 : DISTRICTS.campus.r) },
         uWet: mat.userData.uWet,
       });
       shader.vertexShader = shader.vertexShader
@@ -377,7 +530,8 @@ export class Environment {
             vec2 i = floor(p), f = fract(p);
             f = f * f * (3.0 - 2.0 * f);
             return mix(mix(h21(i), h21(i + vec2(1, 0)), f.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), f.x), f.y);
-          }`)
+          }
+          ${RIVER_GLSL}${STEPPE ? STEPPE_COMMON : ''}`)
         .replace('#include <color_fragment>', `#include <color_fragment>
           float groundWet = 0.0, puddle = 0.0;
           {
@@ -389,7 +543,7 @@ export class Environment {
             float inMain = step(abs(p.x), uHalf + uWalk) * step(abs(p.y), uHalf + uWalk);
             // Русло реки вырезаем — под ним меш канала и вода
             float inPlane = step(abs(p.x), uHalf + 300.0) * step(abs(p.y), uHalf + 300.0);
-            if (abs(p.y - uRiver.x) < uRiver.y && abs(p.x) < uHalf + 300.0) discard;
+            if (abs(p.y - riverZ(p.x)) < riverHW(p.x) && abs(p.x) < uHalf + 300.0) discard;
             // Море за набережной и пруд в парке — тоже вода
             if (inPlane > 0.5 && p.x > uQuay) discard;
             // Пляж — отдельная сетка песка со спуском в воду
@@ -397,16 +551,18 @@ export class Environment {
             float pondD = length(p - uPond.xy);
             if (pondD < uPond.z) discard;
 
-            vec3 grass   = vec3(0.20, 0.30, 0.13);
+            vec3 grass   = ${STEPPE ? 'mix(vec3(0.155, 0.17, 0.05), mix(vec3(0.42, 0.42, 0.2), vec3(0.58, 0.52, 0.28), vnoise(p * 0.004) * 0.6 + vnoise(p * 0.03) * 0.4), 0.85)' : 'vec3(0.20, 0.30, 0.13)'};
             vec3 asphalt = vec3(0.055, 0.058, 0.064);
             vec3 walk    = vec3(0.40, 0.39, 0.37);
             vec3 lot     = vec3(0.27, 0.27, 0.26);
 
-            float type = 0.0;
+            float type = 0.0, zone = 0.0;
+            vec2 bidx0 = clamp(floor((p + uHalf) / uBlock), 0.0, uGrid - 1.0);
             if (inMain > 0.5) {
-              vec2 bidx = clamp(floor((p + uHalf) / uBlock), 0.0, uGrid - 1.0);
-              type = floor(texture2D(uBlockMap, (bidx + 0.5) / uGrid).r * 255.0 / 25.0 + 0.5);
-            }
+              float code = floor(texture2D(uBlockMap, (bidx0 + 0.5) / uGrid).r * 255.0 + 0.5);
+              type = floor(code / 16.0);
+              zone = code - type * 16.0;
+            }${STEPPE ? STEPPE_ROADS : ''}
             float inTown = 0.0;
             for (int i = 0; i < ${TOWNS.length}; i++) {
               vec2 q = abs(p - uTowns[i].xy);
@@ -458,6 +614,7 @@ export class Environment {
               lines = max(lines, step(abs(length(q) - 6.0), 0.12));
               col = mix(col, mix(turf, vec3(0.9), lines), field);
             }
+${STEPPE ? STEPPE_BLOCKS : ''}
             if (type < 0.5 && inMain > 0.5) {
               // Район квартала — по его центру (как и при застройке)
               vec2 bcen = (floor((p + uHalf) / uBlock) + 0.5) * uBlock - uHalf;
@@ -522,9 +679,10 @@ export class Environment {
             vec2 tile = abs(fract(p / 1.5) - 0.5);
             col *= 1.0 - inWalk * (1.0 - curb) * step(0.46, max(tile.x, tile.y)) * 0.25;
 
+${STEPPE ? '            col = mix(col, vec3(0.43, 0.39, 0.29) * (0.85 + 0.3 * vnoise(p * 0.7)), max(isRoad, step(minD, uWalk)) * village);' : ''}
             col = mix(grass, col, roads);
             // Набережная: бетонная полоса между последней улицей и морем
-            if (inPlane > 0.5 && p.x > uHalf + uWalk) {
+            if (${STEPPE ? 'false' : 'inPlane > 0.5 && p.x > uHalf + uWalk'}) {
               col = vec3(0.42, 0.41, 0.39) * (0.9 + 0.1 * step(0.5, fract(p.y / 3.0)));
               col = mix(col, vec3(0.7, 0.6, 0.2), step(uQuay - 0.6, p.x) * 0.8); // кромка причала
             }
@@ -574,7 +732,8 @@ export class Environment {
     // чтобы после разлома в видеокарту уходили только задетые плитки
     const colors = new Float32Array(W * W * 3), farmA = new Float32Array(W * W), meadowA = new Float32Array(W * W);
     const H = terrainHeights;
-    const cGrass = new THREE.Color(0x3d5a2a), cDry = new THREE.Color(0x6b6a3e), cRock = new THREE.Color(0x6a625a);
+    // В степи трава выгоревшая, золотисто-оливковая
+    const cGrass = new THREE.Color(STEPPE ? 0x6f7440 : 0x3d5a2a), cDry = new THREE.Color(STEPPE ? 0x9a8c52 : 0x6b6a3e), cRock = new THREE.Color(0x6a625a);
     const cSnow = new THREE.Color(0xf2f4f8), cSand = new THREE.Color(0xcdb98e), cSea = new THREE.Color(0x4a5a52);
     const cForest = new THREE.Color(0x1b2c14), cAlpine = new THREE.Color(0x56603a), cDark = new THREE.Color(0x4a443f);
     const c = new THREE.Color();
@@ -603,7 +762,11 @@ export class Environment {
       // Равнины: поля (подальше от города, ровные места) и луга с цветами
       const pk = plainK(x, z), flat = 1 - ss(slope, 0.06, 0.18), low = 1 - ss(h, 120, 260), dry = h > 0.5 ? 1 : 0;
       farmA[k] = pk * flat * low * dry * ss(Math.hypot(x, z), 4200, 5600) * (1 - forestMask(x, z, h));
-      meadowA[k] = Math.max(0, pk * low * dry - farmA[k]);
+      // Степь: пшеничные поля пятнами, между ними целина
+      if (STEPPE) farmA[k] *= ss(0.46, 0.54, fbm(x * 0.00022 + 31.0, z * 0.00022 - 17.0, 3));
+      // В степи целина сплошная и начинается прямо от края городской равнины (там та же трава)
+      if (STEPPE) meadowA[k] = Math.max(0, ss(Math.max(Math.abs(x), Math.abs(z)), PLANE_HALF - 400, PLANE_HALF) * low * (h > -2 ? 1 : 0) - farmA[k]);
+      else meadowA[k] = Math.max(0, pk * low * dry - farmA[k]);
     }
     this.terrainData = { colors, farm: farmA, meadow: meadowA };
 
@@ -635,7 +798,7 @@ export class Environment {
             vec3 farmCol = mix(crop * rows, vec3(0.16, 0.24, 0.1), hedge);
             diffuseColor.rgb = mix(diffuseColor.rgb, farmCol, smoothstep(0.25, 0.6, vFarm));
             // Луга: сочная трава и россыпь полевых цветов вблизи
-            vec3 grass = mix(vec3(0.22, 0.36, 0.12), vec3(0.32, 0.44, 0.16), tn(vTPos.xz * 0.03));
+            vec3 grass = ${STEPPE ? 'mix(vec3(0.42, 0.42, 0.2), vec3(0.58, 0.52, 0.28), tn(vTPos.xz * 0.004) * 0.6 + tn(vTPos.xz * 0.03) * 0.4)' : 'mix(vec3(0.22, 0.36, 0.12), vec3(0.32, 0.44, 0.16), tn(vTPos.xz * 0.03))'};
             float fl = th(floor(vTPos.xz * 1.3));
             vec3 flower = fl > 0.985 ? vec3(0.9, 0.85, 0.3) : fl > 0.975 ? vec3(0.85, 0.3, 0.45) : fl > 0.965 ? vec3(0.9, 0.9, 0.95) : grass;
             float near = 1.0 - smoothstep(60.0, 220.0, length(vTPos - cameraPosition));
@@ -706,6 +869,7 @@ export class Environment {
 
   // Бетонный канал реки внутри города
   createRiverChannel() {
+    if (STEPPE) return this.createSteppeRiver();
     const len = PLANE_HALF + 10 + QUAY_X, cx = (QUAY_X - PLANE_HALF - 10) / 2, depth = -WORLD.riverBed;
     const group = new THREE.Group();
     const mat = new THREE.MeshStandardMaterial({ color: 0x6f6a62, roughness: 0.9 });
@@ -720,6 +884,39 @@ export class Environment {
     }
     group.traverse((o) => { o.receiveShadow = true; });
     return group;
+  }
+
+  // Степная река: гранитные откосы и песчаные пляжи вдоль излучины (лента по x)
+  createSteppeRiver() {
+    const x0 = -PLANE_HALF - 20, x1 = PLANE_HALF + 20, step = 8, n = Math.ceil((x1 - x0) / step) + 1;
+    const pos = new Float32Array(n * 4 * 3), col = new Float32Array(n * 4 * 3), idx = [];
+    const stone = new THREE.Color(0x6f6a62), sand = new THREE.Color(0xb9a27a), c = new THREE.Color();
+    const bed = WORLD.riverBed;
+    for (let i = 0; i < n; i++) {
+      const x = x0 + i * step, rz = riverZAt(x), hw = riverHWAt(x);
+      const ks = [beachK(x, -1), beachK(x, 1)];
+      const zs = [rz - hw, rz - hw + bankRun(x, -1), rz + hw - bankRun(x, 1), rz + hw];
+      const ys = [0.02, bed, bed, 0.02];
+      for (let v = 0; v < 4; v++) {
+        const k = (i * 4 + v) * 3;
+        pos[k] = x; pos[k + 1] = ys[v]; pos[k + 2] = zs[v];
+        c.copy(stone).lerp(sand, v < 2 ? ks[0] : ks[1]);
+        if (v === 1 || v === 2) c.multiplyScalar(0.6);
+        col[k] = c.r; col[k + 1] = c.g; col[k + 2] = c.b;
+      }
+      if (i < n - 1) for (let v = 0; v < 3; v++) {
+        const a = i * 4 + v, b = a + 4;
+        idx.push(a, b, a + 1, b, b + 1, a + 1);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, side: THREE.DoubleSide }));
+    mesh.receiveShadow = true;
+    return mesh;
   }
 
   // Бетонная стенка набережной вдоль моря (с разрывом в устье реки)
@@ -771,13 +968,15 @@ export class Environment {
     const geo = new THREE.PlaneGeometry(WORLD.terrainSize, WORLD.terrainSize, 1, 1).rotateX(-Math.PI / 2);
     const mat = new THREE.MeshStandardMaterial({ color: 0x0f2a36, roughness: 0.035, metalness: 0.15, transparent: true, opacity: 0.92 });
     mat.userData.uTime = { value: 0 };
+    mat.userData.uTropic = { value: 0 };
     const isleTex = this.makeIsleDepth();
     mat.onBeforeCompile = (shader) => {
       shader.uniforms.uTime = mat.userData.uTime;
       shader.uniforms.uIsleTex = { value: isleTex };
+      shader.uniforms.uTropic = mat.userData.uTropic;
       shader.uniforms.uIsle = { value: new THREE.Vector4(ISLE.x, ISLE.z, ISLE.size, 0) };
       shader.uniforms.uIsleRot = { value: new THREE.Vector2(Math.cos(ISLE.rot), Math.sin(ISLE.rot)) };
-      shader.uniforms.uCover = { value: new THREE.Vector4(PLANE_HALF, RIVER_Z, RIVER_HALF_W, QUAY_X) };
+      shader.uniforms.uCover = { value: new THREE.Vector4(PLANE_HALF, RIVER_Z, RIVER_HALF_W, Math.min(QUAY_X, 1e6)) };
       shader.uniforms.uCoverBeach = { value: new THREE.Vector3(BEACH.x0, BEACH.minZ, BEACH.maxZ) };
       shader.uniforms.uCoverPond = { value: new THREE.Vector3(POND.x, POND.z, POND.r) };
       shader.uniforms.uCoverTowns = { value: TOWNS.map((t) => new THREE.Vector3(t.x, t.z, (t.grid * CITY.block + 200) * 0.5)) };
@@ -789,12 +988,14 @@ export class Environment {
           varying vec3 vWaterPos;
           uniform float uTime;
           uniform sampler2D uIsleTex;
+          uniform float uTropic;
           uniform vec4 uIsle;
           uniform vec2 uIsleRot;
           uniform vec4 uCover;
           uniform vec3 uCoverBeach, uCoverPond;
           uniform vec3 uCoverTowns[${TOWNS.length}];
-          float isleFoam = 0.0;`)
+          float isleFoam = 0.0;
+          ${RIVER_GLSL}`)
         .replace('#include <color_fragment>', `#include <color_fragment>
           {
             // Под плоской землёй города и пригородов (в 1,5 м выше) воду не рисуем: издалека
@@ -803,14 +1004,19 @@ export class Environment {
             vec2 wp = vWaterPos.xz;
             const float M = 8.0;
             bool covered = abs(wp.x) < uCover.x - M && abs(wp.y) < uCover.x - M
-              && abs(wp.y - uCover.y) > uCover.z + M
+              && abs(wp.y - riverZ(wp.x)) > riverHW(wp.x) + M
               && wp.x < uCover.w - M
               && !(wp.x > uCoverBeach.x - M && wp.y > uCoverBeach.y - M && wp.y < uCoverBeach.z + M)
               && length(wp - uCoverPond.xy) > uCoverPond.z + M;
             for (int i = 0; i < ${TOWNS.length}; i++) {
               vec3 t = uCoverTowns[i];
               if (abs(wp.x - t.x) < t.z - M && abs(wp.y - t.y) < t.z - M) covered = true;
-            }
+            }${STEPPE ? `
+            // Степь: моря нет — вода только в реке и озёрах (рельеф лишь на 1–2 м выше воды,
+            // и с высоты вода проступала бы сквозь степь)
+            bool wet = abs(wp.y - riverZ(wp.x)) < riverHW(wp.x) * 2.4;
+            ${S_LAKES.map((L) => `wet = wet || length(wp - vec2(${L.x.toFixed(1)}, ${L.z.toFixed(1)})) < ${(L.r * 1.4).toFixed(1)};`).join(' ')}
+            if (!wet) covered = true;` : ''}
             if (covered) discard;
           }
           {
@@ -824,6 +1030,9 @@ export class Environment {
               float shallow = (1.0 - smoothstep(0.3, 16.0, depth)) * edgeFade;
               float lagoon = (1.0 - smoothstep(8.0, 38.0, depth)) * edgeFade;
               vec3 turq = vec3(0.07, 0.62, 0.6), azure = vec3(0.02, 0.3, 0.46);
+              // Тропики: бирюза светлее и сочнее, глубина — густой сапфир
+              turq = mix(turq, vec3(0.02, 0.86, 0.78), uTropic);
+              azure = mix(azure, vec3(0.0, 0.32, 0.62), uTropic);
               diffuseColor.rgb = mix(diffuseColor.rgb, mix(azure, turq, shallow), lagoon);
               diffuseColor.a *= mix(1.0, 0.42, shallow);
               float n = 0.5 + 0.5 * sin(vWaterPos.x * 0.21 + vWaterPos.z * 0.13) * sin(vWaterPos.x * 0.07 - vWaterPos.z * 0.17 + uTime * 0.3);

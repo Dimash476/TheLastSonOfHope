@@ -3,7 +3,63 @@ import { CITY, WORLD, DEBRIS } from '../config.js';
 import { mulberry32, clamp, lerp } from '../utils.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeShapeGeometries, createShapeMaterial, addGeometricBlock, addMegaLandmark, addTvTower } from './landmarks.js';
-import { MEGA_SITES, DISTRICTS, inSleeper, inCampus } from './layout.js';
+import { MEGA_SITES, DISTRICTS, inSleeper, inCampus, STEPPE, riverZAt, riverHWAt } from './layout.js';
+
+const STYLE_A = `
+          // Степная карта: тип фасада задан зданием (aStyle), а не цветом
+          float st = floor(vStyle + 0.5);
+          float sPanel = step(abs(st - 1.0), 0.1), sStalin = step(abs(st - 2.0), 0.1), sJK = step(abs(st - 3.0), 0.1), sGlass = step(abs(st - 4.0), 0.1);
+          float sMall = step(abs(st - 5.0), 0.1), sPub = step(abs(st - 6.0), 0.1), sInd = step(abs(st - 7.0), 0.1), sHouse = step(abs(st - 8.0), 0.1);
+          float sAny = step(0.5, st);
+          isGlass = mix(isGlass, sGlass, sAny);
+          isBrick *= 1.0 - sAny; isRes *= 1.0 - sAny; isOffice *= 1.0 - sAny;
+          cellSize = mix(cellSize, vec2(3.0, 2.8), sPanel);
+          cellSize = mix(cellSize, vec2(3.4, 3.7), sStalin);
+          cellSize = mix(cellSize, vec2(3.2, 3.1), sJK);
+          cellSize = mix(cellSize, vec2(1.5, 3.8), sGlass);
+          cellSize = mix(cellSize, vec2(6.0, 4.5), sMall);
+          cellSize = mix(cellSize, vec2(3.0, 3.6), sPub);
+          cellSize = mix(cellSize, vec2(4.0, 6.0), sInd);
+          cellSize = mix(cellSize, vec2(3.4, 3.0), sHouse);`;
+const STYLE_B = `
+          // Проёмы по типу фасада
+          float loggia = sPanel * step(abs(mod(id.x, 4.0) - 1.0), 0.1);
+          rect = mix(rect, vec4(0.27, 0.73, 0.3, 0.76), sPanel);
+          rect = mix(rect, vec4(0.04, 0.96, 0.08, 0.8), loggia);
+          rect = mix(rect, vec4(0.3, 0.7, 0.18, 0.84), sStalin);
+          rect = mix(rect, vec4(0.1, 0.9, 0.1, 0.92), sJK);
+          rect = mix(rect, vec4(0.03, 0.97, 0.05, 0.96), sGlass);
+          rect = mix(rect, vec4(0.0, 1.0, 0.36, 0.8), sPub);
+          rect = mix(rect, vec4(0.3, 0.7, 0.34, 0.76), sHouse);
+          // Витрины первого этажа — у сталинок, жилых комплексов и торговых центров
+          rect = mix(rect, vec4(0.05, 0.95, 0.04, 0.80), storefront * (sStalin + sJK + sMall));
+          // Глухие стены: ТЦ выше витрин, у завода — лента окон под крышей этажа, у домов — не все окна
+          float noWin = sMall * step(5.0, vBPos.y) + sInd * (1.0 - step(abs(f.y - 0.78), 0.1)) + sHouse * step(winRnd, 0.35);
+          rect = mix(rect, vec4(2.0, 3.0, 2.0, 3.0), clamp(noWin, 0.0, 1.0));   // проём вне ячейки — окна нет (без деления на ноль)`;
+const STYLE_C = `
+          {
+            // Панели: швы между плитами и плиты лоджий
+            float seam = max(step(f.x, 0.025), step(f.y, 0.035));
+            wallCol *= 1.0 - seam * 0.2 * sPanel;
+            wallCol = mix(wallCol, wallCol * 1.1 + 0.03, loggia * step(f.y, 0.08));
+            // Сталинка: руст на первом этаже, тяги между этажами, сандрики над окнами
+            wallCol *= 1.0 - sStalin * (1.0 - step(5.0, vBPos.y)) * step(0.82, fract(vBPos.y / 0.6)) * 0.3;
+            wallCol *= 1.0 + sStalin * step(0.86, f.y) * step(f.y, 0.93) * step(rect.x - 0.06, f.x) * step(f.x, rect.y + 0.06) * 0.2;
+            wallCol *= 1.0 + sStalin * step(0.97, f.y) * 0.15;
+            // Цветные вставки жилых комплексов и рекламный пояс торгового центра
+            float ai = floor(fract(styleRnd * 7.31) * 4.0);
+            vec3 acc = ai < 1.0 ? vec3(0.62, 0.3, 0.2) : ai < 2.0 ? vec3(0.18, 0.42, 0.46) : ai < 3.0 ? vec3(0.72, 0.56, 0.22) : vec3(0.2, 0.21, 0.23);
+            float stripe = sJK * step(mod(id.x + floor(styleRnd * 5.0), 7.0), 1.5);
+            wallCol = mix(wallCol, acc, stripe * 0.85);
+            wallCol *= 1.0 - sMall * max(step(f.x, 0.012), step(f.y, 0.02)) * 0.25;
+            mallBand = sMall * wall * step(7.0, vBPos.y) * step(vBPos.y, 9.6);
+            mallAcc = acc * 1.4 + 0.08;
+            wallCol = mix(wallCol, mallAcc, mallBand);
+            // Школы и больницы — белые подоконные пояса; завод — профлист
+            wallCol *= 1.0 + sPub * step(f.y, 0.3) * 0.08;
+            wallCol *= 1.0 - sInd * (0.5 + 0.5 * sin(fuv.x * 12.566)) * 0.16;
+          }`;
+import { generateSteppe } from './steppecity.js';
 import { BLOCK, HALF, blockTypes, isBridgeRoad, RIVER_Z, RIVER_HALF_W, TOWNS, groundHeight, skylineAt, inOldTown, LANDMARK, QUAY_X, blockAt, BEACH, PIER, pierDeckY, beachHeight } from './layout.js';
 
 const PALETTE = [
@@ -67,11 +123,15 @@ export class City {
     this.shapeMat = createShapeMaterial(this.material.userData.uNight);
 
     const rnd = mulberry32(CITY.seed);
-    this.generateMain(rnd);
+    // Степная столица — свой генератор районов (steppecity.js); порта и пирса там нет
+    if (STEPPE) generateSteppe(this, mulberry32(CITY.seed + 2024));
+    else this.generateMain(rnd);
     for (const t of TOWNS) this.generateTown(t);
     this.generateBridges();
-    this.generateHarbor(mulberry32(CITY.seed + 9));
-    this.generatePier();
+    if (!STEPPE) {
+      this.generateHarbor(mulberry32(CITY.seed + 9));
+      this.generatePier();
+    }
     this.buildMeshes();
     this.uTime = { value: 0 };
     this.generateAttachments();
@@ -445,14 +505,18 @@ export class City {
   }
 
   generateBridges() {
-    const zA = RIVER_Z - RIVER_HALF_W - 3, zB = RIVER_Z + RIVER_HALF_W + 3;
-    const parts = 4, len = (zB - zA) / parts;
     for (let k = 0; k <= CITY.grid; k++) {
       if (!isBridgeRoad(k)) continue;
       const x = -HALF + k * CITY.block;
-      const b = this.newBuilding({ kind: 'bridge', x, z: RIVER_Z, color: 0x8e8c88, glass: false });
+      // Русло в этом месте (у степной реки оно извилистое и шире — пролётов больше)
+      const rz = riverZAt(x), hw = riverHWAt(x);
+      const zA = rz - hw - 3, zB = rz + hw + 3;
+      const parts = Math.max(4, Math.round((zB - zA) / 45)), len = (zB - zA) / parts;
+      const b = this.newBuilding({ kind: 'bridge', x, z: rz, color: 0x8e8c88, glass: false });
       for (let p = 0; p < parts; p++) {
         this.addSeg(b, { x, z: zA + len * (p + 0.5), w: CITY.road + 2, d: len, y0: -1.6, h: 1.6, type: 'concrete' });
+        // В Сарыдале у мостов бетонный парапет по краям
+        if (STEPPE) for (const s of [-1, 1]) this.addSeg(b, { x: x + s * (CITY.road / 2 + 0.8), z: zA + len * (p + 0.5), w: 0.4, d: len, y0: 0, h: 1.1, type: 'concrete' });
       }
       // Опоры
       for (let p = 1; p < parts; p++) {
@@ -477,8 +541,9 @@ export class City {
   }
 
   addBuilding(p, rnd) {
-    const b = this.newBuilding({ kind: 'building', x: p.x, z: p.z, color: p.color, glass: p.glass });
+    const b = this.newBuilding({ kind: 'building', x: p.x, z: p.z, color: p.color, glass: p.glass, style: p.style || 0 });
     b.color.offsetHSL(0, 0, (rnd() - 0.5) * 0.08);
+    const yb = p.y0 || 0;   // основание выше земли (башня на подиуме)
     // Нарезаем по высоте на секции; уступы сужают верхние ярусы
     const tiers = p.tiers || (p.step ? [p.step] : []);
     const n = Math.max(1, Math.round(p.h / CITY.segment));
@@ -487,7 +552,7 @@ export class City {
       const y0 = k * sh;
       let kk = 1;
       for (const t of tiers) if (y0 >= t.at - 0.01) kk = t.k;
-      this.addSeg(b, { x: p.x, z: p.z, w: p.w * kk, d: p.d * kk, y0, h: sh, type: p.type || 'building' });
+      this.addSeg(b, { x: p.x, z: p.z, w: p.w * kk, d: p.d * kk, y0: yb + y0, h: sh, type: p.type || 'building' });
     }
     // Подряд идущие секции одного размера — «цельный» блок для рендера
     if (n > 1) {
@@ -544,7 +609,7 @@ export class City {
     for (const g of groups.values()) {
       for (const type of ['building', 'concrete']) {
         if (!g[type].length) continue;
-        const mesh = make(box, type === 'building' ? this.material : this.concrete, g[type].length);
+        const mesh = make(this.styledBox(box, type, g[type].length), type === 'building' ? this.material : this.concrete, g[type].length);
         // Слоты получают только «одиночные» секции; секции цельных блоков —
         // позже, когда блок разделится (так видеокарта не тратит время на скрытое)
         let next = 0;
@@ -562,7 +627,7 @@ export class City {
         mesh.computeBoundingSphere();
       }
       if (g.whole.length) {
-        const mesh = make(box, this.material, g.whole.length);
+        const mesh = make(this.styledBox(box, 'building', g.whole.length), this.material, g.whole.length);
         g.whole.forEach((r, i) => { r.mesh = mesh; r.slot = i; this.writeRun(r); });
         mesh.computeBoundingSphere();
       }
@@ -579,6 +644,20 @@ export class City {
     }
   }
 
+  // В степи у каждого меша зданий свой атрибут типа фасада (у приморского города — общая коробка)
+  styledBox(box, type, n) {
+    if (!STEPPE || type !== 'building') return box;
+    const geo = box.clone();
+    geo.setAttribute('aStyle', new THREE.InstancedBufferAttribute(new Float32Array(n), 1));
+    return geo;
+  }
+  writeStyle(mesh, slot, b) {
+    const a = mesh.geometry.attributes.aStyle;
+    if (!a) return;
+    a.setX(slot, b.style || 0);
+    a.needsUpdate = true;
+  }
+
   segMatrix(s, out) {
     // Витые секции повёрнуты вокруг вертикали
     if (s.rot) return out.compose(_ps.set(s.x, s.y0, s.z), _qs.setFromAxisAngle(UP_AXIS, s.rot), _ss.set(s.w, s.h, s.d));
@@ -588,6 +667,7 @@ export class City {
   writeRun(r) {
     r.mesh.setMatrixAt(r.slot, r.whole ? _m.makeScale(r.w, r.h, r.d).setPosition(r.x, r.y0, r.z) : _zero);
     r.mesh.setColorAt(r.slot, this.buildings[r.b].color);
+    this.writeStyle(r.mesh, r.slot, this.buildings[r.b]);
     r.mesh.instanceMatrix.needsUpdate = true;
     r.mesh.instanceColor.needsUpdate = true;
   }
@@ -615,6 +695,7 @@ export class City {
     const b = this.buildings[s.b];
     _c.copy(s.color || b.color).multiplyScalar(0.55 + 0.45 * (s.hp / s.maxHp));
     s.mesh.setColorAt(s.slot, _c);
+    this.writeStyle(s.mesh, s.slot, b);
     s.mesh.instanceMatrix.needsUpdate = true;
     s.mesh.instanceColor.needsUpdate = true;
   }
@@ -672,7 +753,7 @@ export class City {
         else if (r < 0.8) put('vent', top, new THREE.Matrix4().compose(_v.set(x, roofY, z), _q, new THREE.Vector3(1, 0.7 + rnd(), 1)));
         else put('antenna', top, new THREE.Matrix4().compose(_v.set(x, roofY, z), _q, new THREE.Vector3(1, 0.5 + rnd() * (H > 100 ? 2.5 : 1), 1)));
       }
-      const urban = blockAt(b.x, b.z) === BLOCK.URBAN;
+      const bt = blockAt(b.x, b.z), urban = bt === BLOCK.URBAN || (STEPPE && bt === BLOCK.YARD);
       if (!urban || top.type !== 'building') continue;
       // ---- Улица: какая сторона здания смотрит на ближайшую дорогу
       {
@@ -693,7 +774,7 @@ export class City {
           put('awning', base0, new THREE.Matrix4().compose(_v.set(fx + ox * aOff, 0, fz + oz * aOff), _q, new THREE.Vector3(len / 4, 1, 1)), AWNING[Math.floor(rnd() * AWNING.length)]);
         }
         // Пожарная лестница на кирпичных домах старого города — на фасаде сбоку от входа
-        if (inOldTown(b.x, b.z) && H > 9 && rnd() < 0.6) {
+        if (!STEPPE && inOldTown(b.x, b.z) && H > 9 && rnd() < 0.6) {
           const eOff = dOff > 0 ? -along * 0.3 : along * 0.3;
           for (let y = 3.6; y < H - 2; y += 3.6) {
             const seg = b.segs.map((si) => this.segs[si]).find((q) => q.y0 <= y && q.y0 + q.h > y) || base0;
@@ -707,7 +788,7 @@ export class City {
       }
       const core = skylineAt(b.x, b.z), old = inOldTown(b.x, b.z);
       // В спальном районе и кампусе — без рекламы и неона
-      const calm = inSleeper(b.x, b.z) || inCampus(b.x, b.z);
+      const calm = inSleeper(b.x, b.z) || inCampus(b.x, b.z) || bt === BLOCK.YARD;
       // Рекламный щит на крыше невысокого здания, повёрнут к улице
       if (!calm && H > 14 && H < 95 && top.w > 13 && rnd() < 0.05 + core * 0.08) {
         const face = rnd() < 0.5 ? 0 : Math.PI / 2;
@@ -1203,7 +1284,7 @@ function createBuildingMaterial() {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uNight = mat.userData.uNight;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vBPos;\nvarying vec3 vBNrm;\nvarying vec2 vEdge;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vBPos;\nvarying vec3 vBNrm;\nvarying vec2 vEdge;' + (STEPPE ? '\nattribute float aStyle;\nvarying float vStyle;' : ''))
       .replace('#include <project_vertex>', `#include <project_vertex>
         {
           vec4 bp = vec4(transformed, 1.0);
@@ -1220,6 +1301,7 @@ function createBuildingMaterial() {
             vEdge = vec2(9.0);
           #endif
           vBNrm = normalize(bn);
+          ${STEPPE ? 'vStyle = aStyle;' : ''}
         }`);
 
     shader.fragmentShader = shader.fragmentShader
@@ -1227,6 +1309,7 @@ function createBuildingMaterial() {
         varying vec3 vBPos;
         varying vec3 vBNrm;
         varying vec2 vEdge;
+        ${STEPPE ? 'varying float vStyle;' : ''}
         uniform float uNight;
         float bh21(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 15731.743); }`)
       .replace('#include <color_fragment>', `#include <color_fragment>
@@ -1234,6 +1317,7 @@ function createBuildingMaterial() {
         float winRnd = 0.0;
         float isGlass = 0.0;
         vec3 interior = vec3(0.0);
+        float mallBand = 0.0; vec3 mallAcc = vec3(0.0);
         {
           vec3 an = abs(vBNrm);
           float wall = 1.0 - step(0.7, an.y);
@@ -1252,7 +1336,7 @@ function createBuildingMaterial() {
           float isRes = (1.0 - isGlass) * (1.0 - isBrick) * step(0.5, styleRnd);
           float isOffice = (1.0 - isGlass) * (1.0 - isBrick) * (1.0 - isRes);
 
-          vec2 cellSize = mix(vec2(3.0, 3.6), vec2(1.6, 3.6), isGlass);
+          vec2 cellSize = mix(vec2(3.0, 3.6), vec2(1.6, 3.6), isGlass);${STEPPE ? STYLE_A : ''}
           vec2 cell = fuv / cellSize;
           vec2 f = fract(cell);
           vec2 id = floor(cell);
@@ -1265,7 +1349,7 @@ function createBuildingMaterial() {
           rect = mix(rect, vec4(0.18, 0.82, 0.32, 0.86), isRes);
           // Первый этаж — витрины
           float storefront = (1.0 - step(4.4, vBPos.y)) * (1.0 - isGlass);
-          rect = mix(rect, vec4(0.05, 0.95, 0.04, 0.80), storefront);
+          rect = mix(rect, vec4(0.05, 0.95, 0.04, 0.80), storefront);${STEPPE ? STYLE_B : ''}
           float w = step(rect.x, f.x) * step(f.x, rect.y) * step(rect.z, f.y) * step(f.y, rect.w);
           winMask = w * wall;
 
@@ -1294,7 +1378,7 @@ function createBuildingMaterial() {
           // Межэтажные пояса, потёки, затенение у земли
           wallCol *= 1.0 - step(0.93, f.y) * 0.15 * (1.0 - isGlass);
           wallCol *= 0.93 + 0.07 * bh21(vec2(floor(fuv.x * 1.5), 7.0));
-          wallCol *= mix(0.55, 1.0, smoothstep(0.0, 4.0, vBPos.y));
+          wallCol *= mix(0.55, 1.0, smoothstep(0.0, 4.0, vBPos.y));${STEPPE ? STYLE_C : ''}
 
           // ---- Комната за окном (interior mapping) ----
           vec2 wuv = clamp((f - rect.xz) / (rect.yw - rect.xz), 0.0, 1.0);
@@ -1332,6 +1416,7 @@ function createBuildingMaterial() {
           interior = room;
 
           vec3 glassTint = mix(vec3(0.55, 0.68, 0.78), vec3(0.45, 0.55, 0.6), isGlass);
+          ${STEPPE ? 'glassTint = mix(glassTint, nc * 0.7 + 0.12, sGlass);   // цветное стекло: золото, бирюза, бронза' : ''}
           vec3 winCol = interior * glassTint * 0.32;
           diffuseColor.rgb = mix(wallCol, winCol, winMask);
           // Мягкая тень у углов фасада (рассеянный свет хуже попадает в углы)
@@ -1352,6 +1437,7 @@ function createBuildingMaterial() {
           float lit = step(mix(0.93, 0.6, uNight), winRnd);
           vec3 warm = mix(vec3(1.0, 0.8, 0.52), vec3(0.78, 0.87, 1.0), step(0.8, fract(winRnd * 7.3)));
           totalEmissiveRadiance += winMask * lit * warm * (interior * 1.4 + 0.08) * mix(0.25, 1.35, uNight);
+          totalEmissiveRadiance += mallBand * mallAcc * uNight * 1.3;
         }`);
   };
   return mat;

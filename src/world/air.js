@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { WORLD } from '../config.js';
-import { HALF, QUAY_X, groundHeight } from './layout.js';
+import { HALF, QUAY_X, groundHeight, STEPPE } from './layout.js';
 
 // Жизнь в небе и на воде: стаи голубей над улицами (разлетаются от героя и взрывов),
 // чайки над портом, новостной вертолёт (кружит вокруг героя, его можно сбить),
@@ -400,7 +400,8 @@ export class AirLife {
       this.scene.add(g);
       return g;
     };
-    const specs = [
+    // Паром, яхты и парусники — в море приморского города; в степи моря нет
+    const specs = STEPPE ? [] : [
       ['ferry', 4200, 400, 1100, 900, 7], ['yacht', 3600, -1800, 480, 300, 9], ['yacht', 5200, 2600, 700, 500, 11],
       ['sail', 3900, 1200, 350, 250, 4], ['sail', 4800, -3200, 600, 400, 5], ['sail', 6400, -600, 450, 450, 4.5],
     ];

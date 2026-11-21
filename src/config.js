@@ -74,8 +74,12 @@ export const PLAYER = {
   throwSpeed: 140,
 };
 
+// Карта Симулятора: 'coast' — приморский город (основной, в нём же Битва и Вторжение),
+// 'steppe' — степная столица Сарыдала. Выбирается в меню, страница перезагружается с ?city=steppe
+export const MAP = typeof location !== 'undefined' && new URLSearchParams(location.search).get('city') === 'steppe' ? 'steppe' : 'coast';
+
 export const CITY = {
-  grid: 88,            // кварталов по каждой оси (центр + пригород)
+  grid: MAP === 'steppe' ? 112 : 88,   // кварталов по каждой оси (центр + пригород); Сарыдала крупнее — 11,2 км
   block: 100,          // шаг сетки (квартал + дорога), м
   road: 16,            // ширина проезжей части
   sidewalk: 4,

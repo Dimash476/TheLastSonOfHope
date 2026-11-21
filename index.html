@@ -19,8 +19,6 @@
 
   <!-- HUD -->
   <div id="hud" class="hidden">
-    <!-- Затемнение сцен сюжета: под титрами и репликами -->
-    <div id="story-fade"></div>
     <div id="crosshair"></div>
 
     <div id="speedo">
@@ -96,11 +94,6 @@
       <div id="dialog-keys" class="dialog-keys hidden"><kbd>1</kbd>–<kbd>4</kbd> ответ · мышь вверх-вниз и <kbd>ЛКМ</kbd> — выбрать</div>
     </div>
 
-    <!-- Сюжет -->
-    <div id="story-sub" class="hidden"><div id="story-sub-who"></div><div id="story-sub-text"></div></div>
-    <div id="story-radio" class="hidden"></div>
-    <div id="story-card"><div id="story-card-kicker"></div><div id="story-card-title"></div></div>
-
     <div id="toast"></div>
     <div id="interact"></div>
     <div id="slowmo-badge">ЗАМЕДЛЕНИЕ</div>
@@ -139,23 +132,31 @@
           <div class="mode-title">Вторжение</div>
           <div class="mode-desc">С Ксаррона прилетает генерал Ксарг. Сначала он предложит сдаться. Откажешься — бой за Землю, от города до космоса.</div>
         </button>
-        <button class="mode story" id="mode-story">
-          <span class="badge">В работе</span>
+        <button class="mode locked" id="mode-story">
+          <span class="badge">В разработке</span>
           <div class="mode-title">Сюжет</div>
           <div class="mode-desc">История героя: кто он, откуда пришёл и что ему предстоит.</div>
         </button>
       </div>
-      <!-- Сюжет: продолжить, новая игра, главы -->
-      <div id="story-menu" class="hidden">
-        <div id="story-menu-btns">
-          <button id="story-continue"><b>Продолжить</b><span id="story-continue-sub"></span></button>
-          <button id="story-new"><b>Новая игра</b><span>с пролога</span></button>
-        </div>
-        <div id="story-confirm" class="hidden">Начать заново? Прогресс сюжета сотрётся. <button id="story-confirm-yes">Да, заново</button> <button id="story-confirm-no">Нет</button></div>
-        <div class="story-head">Главы</div>
-        <div id="story-chapters"></div>
-        <button id="story-back">Назад</button>
+      <!-- Выбор города для Симулятора -->
+      <div id="cities" class="hidden">
+        <button class="mode city" data-city="coast">
+          <div class="mode-title">Приморский город</div>
+          <div class="mode-desc">Небоскрёбы у моря, порт и пляж, горы на горизонте и Райский остров.</div>
+        </button>
+        <button class="mode city steppe" data-city="steppe">
+          <div class="mode-title">Сарыдала</div>
+          <div class="mode-desc">Степная столица: широкая река с набережными, новый левый берег с парадной осью, старый правый, микрорайоны, частный сектор и степь до горизонта.</div>
+        </button>
+        <div class="cities-foot"><button id="cities-back">Назад</button></div>
       </div>
+      <!-- После перезагрузки в другой город: начать выбранный режим -->
+      <div id="go-btns" class="hidden">
+        <div id="go-title"></div>
+        <button id="go-btn">Начать</button>
+        <button id="go-menu">Главное меню</button>
+      </div>
+      <div id="story-note" class="hidden">Сюжетная часть сейчас в разработке. А пока — свободный полёт в симуляторе!</div>
       <!-- Итог битвы -->
       <div id="battle-end" class="hidden">
         <div id="end-title"></div>
@@ -165,10 +166,8 @@
       <!-- Пауза -->
       <div id="pause-btns" class="hidden">
         <button id="play-btn">Продолжить</button>
-        <button id="notes-btn" class="hidden">Записи</button>
         <button id="menu-btn">Главное меню</button>
       </div>
-      <div id="story-notes" class="hidden"></div>
       <div class="hint">Клик — захват мыши. Esc — пауза.</div>
       <div class="credits">Модель персонажа: «Free Rigged Male Basemesh» by Filip (Sketchfab), CC-BY-4.0</div>
     </div>

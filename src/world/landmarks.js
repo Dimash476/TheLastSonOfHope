@@ -154,6 +154,10 @@ export const GIANTS = {
   dome: { aspect: 0.62, slices: 5, radial: 64,
     profile: (y) => { const h = y / 0.62; return h < 0.4 ? 0.5 : 0.5 * Math.sqrt(Math.max(0, 1 - ((h - 0.4) / 0.6) ** 2)); },
     part: (y) => { const h = y / 0.62; return h < 0.4 ? 3 : (Math.abs(h - 0.4) < 0.01 ? 2 : 0); } },
+  // Глухой купол той же формы (мечеть, цирк Сарыдалы): без окон, светлый пояс у основания
+  cupola: { aspect: 0.62, slices: 5, radial: 64,
+    profile: (y) => { const h = y / 0.62; return h < 0.4 ? 0.5 : 0.5 * Math.sqrt(Math.max(0, 1 - ((h - 0.4) / 0.6) ** 2)); },
+    part: (y) => { const h = y / 0.62; return Math.abs(h - 0.4) < 0.01 ? 2 : 1; } },
   geodome: { aspect: 0.5, slices: 4, radial: 16, flat: true, profile: (y) => 0.5 * Math.sqrt(Math.max(0, 1 - (y / 0.5) ** 2)), part: () => 4 },
   tent: { aspect: 1.2, slices: 10, radial: 72, tilt: 0.16, profile: (y) => 0.5 * Math.pow(1 - y / 1.2, 1.05), part: (y) => (y < 0.004 ? 2 : 0) },
   pyramid: { aspect: 0.85, slices: 8, radial: 4, flat: true, phase: Math.PI / 4, profile: (y) => Math.SQRT1_2 * (1 - y / 0.85), part: () => 3 },
@@ -461,10 +465,12 @@ const SOLID_TINTS = [0xf2efe8, 0xe6dccb, 0xd8d4cc];
 // хватает видов): огромная сфера, башня с золотым шаром, шатёр, пирамида, ступенчатая
 // пагода, «гиперболоид», кластер кристаллов, башня-«тарелка», золотые и изумрудные башни,
 // башня-«пуля», концертный купол.
+const AXIS_ONLY = new Set(['crownTower', 'tent', 'twinGold', 'pyramid']);
 const MEGA_KINDS = ['orb', 'crownTower', 'tent', 'pyramid', 'pagoda', 'hyper', 'crystals', 'saucer', 'twinGold', 'emerald', 'bullet', 'dome'];
 export function addMegaLandmark(city, site, index, rnd) {
   const { x, z } = site, L = (site.half - 12) * 2;           // ширина площади без тротуаров
-  const order = MEGA_KINDS.map((k, i) => [k, Math.sin(i * 12.9898 + 4.1) * 43758.5 % 1]).sort((p, q) => p[1] - q[1]).map((p) => p[0]);
+  // Виды парадной оси (шатёр, башня с шаром, золотые башни, пирамида) больше не повторяются на случайных площадях
+  const order = MEGA_KINDS.filter((k) => !AXIS_ONLY.has(k)).map((k, i) => [k, Math.sin(i * 12.9898 + 4.1) * 43758.5 % 1]).sort((p, q) => p[1] - q[1]).map((p) => p[0]);
   // Площади 5×5 — под гигантскую сферу и новых гигантов (вид задан в layout.js), остальные — по очереди
   const kind = site.kind || (site.giant ? 'megaOrb' : order[(site.reg ?? index) % order.length]);
   const fixed = () => 0.5;
@@ -479,7 +485,37 @@ export function addMegaLandmark(city, site, index, rnd) {
   // Стилобат — широкое каменное основание
   const base = (w, h = 4) => city.addBuilding({ x, z, w, d: w, h, color: 0xd9d3c7, glass: false, type: 'concrete', roof: null }, fixed);
 
-  if (kind === 'megaOrb') {
+  if (kind === 'boulevard') {
+    // Бульвар оси: без построек — фонтаны, газоны и фонари ставит axis.js
+    return;
+  } else if (kind === 'palace') {
+    // Дворец в конце оси: белый корпус с колоннадой-крыльями, барабан, голубой купол, золотой шпиль
+    base(240, 2);
+    const white = 0xf2efe8;
+    city.addBuilding({ x, z, w: 150, d: 74, h: 36, color: white, glass: false, roof: null }, fixed);
+    for (const sx of [-1, 1]) city.addBuilding({ x: x + sx * 98, z: z + 8, w: 46, d: 112, h: 26, color: white, glass: false, roof: null }, fixed);
+    const b = shaped(x, z, white);
+    const drum = stack(b, 'round', x, z, 46, 36, 20);
+    addGiant(city, b, 'dome', x, z, 52, drum, 0x3a78c8);
+    const top = drum + 52 * 0.62;
+    for (let k = 0; k < 3; k++) { const sg = seg(b, 'pillar', x, z, 3.2 - k * 0.8, 3.2 - k * 0.8, top + k * 9, 9); sg.color = new THREE.Color(GOLD); }
+    addGiant(city, b, 'orb', x, z, 7, top + 27, GOLD);
+  } else if (kind === 'mosque') {
+    // Большая мечеть: белый объём, бирюзовый главный купол и четыре малых, четыре тонких минарета
+    base(176, 3);
+    const white = 0xf4f1ea, turq = 0x3aa8b8;
+    city.addBuilding({ x, z, w: 112, d: 112, h: 30, color: white, glass: false, roof: null }, fixed);
+    const b = shaped(x, z, white);
+    addGiant(city, b, 'dome', x, z, 72, 30, turq);
+    for (let k = 0; k < 2; k++) { const sg = seg(b, 'pillar', x, z, 2.4 - k * 0.8, 2.4 - k * 0.8, 30 + 72 * 0.62 + k * 7, 7); sg.color = new THREE.Color(GOLD); }
+    for (const [ox, oz] of [[-40, -40], [40, -40], [-40, 40], [40, 40]]) addGiant(city, shaped(x + ox, z + oz, white), 'dome', x + ox, z + oz, 24, 30, turq);
+    for (const [ox, oz] of [[-64, -64], [64, -64], [-64, 64], [64, 64]]) {
+      const mb = shaped(x + ox, z + oz, white);
+      const t = stack(mb, 'round', x + ox, z + oz, 7, 3, 74);
+      seg(mb, 'crown', x + ox, z + oz, 10, 10, t, 5);
+      addGiant(city, mb, 'bullet', x + ox, z + oz, 5, t + 5, turq);
+    }
+  } else if (kind === 'megaOrb') {
     // Огромная стеклянная сфера ~450 м на широком стилобате — видна из любой точки города
     base(L * 0.97, 6);
     addGiant(city, shaped(x, z, 0x6f9cc4), 'orb', x, z, L * 0.94, 6);

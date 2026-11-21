@@ -14,15 +14,19 @@ const DOGS = 96, CATS = 90, LEASHED = 50;
 // Окрасы: основной цвет c, второй c2 и узор pat
 // собаки: 0 — однотонный, 1 — светлые грудь/живот/морда/лапы, 2 — пятна, 3 — тёмный «чепрак» на спине
 // кошки: 0 — однотонная, 1 — полосатая (табби), 2 — «смокинг» (белая грудь и носочки), 3 — трёхцветная
+// Породы различаются и силуэтом: prop — ширина, высота, длина; size — разброс роста; curl — хвост бубликом
 const DOG_BREEDS = [
-  { c: 0xc8913f, c2: 0xf0e2c4, pat: 1, ears: 'F' },
-  { c: 0x1c1a19, c2: 0xa8652a, pat: 1, ears: 'P' },
-  { c: 0xf2efe8, c2: 0x26201c, pat: 2, ears: 'F' },
-  { c: 0x9a6a38, c2: 0x1c1612, pat: 3, ears: 'P' },
-  { c: 0x6e6e6c, c2: 0xece8e0, pat: 1, ears: 'P' },
-  { c: 0x5a3a22, c2: 0x5a3a22, pat: 0, ears: 'F' },
-  { c: 0xe0d0b0, c2: 0x7a5232, pat: 2, ears: 'F' },
-  { c: 0x2a2624, c2: 0xf0ece4, pat: 1, ears: 'F' },
+  { c: 0xc8913f, c2: 0xf0e2c4, pat: 1, ears: 'F', prop: [1, 1, 1], size: [1.0, 1.25] },              // ретривер
+  { c: 0x1c1a19, c2: 0xa8652a, pat: 1, ears: 'P', prop: [0.92, 1.12, 1.02], size: [1.05, 1.3] },     // доберман
+  { c: 0xf2efe8, c2: 0x26201c, pat: 2, ears: 'F', prop: [0.95, 1.05, 1.03], size: [0.95, 1.15] },    // далматин
+  { c: 0x9a6a38, c2: 0x1c1612, pat: 3, ears: 'P', prop: [1, 1.04, 1.1], size: [1.05, 1.3] },         // овчарка
+  { c: 0x6e6e6c, c2: 0xece8e0, pat: 1, ears: 'P', prop: [1.04, 1, 1], size: [0.95, 1.15], curl: true }, // хаски
+  { c: 0x5a3a22, c2: 0x5a3a22, pat: 0, ears: 'F', prop: [1.05, 1, 1], size: [0.95, 1.2] },           // лабрадор
+  { c: 0x7a4a26, c2: 0x3a2412, pat: 0, ears: 'F', prop: [0.9, 0.6, 1.35], size: [0.6, 0.72] },       // такса
+  { c: 0x2a2624, c2: 0xf0ece4, pat: 1, ears: 'F', prop: [0.95, 0.95, 1], size: [0.85, 1.0] },        // колли
+  { c: 0xd8883a, c2: 0xf4ece0, pat: 1, ears: 'P', prop: [1.08, 0.62, 1.15], size: [0.68, 0.8] },     // корги
+  { c: 0xd8bf94, c2: 0x2a2018, pat: 0, ears: 'F', prop: [1.15, 0.85, 0.8], size: [0.58, 0.68], curl: true }, // мопс
+  { c: 0xf4f0e8, c2: 0xf4f0e8, pat: 0, ears: 'P', prop: [1.05, 0.95, 0.9], size: [0.55, 0.66], curl: true }, // шпиц
 ];
 const CAT_COATS = [
   { c: 0xd88a42, c2: 0x8a4a1a, pat: 1 },
@@ -86,13 +90,15 @@ export class Animals {
     this.ball = { mesh: bm, pos: new THREE.Vector3(), vel: new THREE.Vector3(), state: 'none', dog: null, spin: 0 };
     this.list = [];
     const add = (kind, i, coats) => {
-      const big = kind === 'dog' ? [0.65, 0.85, 1.0, 1.15, 1.3][Math.floor(Math.random() * 5)] : 0.9 + Math.random() * 0.2;
+      const coat = coats[Math.floor(Math.random() * coats.length)];
+      const big = kind === 'dog' ? coat.size[0] + Math.random() * (coat.size[1] - coat.size[0]) : 0.9 + Math.random() * 0.2;
       const a = {
         kind, slot: i, state: 'none', pos: new THREE.Vector3(), vel: new THREE.Vector3(), target: new THREE.Vector3(),
         heading: Math.random() * 6.28, phase: Math.random() * 6, speed: 0, size: big, timer: 0, owner: null,
         leashed: kind === 'dog' && i < LEASHED, wag: 0, sit: 0, jump: 0, ang: new THREE.Vector3(), quat: new THREE.Quaternion(), barkT: 0,
       };
-      const coat = coats[Math.floor(Math.random() * coats.length)];
+      a.prop = coat.prop || [1, 1, 1];
+      a.curl = !!coat.curl;
       const c = new THREE.Color(coat.c), c2 = new THREE.Color(coat.c2);
       a.ears = coat.ears;
       const M = this.meshes[kind];
@@ -530,7 +536,8 @@ export class Animals {
       // Сидя корпус приподнят спереди
       _q.multiply(_q2.setFromAxisAngle(_v.set(1, 0, 0), -0.55 * sit));
     }
-    _m.compose(_v.set(a.pos.x, a.pos.y + jump + 0.05 * sit * s, a.pos.z), _q, _s.setScalar(s));
+    const pr = a.prop;
+    _m.compose(_v.set(a.pos.x, a.pos.y + jump + 0.05 * sit * s, a.pos.z), _q, _s.set(s * pr[0], s * pr[1], s * pr[2]));
     M.body.setMatrixAt(a.slot, _m);
     if (a.kind === 'dog') {
       M.earsF.setMatrixAt(a.slot, a.ears === 'F' ? _m : _zero);
@@ -556,7 +563,7 @@ export class Animals {
     // Сидя кошка обвивает хвостом бок (хвост лежит на земле сбоку)
     const wag = a.kind === 'dog' ? Math.sin(this.t * (6 + a.wag * 12)) * (0.25 + a.wag * 0.6) : Math.sin(this.t * 1.3 + a.slot) * (0.35 - 0.2 * sit) + 1.9 * sit;
     a.tailUp = (a.tailUp || 0) + ((a.state === 'follow' ? 1 : 0) - (a.tailUp || 0)) * 0.05;
-    _e.set(a.kind === 'dog' ? -0.6 - a.wag * 0.4 : lerpN(-1.1 - 0.75 * sit, -0.15, a.tailUp), a.kind === 'dog' ? wag : wag * (1 - 0.7 * a.tailUp), 0, 'YXZ');
+    _e.set(a.kind === 'dog' ? (a.curl ? -2.4 + a.wag * 0.2 : -0.6 - a.wag * 0.4) : lerpN(-1.1 - 0.75 * sit, -0.15, a.tailUp), a.kind === 'dog' ? wag : wag * (1 - 0.7 * a.tailUp), 0, 'YXZ');
     _m2.compose(_v.set(T[0], T[1], T[2]), _q2.setFromEuler(_e), _one);
     M.tail.setMatrixAt(a.slot, _m2.premultiply(_m));
   }
@@ -665,50 +672,85 @@ function makeGeometries() {
     geo.setAttribute('tint', new THREE.BufferAttribute(new Float32Array(n).fill(tint), 1));
     return geo;
   };
-  const S = (r, sx, sy, sz, x, y, z, w = 8, h = 5) => new THREE.SphereGeometry(r, w, h).scale(sx, sy, sz).translate(x, y, z);
+  const S = (r, sx, sy, sz, x, y, z, w = 12, h = 8) => new THREE.SphereGeometry(r, w, h).scale(sx, sy, sz).translate(x, y, z);
   const M = (l) => mergeGeometries(l);
-  // Собака: туловище, грудь, шея, голова, морда, нос, уши, глаза
+  // Собака: туловище с грудной клеткой и подтянутым животом, плечи и бёдра, шея, голова со
+  // лбом и «стопом», морда, щёки, нос с ноздрями, глаза с бликом, брови, ошейник с жетоном
   const dogBody = M([
-    part(new THREE.CapsuleGeometry(0.15, 0.4, 2, 7).rotateX(Math.PI / 2).scale(1, 1.05, 1).translate(0, 0.5, 0)),
-    part(S(0.16, 1, 1.05, 1, 0, 0.53, 0.2)),
-    part(new THREE.CylinderGeometry(0.08, 0.1, 0.22, 8).rotateX(-0.6).translate(0, 0.65, 0.33)),
-    part(S(0.11, 0.95, 1, 1.1, 0, 0.76, 0.42)),
-    part(S(0.06, 0.9, 0.8, 1.4, 0, 0.72, 0.53)),
-    part(S(0.025, 1, 0.8, 1, 0, 0.74, 0.61), 0x111111, 0),
-    part(S(0.018, 1, 1, 1, 0.045, 0.79, 0.51), 0x0d0b0a, 0), part(S(0.018, 1, 1, 1, -0.045, 0.79, 0.51), 0x0d0b0a, 0),
-    part(S(0.006, 1, 1, 1, 0.05, 0.796, 0.524), 0xffffff, 0), part(S(0.006, 1, 1, 1, -0.04, 0.796, 0.524), 0xffffff, 0),
-    part(S(0.03, 1.4, 0.5, 1, 0.045, 0.815, 0.49)), part(S(0.03, 1.4, 0.5, 1, -0.045, 0.815, 0.49)),
+    part(new THREE.CapsuleGeometry(0.15, 0.4, 4, 12).rotateX(Math.PI / 2).scale(1, 1.05, 1).translate(0, 0.5, 0)),
+    part(S(0.16, 1, 1.08, 1, 0, 0.53, 0.2)),
+    part(S(0.1, 1.15, 0.9, 1.2, 0, 0.44, 0.12)),
+    part(S(0.075, 0.8, 1.25, 1, 0.1, 0.5, 0.24)), part(S(0.075, 0.8, 1.25, 1, -0.1, 0.5, 0.24)),
+    part(S(0.085, 0.8, 1.3, 1.1, 0.1, 0.5, -0.24)), part(S(0.085, 0.8, 1.3, 1.1, -0.1, 0.5, -0.24)),
+    part(new THREE.CylinderGeometry(0.075, 0.1, 0.24, 12).rotateX(-0.6).translate(0, 0.65, 0.33)),
+    part(S(0.11, 0.95, 0.98, 1.1, 0, 0.765, 0.42)),
+    part(S(0.07, 1.1, 0.8, 1, 0, 0.82, 0.405)),
+    part(S(0.06, 0.92, 0.8, 1.45, 0, 0.72, 0.53)),
+    part(S(0.04, 1, 0.9, 1, 0.04, 0.715, 0.5)), part(S(0.04, 1, 0.9, 1, -0.04, 0.715, 0.5)),
+    part(S(0.026, 1.1, 0.8, 1, 0, 0.742, 0.612), 0x111111, 0),
+    part(S(0.007, 1, 1, 1, 0.011, 0.745, 0.636), 0x000000, 0), part(S(0.007, 1, 1, 1, -0.011, 0.745, 0.636), 0x000000, 0),
+    part(new THREE.BoxGeometry(0.07, 0.004, 0.006).translate(0, 0.688, 0.585), 0x2a1a18, 0),
+    part(S(0.019, 1, 1, 1, 0.046, 0.792, 0.508), 0x2a1a10, 0), part(S(0.019, 1, 1, 1, -0.046, 0.792, 0.508), 0x2a1a10, 0),
+    part(S(0.012, 1, 1, 1, 0.048, 0.793, 0.518), 0x0a0806, 0), part(S(0.012, 1, 1, 1, -0.048, 0.793, 0.518), 0x0a0806, 0),
+    part(S(0.005, 1, 1, 1, 0.053, 0.8, 0.53), 0xffffff, 0), part(S(0.005, 1, 1, 1, -0.043, 0.8, 0.53), 0xffffff, 0),
+    part(S(0.03, 1.4, 0.5, 1, 0.045, 0.818, 0.49)), part(S(0.03, 1.4, 0.5, 1, -0.045, 0.818, 0.49)),
     part(S(0.035, 1.2, 0.5, 1.4, 0, 0.685, 0.55)),
     part(S(0.15, 1, 0.95, 1.05, 0, 0.53, -0.22)),
-    part(new THREE.CylinderGeometry(0.085, 0.085, 0.03, 10).rotateX(-0.6).translate(0, 0.66, 0.34), 0xc0392b, 0),
+    part(new THREE.CylinderGeometry(0.083, 0.083, 0.03, 14).rotateX(-0.6).translate(0, 0.66, 0.34), 0xc0392b, 0),
+    part(new THREE.CylinderGeometry(0.018, 0.018, 0.004, 10).rotateX(Math.PI / 2 - 0.6).translate(0, 0.6, 0.41), 0xd8b040, 0),
   ]);
   const ear = (sx, f) => f
-    ? part(new THREE.SphereGeometry(0.05, 7, 5).scale(0.42, 1.35, 0.85).rotateZ(sx * 0.32).translate(sx * 0.098, 0.765, 0.385))
-    : part(new THREE.ConeGeometry(0.045, 0.13, 5).rotateX(-0.12).rotateZ(-sx * 0.22).translate(sx * 0.062, 0.89, 0.4));
+    ? part(new THREE.SphereGeometry(0.05, 9, 7).scale(0.42, 1.35, 0.85).rotateZ(sx * 0.32).translate(sx * 0.098, 0.765, 0.385))
+    : part(new THREE.ConeGeometry(0.045, 0.13, 8).rotateX(-0.12).rotateZ(-sx * 0.22).translate(sx * 0.062, 0.89, 0.4));
   const dogEarsF = M([ear(1, true), ear(-1, true)]);
   const dogEarsP = M([ear(1, false), ear(-1, false),
-    part(new THREE.ConeGeometry(0.026, 0.08, 4).rotateX(-0.12).rotateZ(-0.22).translate(0.062, 0.875, 0.415), 0xc88a84, 0),
-    part(new THREE.ConeGeometry(0.026, 0.08, 4).rotateX(-0.12).rotateZ(0.22).translate(-0.062, 0.875, 0.415), 0xc88a84, 0)]);
-  const dogTongue = part(new THREE.SphereGeometry(0.03, 6, 4).scale(0.9, 0.22, 1.5).rotateX(0.55).translate(0, 0.665, 0.58), 0xd65a68, 0);
-  const dogLeg = M([part(new THREE.CapsuleGeometry(0.045, 0.3, 1, 5).translate(0, -0.2, 0)), part(S(0.05, 1, 0.6, 1.4, 0, -0.4, 0.02))]);
-  const dogTail = part(new THREE.CapsuleGeometry(0.03, 0.26, 1, 4).translate(0, 0.15, 0));
-  // Кошка: стройнее, острые уши, длинный хвост
-  const catBody = M([
-    part(new THREE.CapsuleGeometry(0.08, 0.24, 2, 6).rotateX(Math.PI / 2).translate(0, 0.29, 0)),
-    part(S(0.075, 1.1, 1, 1, 0, 0.4, 0.21)),
-    part(new THREE.ConeGeometry(0.03, 0.06, 4).translate(0.04, 0.48, 0.21)),
-    part(new THREE.ConeGeometry(0.03, 0.06, 4).translate(-0.04, 0.48, 0.21)),
-    part(S(0.012, 1, 1, 1, 0.028, 0.415, 0.275), 0x9acd32, 0), part(S(0.012, 1, 1, 1, -0.028, 0.415, 0.275), 0x9acd32, 0),
-    part(S(0.01, 1, 0.8, 1, 0, 0.39, 0.29), 0xd88a8a, 0),
-    part(S(0.0085, 0.5, 1.4, 0.5, 0.028, 0.415, 0.2868), 0x080806, 0), part(S(0.0085, 0.5, 1.4, 0.5, -0.028, 0.415, 0.2868), 0x080806, 0),
-    part(S(0.028, 1.25, 0.8, 0.9, 0, 0.386, 0.266)),
-    part(new THREE.ConeGeometry(0.018, 0.04, 4).translate(0.04, 0.474, 0.218), 0xd89a9a, 0),
-    part(new THREE.ConeGeometry(0.018, 0.04, 4).translate(-0.04, 0.474, 0.218), 0xd89a9a, 0),
-    ...[1, -1].flatMap((sx) => [0.004, -0.004].map((dy) => part(new THREE.BoxGeometry(0.075, 0.0022, 0.0022).rotateZ(sx * dy * 25).translate(sx * 0.052, 0.387 + dy, 0.282), 0xeeeae2, 0))),
-    part(S(0.085, 1, 1, 1.1, 0, 0.3, -0.11)),
-    part(S(0.07, 1, 1.05, 0.9, 0, 0.31, 0.12)),
+    part(new THREE.ConeGeometry(0.026, 0.08, 6).rotateX(-0.12).rotateZ(-0.22).translate(0.062, 0.875, 0.415), 0xc88a84, 0),
+    part(new THREE.ConeGeometry(0.026, 0.08, 6).rotateX(-0.12).rotateZ(0.22).translate(-0.062, 0.875, 0.415), 0xc88a84, 0)]);
+  const dogTongue = part(new THREE.SphereGeometry(0.03, 8, 5).scale(0.9, 0.22, 1.5).rotateX(0.55).translate(0, 0.665, 0.58), 0xd65a68, 0);
+  // Лапа: плечо/бедро, сустав, тонкое запястье и подушечка с пальцами
+  const dogLeg = M([
+    part(new THREE.CapsuleGeometry(0.05, 0.13, 2, 8).translate(0, -0.09, 0)),
+    part(S(0.042, 1, 1, 1, 0, -0.2, -0.005, 8, 6)),
+    part(new THREE.CapsuleGeometry(0.035, 0.14, 2, 8).translate(0, -0.29, 0.005)),
+    part(S(0.05, 1, 0.55, 1.35, 0, -0.4, 0.025, 10, 6)),
+    ...[-0.022, 0, 0.022].map((x) => part(S(0.016, 1, 0.8, 1, x, -0.405, 0.075, 6, 4))),
   ]);
-  const catLeg = M([part(new THREE.CapsuleGeometry(0.022, 0.17, 1, 4).translate(0, -0.11, 0)), part(S(0.026, 1, 0.6, 1.3, 0, -0.21, 0.01))]);
-  const catTail = part(new THREE.CapsuleGeometry(0.017, 0.3, 1, 4).translate(0, 0.17, 0));
+  const dogTail = M([
+    part(new THREE.CapsuleGeometry(0.032, 0.12, 2, 6).translate(0, 0.08, 0)),
+    part(new THREE.CapsuleGeometry(0.026, 0.12, 2, 6).rotateX(0.25).translate(0, 0.2, 0.015)),
+    part(S(0.022, 1, 1.4, 1, 0, 0.29, 0.03, 6, 5)),
+  ]);
+  // Кошка: стройнее, острые уши с розовым внутри, глаза-миндалины со зрачками-щёлками, усы,
+  // мордочка, грудка, бёдра, длинный пушистый хвост
+  const catBody = M([
+    part(new THREE.CapsuleGeometry(0.08, 0.24, 4, 10).rotateX(Math.PI / 2).translate(0, 0.29, 0)),
+    part(S(0.075, 1.1, 1, 1, 0, 0.4, 0.21)),
+    part(S(0.05, 1.2, 1, 0.9, 0, 0.385, 0.235)),
+    part(new THREE.ConeGeometry(0.03, 0.06, 6).translate(0.04, 0.48, 0.21)),
+    part(new THREE.ConeGeometry(0.03, 0.06, 6).translate(-0.04, 0.48, 0.21)),
+    part(S(0.013, 1.3, 0.85, 1, 0.028, 0.415, 0.273), 0x9acd32, 0), part(S(0.013, 1.3, 0.85, 1, -0.028, 0.415, 0.273), 0x9acd32, 0),
+    part(S(0.01, 1, 0.8, 1, 0, 0.392, 0.29), 0xd88a8a, 0),
+    part(S(0.0085, 0.5, 1.4, 0.5, 0.028, 0.415, 0.2868), 0x080806, 0), part(S(0.0085, 0.5, 1.4, 0.5, -0.028, 0.415, 0.2868), 0x080806, 0),
+    part(S(0.003, 1, 1, 1, 0.032, 0.42, 0.2885), 0xffffff, 0), part(S(0.003, 1, 1, 1, -0.024, 0.42, 0.2885), 0xffffff, 0),
+    part(S(0.028, 1.25, 0.8, 0.9, 0, 0.386, 0.266)),
+    part(S(0.016, 1, 0.8, 1, 0.012, 0.381, 0.282)), part(S(0.016, 1, 0.8, 1, -0.012, 0.381, 0.282)),
+    part(new THREE.ConeGeometry(0.018, 0.04, 6).translate(0.04, 0.474, 0.218), 0xd89a9a, 0),
+    part(new THREE.ConeGeometry(0.018, 0.04, 6).translate(-0.04, 0.474, 0.218), 0xd89a9a, 0),
+    ...[1, -1].flatMap((sx) => [0.005, 0, -0.005].map((dy) => part(new THREE.BoxGeometry(0.085, 0.0018, 0.0018).rotateZ(sx * dy * 25).translate(sx * 0.055, 0.385 + dy, 0.28), 0xeeeae2, 0))),
+    part(S(0.085, 1, 1, 1.1, 0, 0.3, -0.11)),
+    part(S(0.05, 0.75, 1.2, 1.2, 0.055, 0.28, -0.12)), part(S(0.05, 0.75, 1.2, 1.2, -0.055, 0.28, -0.12)),
+    part(S(0.07, 1, 1.05, 0.9, 0, 0.31, 0.12)),
+    part(S(0.05, 1, 1.1, 0.8, 0, 0.27, 0.15)),
+  ]);
+  const catLeg = M([
+    part(new THREE.CapsuleGeometry(0.024, 0.08, 2, 6).translate(0, -0.06, 0)),
+    part(new THREE.CapsuleGeometry(0.019, 0.08, 2, 6).translate(0, -0.15, 0.004)),
+    part(S(0.026, 1, 0.6, 1.3, 0, -0.21, 0.012, 8, 5)),
+  ]);
+  const catTail = M([
+    part(new THREE.CapsuleGeometry(0.02, 0.14, 2, 6).translate(0, 0.08, 0)),
+    part(new THREE.CapsuleGeometry(0.023, 0.14, 2, 6).rotateX(0.18).translate(0, 0.21, 0.012)),
+    part(S(0.024, 1, 1.5, 1, 0, 0.31, 0.03, 8, 5)),
+  ]);
   return { dogBody, dogLeg, dogTail, dogEarsF, dogEarsP, dogTongue, catBody, catLeg, catTail };
 }

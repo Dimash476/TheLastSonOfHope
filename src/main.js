@@ -24,6 +24,8 @@ import { StreetLife } from './world/streetlife.js';
 import { AirLife } from './world/air.js';
 import { Beach } from './world/beach.js';
 import { Island } from './world/island.js';
+import { Axis } from './world/axis.js';
+import { Asteroid } from './world/asteroid.js';
 import { Pier } from './world/pier.js';
 import { Nature } from './world/nature.js';
 import { Animals } from './world/animals.js';
@@ -34,17 +36,16 @@ import { Props } from './world/props.js';
 import { Space } from './world/space.js';
 import { BlackHole, WHITE_HOLE } from './world/blackhole.js';
 import { setRegion, regionAt } from './world/bodies.js';
-import { SPACE, WORLD } from './config.js';
+import { SPACE, WORLD, MAP } from './config.js';
 import { Wormhole } from './world/wormhole.js';
 import { XARRON_GATE } from './world/portal.js';
 import { PlanetMap } from './world/planetmap.js';
 import { Trees } from './world/trees.js';
+import { ParkedCars } from './world/parked.js';
 import { Soundscape } from './soundscape.js';
 import { WildSound } from './wildsound.js';
 import { BossBattle } from './boss/battle.js';
 import { Invasion } from './boss/invasion.js';
-import { Campaign } from './story/campaign.js';
-import { CHAPTERS } from './story/chapters.js';
 import { installSunFog, createGodRaysPass, createGradePass, updateCinematic } from './fx/cinematic.js';
 import { HALF } from './world/layout.js';
 import { Galaxy } from './world/galaxy.js';
@@ -169,12 +170,13 @@ const planetMap = world.planetMap = new PlanetMap(scene, space, world);
 // Общее событие «удар/взрыв в точке»: разлетаются машины, люди, ломаются фонари
 world.impact = (point, radius, force, source) => {
   traffic.impulse(point, radius, force, source);
+  parked?.impulse(point, radius, force);
   people.impulse(point, radius, force);
   props.impulse(point, radius, force);
   trees.impulse(point, radius, force);
   street.impulse(point, radius, force);
   air.impulse(point, radius, force);
-  beach.impulse(point, radius, force);
+  beach?.impulse(point, radius, force);
   nature.impulse(point, radius, force);
   animals.impulse(point, radius, force);
   rocks.explode(point, radius, force);
@@ -185,9 +187,15 @@ const props = world.props = new Props(scene, world, city.gasSpots);
 const trees = world.trees = new Trees(scene, world);
 const street = world.street = new StreetLife(scene, world);
 const air = world.air = new AirLife(scene, world);
-const beach = world.beach = new Beach(scene, world);
-const island = world.island = new Island(scene, world);
-const pier = world.pier = new Pier(scene, world);
+// Пляж, пирс и Райский остров — только у приморского города; в степной столице их нет
+const coast = MAP === 'coast';
+const beach = world.beach = coast ? new Beach(scene, world) : null;
+const island = world.island = coast ? new Island(scene, world) : null;
+const axis = world.axis = new Axis(scene, world);
+const asteroid = world.asteroid = new Asteroid(scene, world);
+const pier = world.pier = coast ? new Pier(scene, world) : null;
+// Припаркованные машины у проспектов и во дворах — только в Сарыдале
+const parked = world.parked = coast ? null : new ParkedCars(scene, world);
 const nature = world.nature = new Nature(scene, world);
 const animals = world.animals = new Animals(scene, world);
 const waterlife = world.waterlife = new WaterLife(scene, world);
@@ -204,7 +212,6 @@ const player = new Player(scene, world);
 const camRig = new ThirdPersonCamera(camera);
 const battle = new BossBattle(scene, world, player, hud, camera);
 const invasion = new Invasion(scene, world, player, hud, camera, camRig);
-const campaign = new Campaign(scene, world, { player, camRig, camera, hud, env });
 invasion.onWarm = () => renderer.compile(scene, camera);
 planetMap.blocked = () => battle.active || invasion.active;
 // Нора к Ксаррону: открывается победой над Ксаргом; пока идёт бой, чёрная дыра ведёт себя по-старому
@@ -248,19 +255,17 @@ player.model.ready.then(() => {
   $('modes').style.visibility = '';
 });
 
-// Главное меню: выбор режима. Симулятор, битва с боссом, Вторжение и Сюжет.
+// Главное меню: выбор режима. Симулятор и битва с боссом; сюжет — в разработке.
 let paused = true;
-let mode = null;            // 'sim' | 'boss' | 'invasion' | 'story'
-// Экран: main — выбор режима, story — меню сюжета, pause — пауза, end — итог битвы
+let mode = null;            // 'sim' | 'boss' | 'invasion' (потом — 'story')
+// Экран: main — выбор режима, pause — пауза, end — итог битвы
 const showMenu = (which) => {
   $('modes').classList.toggle('hidden', which !== 'main');
-  $('story-menu').classList.toggle('hidden', which !== 'story');
+  $('cities').classList.toggle('hidden', which !== 'cities');
+  $('go-btns').classList.toggle('hidden', which !== 'go');
   $('pause-btns').classList.toggle('hidden', which !== 'pause');
   $('battle-end').classList.toggle('hidden', which !== 'end');
-  $('notes-btn').classList.toggle('hidden', mode !== 'story');
-  $('story-notes').classList.add('hidden');
-  $('story-confirm').classList.add('hidden');
-  if (which === 'story') fillStoryMenu();
+  if (which !== 'main') $('story-note').classList.add('hidden');
 };
 showMenu('main');
 function startPlaying() {
@@ -268,16 +273,14 @@ function startPlaying() {
   kbm.requestLock();
 }
 // Битва всегда начинается в целом городе; из битвы в симулятор — тоже с чистого листа
-function enterMode(m, storyAt = {}) {
+function enterMode(m) {
   if (battle.active) battle.stop();
   if (invasion.active) invasion.stop();
-  if (campaign.active) campaign.stop();
-  // Саундтрек боя из music/ — только во Вторжении; в Симуляторе, Битве и Сюжете — своя музыка игры
+  // Саундтрек боя из music/ — только во Вторжении; в Симуляторе и Битве — своя музыка игры
   audio.allowMusic(m === 'invasion');
   if (m === 'boss') { resetWorld(true); battle.start(); }
   else if (m === 'invasion') { resetWorld(true); invasion.start(); }
-  else if (m === 'story') { resetWorld(true); campaign.start(storyAt); }
-  else if (mode === 'boss' || mode === 'invasion' || mode === 'story') resetWorld(true);
+  else if (mode === 'boss' || mode === 'invasion') resetWorld(true);
   mode = m;
   setCosmos(m !== 'boss');
   kbm.spinF = m === 'invasion';
@@ -295,62 +298,33 @@ function setCosmos(on) {
   if ((was && !on && (regionAt(player.pos) !== 'sol' || whiteHole.fall)) || (blackHole.off && blackHole.fall)) resetWorld(true);
 }
 setCosmos(false);
-function startMode(m, storyAt) {
-  enterMode(m, storyAt);
+function startMode(m) {
+  enterMode(m);
   wormhole.newGame();   // новая игра: коллапса нет, земные врата закрыты, пока не прилетишь через них с Ксаррона
   startPlaying();
 }
-$('mode-sim').addEventListener('click', () => startMode('sim'));
-$('mode-boss').addEventListener('click', () => startMode('boss'));
-$('mode-invasion').addEventListener('click', () => startMode('invasion'));
-$('mode-story').addEventListener('click', () => showMenu('story'));
-// Меню сюжета: «Продолжить» — с сохранения, «Новая игра» — с пролога (с подтверждением, если есть прогресс),
-// главы — пройденные и текущая, остальные закрыты
-function fillStoryMenu() {
-  campaign.preload();
-  const save = campaign.hasSave ? campaign.save : null;
-  const at = save ? Math.min(save.chapter, CHAPTERS.length - 1) : 0;
-  const cont = $('story-continue');
-  cont.disabled = !save;
-  $('story-continue-sub').textContent = save ? (campaign.finished ? 'сюжет пройден' : `${CHAPTERS[at].act} · ${CHAPTERS[at].title}`) : 'сохранения нет';
-  const list = $('story-chapters');
-  list.textContent = '';
-  for (const c of CHAPTERS) {
-    const open = !!save && (save.done.includes(c.n) || c.n === at);
-    const b = document.createElement('button');
-    b.className = 'story-ch' + (save && c.n === at && !campaign.finished ? ' now' : '');
-    b.disabled = !open;
-    b.innerHTML = `<div class="n">${c.n === 0 ? 'ПРОЛОГ' : c.n === CHAPTERS.length - 1 ? 'ЭПИЛОГ' : 'ГЛАВА ' + c.n}</div><div class="t"></div>`;
-    b.querySelector('.t').textContent = c.title;
-    if (open) b.addEventListener('click', () => startMode('story', { n: c.n }));
-    list.appendChild(b);
-  }
+// Симулятор: сначала выбор города. Другой город — перезагрузка страницы с ?city=… (весь мир
+// строится заново), после загрузки — кнопка «Начать». Битва и Вторжение — только в приморском городе
+const CITY_NAMES = { coast: 'Приморский город', steppe: 'Сарыдала' };
+const MODE_NAMES = { sim: 'Симулятор', boss: 'Битва', invasion: 'Вторжение' };
+const reloadTo = (city, m) => { location.href = location.pathname + '?' + (city === 'steppe' ? 'city=steppe&' : '') + 'go=' + m; };
+document.querySelector(`#cities .city[data-city="${MAP}"]`)?.classList.add('current');
+$('mode-sim').addEventListener('click', () => showMenu('cities'));
+for (const btn of document.querySelectorAll('#cities .city')) {
+  btn.addEventListener('click', () => (btn.dataset.city === MAP ? startMode('sim') : reloadTo(btn.dataset.city, 'sim')));
 }
-$('story-continue').addEventListener('click', () => startMode('story', {}));
-$('story-new').addEventListener('click', () => {
-  if (campaign.hasSave) $('story-confirm').classList.remove('hidden');
-  else startMode('story', { fresh: true });
-});
-$('story-confirm-yes').addEventListener('click', () => startMode('story', { fresh: true }));
-$('story-confirm-no').addEventListener('click', () => $('story-confirm').classList.add('hidden'));
-$('story-back').addEventListener('click', () => showMenu('main'));
-// Пауза в сюжете: найденные записи Илены
-$('notes-btn').addEventListener('click', () => {
-  const box = $('story-notes');
-  if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
-  box.textContent = '';
-  const notes = campaign.notes;
-  if (!notes.length) box.innerHTML = '<div class="empty">Пока ничего не найдено.</div>';
-  for (const n of notes) {
-    const d = document.createElement('div');
-    d.className = 'note';
-    d.innerHTML = '<b></b><div></div>';
-    d.querySelector('b').textContent = n.title;
-    d.querySelector('div').textContent = n.text;
-    box.appendChild(d);
-  }
-  box.classList.remove('hidden');
-});
+$('cities-back').addEventListener('click', () => showMenu('main'));
+$('mode-boss').addEventListener('click', () => (MAP === 'coast' ? startMode('boss') : reloadTo('coast', 'boss')));
+$('mode-invasion').addEventListener('click', () => (MAP === 'coast' ? startMode('invasion') : reloadTo('coast', 'invasion')));
+const goMode = new URLSearchParams(location.search).get('go');
+if (MODE_NAMES[goMode]) {
+  history.replaceState(null, '', location.pathname + (MAP === 'steppe' ? '?city=steppe' : ''));
+  $('go-title').textContent = `${CITY_NAMES[MAP]} · ${MODE_NAMES[goMode]}`;
+  showMenu('go');
+  $('go-btn').addEventListener('click', () => { showMenu('main'); startMode(goMode); });
+  $('go-menu').addEventListener('click', () => showMenu('main'));
+}
+$('mode-story').addEventListener('click', () => { $('story-note').classList.remove('hidden'); });
 playBtn.addEventListener('click', startPlaying);
 $('end-retry').addEventListener('click', () => startMode(mode));
 $('end-menu').addEventListener('click', () => { enterMode('sim'); mode = null; showMenu('main'); });
@@ -371,8 +345,6 @@ battle.onEnd = invasion.onEnd = (win, title, sub) => {
   showMenu('end');
 };
 $('menu-btn').addEventListener('click', () => {
-  // Из сюжета в меню: глава останавливается, прогресс уже сохранён
-  if (mode === 'story') { enterMode('sim'); mode = null; }
   showMenu('main');
   // В меню — без фоторежима и замедления
   if (photo.on) setPhoto(false);
@@ -598,7 +570,6 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyN' && !paused) {
     if (invasion.active) hud.toast(invasion.theme.toggle() ? 'ТЕМА БОЯ: ВКЛ' : 'ТЕМА БОЯ: ВЫКЛ');
-    else if (mode === 'story') hud.toast(campaign.score.toggle() ? 'МУЗЫКА СЮЖЕТА: ВКЛ' : 'МУЗЫКА СЮЖЕТА: ВЫКЛ');
     else hud.toast(soundscape.toggleScore() ? 'МУЗЫКА: ВКЛ' : 'МУЗЫКА: ВЫКЛ');
   }
   if (e.code === 'KeyG' && !paused) { qualityIndex = (qualityIndex + 1) % QUALITY.length; hud.toast(applyQuality(qualityIndex)); }
@@ -615,16 +586,18 @@ function resetWorld(quiet = false) {
   effects.clear();
   fire.clear();
   traffic.clear();
+  parked?.reset();
   people.clear();
   animals.clear();
   props.reset();
   trees.reset();
   terrainFX.reset();
+  asteroid.clear();
   blackHole.reset();
   whiteHole.reset();
   street.reset();
   air.reset();
-  beach.reset();
+  beach?.reset();
   nature.reset();
   planetMap.leave();
   planetMap.repair();
@@ -674,7 +647,7 @@ function step(dt, active) {
       audio.setMuffle?.(slow.on ? 1 : 0);
       slowBadge.classList.toggle('show', slow.on);
     }
-    if (input.reset && mode !== 'boss' && mode !== 'invasion' && campaign.resetOK) resetWorld();
+    if (input.reset && mode !== 'boss' && mode !== 'invasion') resetWorld();
     if (input.toggleHelp) hud.toggleHelp();
     if (input.toggleView) {
       camRig.first = !camRig.first;
@@ -685,7 +658,6 @@ function step(dt, active) {
     if (input.nextTrack) {
       if (invasion.active) hud.toast(invasion.theme.next(), 2.6);
       // Вне Вторжения трек боя не играет: M, как и N, включает и выключает свою музыку
-      else if (mode === 'story') hud.toast(campaign.score.toggle() ? 'МУЗЫКА СЮЖЕТА: ВКЛ' : 'МУЗЫКА СЮЖЕТА: ВЫКЛ');
       else hud.toast(soundscape.toggleScore() ? 'МУЗЫКА: ВКЛ' : 'МУЗЫКА: ВЫКЛ');
     }
 
@@ -713,11 +685,13 @@ function step(dt, active) {
     galaxy.postTick(dt, player, input);
     if (mode === 'boss') battle.update(gdt, dt);
     if (mode === 'invasion') invasion.update(gdt, dt, input);
-    if (mode === 'story') campaign.update(gdt, dt, input);
+    // Астероид — только в Симуляторе и только у Земли
+    asteroid.update({ dt: gdt, player, camera, active: mode === 'sim' && regionAt(player.pos) === 'sol' && !planetMap.active });
     city.update(gdt);
     debris.update(gdt);
     glass.update(gdt);
     traffic.update(gdt, player.pos);
+    parked?.update(camera.position);
     people.update(gdt, player);
     animals.update(gdt, player);
     waterlife.update(gdt, player, camera.position);
@@ -748,7 +722,6 @@ function step(dt, active) {
   // Днём дыра — призрак сквозь небо; в коллапсе — заметнее
   env.setSkyHole(blackHole.skyHole(camera.position), blackHole.here ? (1 - env.night) * (1 + 1.4 * blackHole.u) : 0);
   wormhole.drone(player, paused);
-  campaign.render(paused ? 0 : dt, paused || mode !== 'story');
   hud.markers(camera, player, !paused && !photo.on && !planetMap.active && !blackHole.fall && !whiteHole.fall);
   // Космос рисуем, только когда небо хоть немного прозрачное
   // (и днём, если в кадре чёрная дыра — она проглядывает сквозь небо призраком)
@@ -760,9 +733,10 @@ function step(dt, active) {
   city.updateView(camera.position, dt);
   trees.update(dt, camera.position);
   street.update(dt, camera.position);
-  beach.update(dt);
-  island.update(paused || photo.on ? 0 : dt * slow.k, camera.position, env, player);
-  pier.update(paused || photo.on ? 0 : dt * slow.k, env.night, camera.position);
+  beach?.update(dt);
+  island?.update(paused || photo.on ? 0 : dt * slow.k, camera.position, env, player);
+  axis.update(paused || photo.on ? 0 : dt * slow.k, camera.position, env);
+  pier?.update(paused || photo.on ? 0 : dt * slow.k, env.night, camera.position);
   nature.update(dt, camera.position);
   // На высоком и среднем качестве (со свечением) картинка чуть темнее
   renderer.toneMappingExposure = env.exposure * (1 - env.altitudeK * 0.25) * (bloom.enabled ? 0.88 : 1) * (1 - 0.32 * (env.glare || 0)) * (invasion.active ? 1 - 0.18 * invasion.fx.smog : 1);
@@ -818,7 +792,7 @@ frame();
 // Для отладки из консоли
 const _look = (d) => { d.normalize(); camRig.yaw = Math.atan2(-d.x, -d.z); camRig.pitch = Math.asin(THREE.MathUtils.clamp(d.y, -1, 1)); };
 window.game = {
-  scene, camera, renderer, player, city, battle, invasion, hands, setControl, wild, island, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space, planetMap, blackHole, whiteHole, wormhole, galaxy,
+  scene, camera, renderer, player, city, battle, invasion, hands, setControl, wild, island, axis, asteroid, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space, planetMap, blackHole, whiteHole, wormhole, galaxy,
   // В межгалактику: к галактике по id (снаружи, на расстоянии d её радиусов) или в точку p (координаты галактик), для проверок
   toDeep(id = 'milky', d = 2.5, p = null) {
     const g = galaxy.galaxies.find((x) => x.id === id);
@@ -850,8 +824,7 @@ window.game = {
   // Запуск без захвата мыши (для автотестов)
   unpause() { paused = false; overlay.classList.add('hidden'); hud.show(true); },
   // Начать режим без захвата мыши (для автотестов)
-  mode(m, storyAt) { enterMode(m, storyAt); },
-  campaign,
+  mode(m) { enterMode(m); },
   // Прогнать n кадров симуляции с фиксированным шагом
   sim(n, dt = 1 / 60) { for (let i = 0; i < n; i++) step(dt, true); renderFrame(); },
   // То же без рендера: шаги логики для проверок боя
