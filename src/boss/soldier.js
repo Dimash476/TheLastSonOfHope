@@ -56,7 +56,8 @@ export class Soldier extends Kin {
   engage() {
     if (!this.alive || this.state === 'down' || this.state === 'gone') return;
     this.engaged = true;
-    if (this.state === 'form') this.state = 'fight';
+    // Из строя или из города: бросает всё и идёт на героя
+    if (this.state === 'form' || this.state === 'raid') this.state = 'fight';
   }
 
   retreat() {
@@ -135,6 +136,8 @@ export class Soldier extends Kin {
       this.animate(dt, camPos);
       return;
     }
+    // Второй отряд громит город: полётом ведёт Raid
+    if (this.state === 'raid') { this.inv.raid.tick(this, dt, camPos); return; }
     const W = this.W;
     this.lookAtPoint(hero.center);
     const dist = this.c.distanceTo(hero.center);
@@ -342,7 +345,7 @@ export class Soldier extends Kin {
     const d = hero.center.distanceTo(point);
     if (d < DIVE_R && hero.dashT <= 0) {
       const k = 1 - d / DIVE_R;
-      I.hurtHero(DIVE_DMG * (0.45 + 0.55 * k), _v.subVectors(hero.center, point).setY(4).normalize().multiplyScalar(40 + 90 * k).clone(), false, 0);
+      I.hurtHero(DIVE_DMG * (0.45 + 0.55 * k), I.fastHero() ? null : _v.subVectors(hero.center, point).setY(4).normalize().multiplyScalar(40 + 90 * k).clone(), false, 0);
     } else if (d < DIVE_R) I.onDodge(this);
     this.grounded = point.y <= this.groundY + 2;
     this.landT = 0.8;
@@ -367,7 +370,7 @@ export class Soldier extends Kin {
       if (I.player.dashT > 0) I.onDodge(this);
       else {
         const kick = _v.copy(this.aim).setY(Math.max(this.aim.y, 0.18)).normalize();
-        I.hurtHero(SHOULDER_DMG, kick.clone().multiplyScalar(lerp(320, 600, sk)), false, 0);
+        I.hurtHero(SHOULDER_DMG, I.fastHero() ? null : kick.clone().multiplyScalar(lerp(320, 600, sk)), false, 0);
         this.hitFX(I.heroC, this.aim, 0.8);
         I.fx.thud(0.8);
       }

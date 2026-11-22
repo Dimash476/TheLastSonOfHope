@@ -8,6 +8,7 @@ import { Seize } from './seize.js';
 import { Finale } from './finale.js';
 import { Story } from './story.js';
 import { Parley } from './parley.js';
+import { Raid, RAIDERS } from './raid.js';
 import { BattleTheme } from './theme.js';
 import { BattleFX } from './battlefx.js';
 import { spaceK } from './kin.js';
@@ -88,12 +89,18 @@ export class Invasion {
     this.finale = new Finale(this);
     this.parley = new Parley(this);
     this.story = new Story(this);
+    this.raid = new Raid(this);
     this.theme = new BattleTheme(world.audio);
     this.soldiers = [];
     this.xarg = null;
     this.pool = false;
     this.factory.whenReady(() => {
       for (let i = 0; i < SOLDIERS; i++) this.soldiers.push(new Soldier(this, i));
+      // Второй отряд: громит город, пока первый идёт на героя
+      const raiders = [];
+      for (let i = 0; i < RAIDERS; i++) raiders.push(new Soldier(this, SOLDIERS + i));
+      this.soldiers.push(...raiders);
+      this.raid.attach(raiders);
       this.xarg = new Xarg(this);
       for (const s of this.soldiers) { s.state = 'gone'; s.root.visible = false; }
       this.xarg.state = 'wait';
@@ -203,6 +210,7 @@ export class Invasion {
     this.seize.reset();
     this.finale.reset();
     this.story.reset();
+    this.raid.reset();
     this.bolts.clear();
     this.parley.cancel();
     if (this.pool) this.hideKin();
@@ -242,6 +250,7 @@ export class Invasion {
     this.seize.reset();
     this.finale.reset();
     this.story.stop();
+    this.raid.reset();
     this.parley.cancel();
     P.punchLen = undefined;
     P.punchHitAt = undefined;
@@ -447,6 +456,8 @@ export class Invasion {
       this.startFight('Ударил первым. Значит, чему-то они тебя научили. Десант, взять его.');
       return;
     }
+    // Отказ: сначала второй отряд идёт на город, бой — после
+    if (result === 'fight' && this.pool) { this.raid.begin(); return; }
     this.startFight();
   }
 
@@ -460,7 +471,8 @@ export class Invasion {
     if (this.fightOn || !this.pool) return;
     const P = this.player, X = this.xarg;
     this.parley.cancel();
-    if (this.stage !== 'meet' && this.stage !== 'parley') this.skipScene();
+    this.raid.endScene();
+    if (this.stage !== 'meet' && this.stage !== 'parley' && this.stage !== 'raid') this.skipScene();
     this.fightOn = true;
     this.setStage('wave');
     this.setCine(false);
@@ -477,6 +489,7 @@ export class Invasion {
     this.engaged = 0;
     this.meleeSlots = 2;
     this.engageNext(WAVE_FIRST);
+    this.raid.deploy();
     this.theme.start('wave');
     this.el.ui.classList.remove('hidden');
     this.el.hero.classList.remove('hidden');
@@ -786,10 +799,17 @@ export class Invasion {
     if (X) X.cd.grab = Math.max(X.cd.grab, 4);
   }
 
+  // Герой летит на скорости: десант может ранить, но не остановить и не сбить
+  fastHero() {
+    const P = this.player;
+    return P.speed > 140 && P.knockT <= 0 && !P.driven && !P.captured;
+  }
+
   meleeHit(kin, dmg, knockSpeed) {
     const P = this.player;
     if (P.dashT > 0) { this.onDodge(kin); return; }
-    this.hurtHero(dmg, _v.copy(kin.aim).setY(Math.max(kin.aim.y, 0.15)).normalize().multiplyScalar(knockSpeed).clone());
+    const knock = kin.kind === 'soldier' && this.fastHero() ? null : _v.copy(kin.aim).setY(Math.max(kin.aim.y, 0.15)).normalize().multiplyScalar(knockSpeed).clone();
+    this.hurtHero(dmg, knock);
     this.fx.thud(0.7);
   }
 
@@ -1189,6 +1209,7 @@ export class Invasion {
         s.update(dt, P, cam);
         if (s.inMelee) this.meleeSlots--;
       }
+      this.raid.update(dt);
       this.xarg.update(dt, P, cam);
       if (this.xarg.knock > 0) this.ship.collide(this.xarg, this.prevXarg, dt);
       this.prevXarg.copy(this.xarg.pos);
@@ -1227,9 +1248,16 @@ export class Invasion {
           if (_v.dot(P.vel) < 0 || _v.dot(P.vel) < _v.dot(k.vel)) return;
           // Таран идёт в корабль: десантник на пути не перехватывает удар, всё достаётся кораблю
           if (k.kind === 'soldier' && this.ramsShip(sp)) return;
-          this.ramCd = 0.5;
-          if (headOn) { this.clash(k, true); return; }
+          if (headOn) { this.ramCd = 0.5; this.clash(k, true); return; }
           const dir = P.vel.clone().normalize();
+          if (k.kind === 'soldier') {
+            // Десантник его не тормозит: отлетает, а герой идёт дальше на той же скорости и без заминки
+            const hs = P.hitstop;
+            k.receive('ram', clamp(sp / 900, 0, 1), k.c.clone(), dir);
+            P.hitstop = hs;
+            return;
+          }
+          this.ramCd = 0.5;
           k.receive('ram', clamp(sp / 900, 0, 1), k.c.clone(), dir);
           P.vel.multiplyScalar(0.45);
         });
@@ -1336,6 +1364,7 @@ export class Invasion {
         break;
       }
       case 'parley': break;
+      case 'raid': this.raid.sceneFrame(dt, realDt, input); break;
       case 'wave': {
         this.engageT += realDt;
         if (this.engageT > 7) { this.engageT = 0; this.engageNext(1); }
@@ -1447,7 +1476,7 @@ export class Invasion {
     if (this.stage === 'warn') mark = this.ship.group.position;
     else if (this.stage === 'meet' && this.pool) { mark = X.c; far = 60; }
     else if ((this.stage === 'wave' || this.stage === 'duel') && this.pool && X.alive) mark = X.c;
-    const cine = this.stage === 'descent' || this.stage === 'landing' || this.stage === 'parley' || this.stage === 'badend';
+    const cine = this.stage === 'descent' || this.stage === 'landing' || this.stage === 'parley' || this.stage === 'raid' || this.stage === 'badend';
     const cam = this.camera;
     let show = false;
     if (mark && !cine) {

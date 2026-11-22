@@ -222,7 +222,8 @@ wormhole.build(scene, space, env);
 const galaxy = world.galaxy = new Galaxy(renderer, space.scene, world);
 
 city.onDestroyed = () => {
-  if (city.destroyed % 25 === 0) hud.toast(`${city.destroyed} ЗДАНИЙ`);
+  // Пока десант громит город во Вторжении, счётчика нет: это фильм
+  if (city.destroyed % 25 === 0 && !(mode === 'invasion' && invasion.raid.busy)) hud.toast(`${city.destroyed} ЗДАНИЙ`);
 };
 
 // ---------------------------------------------------------------- ввод и пауза

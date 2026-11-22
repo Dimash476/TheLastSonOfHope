@@ -1446,3 +1446,5 @@ export class BattleFX {
     u.uVig.value += (0.1 + 0.08 * s) * k;
   }
 }
+
+export { ArcTrail };
