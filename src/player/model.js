@@ -846,6 +846,18 @@ export class HeroModel {
       mixArm(acc, 'R', [-2.75, 0, -0.45 + s * 0.22], [-0.5 - s * 0.2, 0, 0], p.wave);
       acc.neck[0] -= 0.06 * p.wave;
     }
+    // Ладонь вперёд: остановить машину
+    if (p.palm > 0.01) {
+      mixArm(acc, 'R', [-1.58, 0, -0.12], [-0.12, 0, 0], p.palm);
+      acc.spine[0] += 0.06 * p.palm;
+    }
+    // Автограф: рука у груди, короткие росчерки
+    if (p.sign > 0.01) {
+      const s = Math.sin(this.t * 14);
+      mixArm(acc, 'R', [-1.05 + s * 0.06, 0, -0.2 + s * 0.1], [-1.25, 0, 0], p.sign);
+      mixArm(acc, 'L', [-0.95, 0, 0.25], [-1.35, 0, 0], p.sign);
+      acc.neck[0] += 0.25 * p.sign;
+    }
     // Бросок мяча: замах из-за головы и хлёсткий вынос руки вперёд
     if (p.throwT >= 0) {
       const t = p.throwT, k = smoothstep(0.3, 0.5, t), w = t < 0.75 ? smoothstep(0, 0.15, t) : 1 - smoothstep(0.75, 1, t);

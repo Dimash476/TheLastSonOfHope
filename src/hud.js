@@ -105,7 +105,7 @@ export class HUD {
     // Подсказка: можно погладить собаку или кошку
     const pet = player.petting || player.petTarget;
     const it = player.interactTarget;
-    const act = it ? `<kbd>E</kbd> ${it.type === 'help' ? 'помочь подняться' : it.type === 'ball' ? 'бросить мяч' : 'поприветствовать'}` : '';
+    const act = it ? `<kbd>E</kbd> ${it.label ? it.label : it.type === 'help' ? 'помочь подняться' : it.type === 'ball' ? 'бросить мяч' : 'поприветствовать'}` : '';
     const petTxt = pet ? `<kbd>ПКМ</kbd> погладить ${pet.kind === 'dog' ? 'собаку' : 'кошку'}` : '';
     // Посадка: сверху — на сам шар, сбоку и снизу — перенос на отдельную карту. С карты — вверх, в космос
     const land = player.grounded ? ''

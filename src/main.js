@@ -49,6 +49,9 @@ import { Invasion } from './boss/invasion.js';
 import { installSunFog, createGodRaysPass, createGradePass, updateCinematic } from './fx/cinematic.js';
 import { HALF } from './world/layout.js';
 import { Galaxy } from './world/galaxy.js';
+import { XarronLife } from './xarron/index.js';
+import { Radio } from './radio.js';
+import { Scenes } from './world/scenes.js';
 
 // Туман со светом солнца — до создания и компиляции материалов
 installSunFog();
@@ -180,6 +183,7 @@ world.impact = (point, radius, force, source) => {
   nature.impulse(point, radius, force);
   animals.impulse(point, radius, force);
   rocks.explode(point, radius, force);
+  world.xarron?.impulse(point, radius, force);
 };
 const traffic = world.traffic = new Traffic(scene, world);
 const people = world.people = new People(scene, world);
@@ -220,6 +224,15 @@ wormhole.blocked = planetMap.blocked;
 wormhole.build(scene, space, env);
 // Галактики: небо (полоса Млечного Пути, туманности, соседние галактики) и полёт между ними на W + Shift + Tab
 const galaxy = world.galaxy = new Galaxy(renderer, space.scene, world);
+// Столица Ксаррона Тарвэн — на карте его поверхности: город, жители, персонажи и разговоры
+const xarron = world.xarron = new XarronLife(scene, world, { player, camRig, wormhole });
+planetMap.decor.xarron = xarron;
+// Радио на I: станции и новости о делах героя (только в Симуляторе)
+world.hud = hud;
+const radio = world.radio = new Radio(audio, world);
+world.news = (kind, d) => radio.event(kind, d);
+// Сцены на улицах: погоня, авария с огнём, котёнок на дереве, уличный музыкант
+const scenes = world.scenes = new Scenes(scene, world);
 
 city.onDestroyed = () => {
   // Пока десант громит город во Вторжении, счётчика нет: это фильм
@@ -337,6 +350,7 @@ battle.onEnd = invasion.onEnd = (win, title, sub) => {
     audio.allowMusic(false);
     kbm.spinF = false;
     hud.toast(title, 3);
+    xarron.rumor();
     return;
   }
   $('end-title').textContent = title;
@@ -573,6 +587,7 @@ window.addEventListener('keydown', (e) => {
     if (invasion.active) hud.toast(invasion.theme.toggle() ? 'ТЕМА БОЯ: ВКЛ' : 'ТЕМА БОЯ: ВЫКЛ');
     else hud.toast(soundscape.toggleScore() ? 'МУЗЫКА: ВКЛ' : 'МУЗЫКА: ВЫКЛ');
   }
+  if (e.code === 'KeyI' && !paused && mode === 'sim') hud.toast(radio.cycle());
   if (e.code === 'KeyG' && !paused) { qualityIndex = (qualityIndex + 1) % QUALITY.length; hud.toast(applyQuality(qualityIndex)); }
 });
 
@@ -600,6 +615,9 @@ function resetWorld(quiet = false) {
   air.reset();
   beach?.reset();
   nature.reset();
+  xarron.reset();
+  radio.reset();
+  scenes.reset();
   planetMap.leave();
   planetMap.repair();
   player.spawn();
@@ -683,6 +701,7 @@ function step(dt, active) {
     galaxy.preTick(player);
     player.update(pdt, input, camRig);
     planetMap.tick(player);
+    xarron.update(gdt, dt, input);
     galaxy.postTick(dt, player, input);
     if (mode === 'boss') battle.update(gdt, dt);
     if (mode === 'invasion') invasion.update(gdt, dt, input);
@@ -694,6 +713,7 @@ function step(dt, active) {
     traffic.update(gdt, player.pos);
     parked?.update(camera.position);
     people.update(gdt, player);
+    scenes.update(gdt, player, mode === 'sim' && regionAt(player.pos) === 'sol' && !planetMap.active);
     animals.update(gdt, player);
     waterlife.update(gdt, player, camera.position);
     critters.update(gdt, player, camera.position, env.night);
@@ -778,6 +798,7 @@ function step(dt, active) {
     audio.setAmbience(Math.max(inCity, inSuburb * 0.45) * low, inSuburb * low, env.night, env.W.rain);
   }
   audio.listenerRight = _camRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+  radio.update(dt, mode === 'sim' && !paused && !photo.on, { player, city, air, planetMap, blackHole, xarron, env, region: regionAt(player.pos) });
   soundscape.update({ dt, player, camera, people, traffic, city, env, paused, away });
   wild.update({ dt: dt * slow.k, camera, env, world, paused: paused || photo.on, menu: paused, slow: slow.k, away });
   if (paused) air.mute();
@@ -793,7 +814,7 @@ frame();
 // Для отладки из консоли
 const _look = (d) => { d.normalize(); camRig.yaw = Math.atan2(-d.x, -d.z); camRig.pitch = Math.asin(THREE.MathUtils.clamp(d.y, -1, 1)); };
 window.game = {
-  scene, camera, renderer, player, city, battle, invasion, hands, setControl, wild, island, axis, asteroid, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space, planetMap, blackHole, whiteHole, wormhole, galaxy,
+  scene, camera, renderer, player, city, battle, invasion, hands, xarron, setControl, wild, island, axis, asteroid, debris, glass, effects, input, camRig, traffic, people, props, trees, street, air, beach, pier, nature, animals, waterlife, critters, countryside, soundscape, fire, composer, bloom, godRays, grade, env, audio, space, planetMap, blackHole, whiteHole, wormhole, galaxy, radio, scenes,
   // В межгалактику: к галактике по id (снаружи, на расстоянии d её радиусов) или в точку p (координаты галактик), для проверок
   toDeep(id = 'milky', d = 2.5, p = null) {
     const g = galaxy.galaxies.find((x) => x.id === id);
@@ -820,6 +841,15 @@ window.game = {
     if (b) player.pos.copy(b.c).add(new THREE.Vector3(0, b.r * 1.6, b.r * 2.4));
     else player.pos.copy(H.c).addScaledVector(H.toward, H.rs * 12);
     player.vel.set(0, 0, 0); player.grounded = false; player.falling = false; player.onBody = player.nearBody = null;
+    setRegion(regionAt(player.pos));
+  },
+  // Сразу в Тарвэн: на карту Ксаррона, к краю города (with — сторона подлёта, как касание шара)
+  toTarven(nx = 1, nz = 0) {
+    const b = space.bodies.find((x) => x.id === 'xarron');
+    planetMap.leave();
+    player.pos.copy(b.c).addScaledVector(new THREE.Vector3(nx, 0.2, nz).normalize(), b.r + 10);
+    setRegion(regionAt(player.pos));
+    planetMap.enter(player, b, new THREE.Vector3(nx, 0.2, nz).normalize(), 50);
     setRegion(regionAt(player.pos));
   },
   // Запуск без захвата мыши (для автотестов)

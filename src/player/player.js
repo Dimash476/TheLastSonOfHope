@@ -200,23 +200,60 @@ export class Player {
     this.petting = this.petTarget && input.heavyHeld ? this.petTarget : null;
     if (this.petting) W.animals.pet(this.petting, dt);
 
-    // Действие рядом (E): помочь упавшему подняться, бросить мяч собаке, поприветствовать людей
+    // Действие рядом (E): сцена на улице (scenes.js), помочь упавшему, поставить то, что держим,
+    // остановить машину ладонью, автограф, мяч собаке, приветствие; в воздухе — поймать самолёт
     this.interactTarget = null;
-    if (this.grounded && !this.held && !this.lasering && this.charge <= 0 && !this.petting && this.vel.length() < 8) {
-      const down = W.people?.findDown(this.pos, 3);
-      const dog = !down && W.animals?.findDogForBall(this.pos, 7);
-      if (down) this.interactTarget = { type: 'help', ref: down };
-      else if (dog) this.interactTarget = { type: 'ball', ref: dog };
-      else if (W.people?.countNear(this.pos, 14) > 0) this.interactTarget = { type: 'greet' };
+    const sp = this.vel.length(), calmHands = !this.lasering && this.charge <= 0 && !this.petting;
+    const nearGround = this.grounded || this.pos.y - this.groundY < 6;
+    if (this.held && calmHands) {
+      const h = this.held;
+      if (h.kind === 'plane' && this.pos.y - this.groundY < 40 && sp < 30) this.interactTarget = { type: 'place', label: 'посадить самолёт' };
+      else if ((h.kind === 'car' || h.kind === 'person') && nearGround && sp < 12) this.interactTarget = { type: 'place', label: h.kind === 'car' ? 'поставить машину' : 'поставить на ноги' };
+    } else if (!this.held && calmHands) {
+      const scene = sp < 10 ? W.scenes?.target(this) : null;
+      if (scene) this.interactTarget = { type: 'scene', label: scene.label, ref: scene };
+      else if (this.grounded && sp < 8) {
+        const down = W.people?.findDown(this.pos, 3);
+        const car = !down && W.traffic?.findApproaching(this.pos, 26);
+        const fan = !down && !car && W.people?.findFan(this.pos, camFlat, 4.5);
+        const dog = !down && !car && !fan && W.animals?.findDogForBall(this.pos, 7);
+        if (down) this.interactTarget = { type: 'help', ref: down };
+        else if (car) this.interactTarget = { type: 'stop', label: car.type === 'bus' ? 'остановить автобус' : 'остановить машину', ref: car };
+        else if (fan) this.interactTarget = { type: 'sign', label: 'дать автограф', ref: fan };
+        else if (dog) this.interactTarget = { type: 'ball', ref: dog };
+        else if (W.people?.countNear(this.pos, 14) > 0) this.interactTarget = { type: 'greet' };
+      } else if (!this.grounded) {
+        const plane = W.air?.findPlane(this.center, 70);
+        if (plane) this.interactTarget = { type: 'plane', label: 'поймать самолёт', ref: plane };
+      }
     }
     if (input.interact && this.interactTarget && this.throwT < 0) {
       const it = this.interactTarget;
-      if (it.type === 'help') { W.people.helpUp(it.ref, this.pos); this.helpT = 0.9; }
-      else if (it.type === 'ball') { this.throwT = 0; this.throwDir = camFlat.clone(); }
-      else { W.people.greet(this.pos, cam.camera.position); this.waveT = 1.8; }
+      if (it.type === 'help') { W.people.helpUp(it.ref, this.pos); this.helpT = 0.9; W.news?.('help'); }
+      else if (it.type === 'scene') it.ref.run(this);
+      else if (it.type === 'place') this.placeHeld();
+      else if (it.type === 'stop') {
+        W.traffic.stopCar(it.ref);
+        this.palmT = 1.4; this.faceAt = it.ref.pos.clone();
+        W.news?.('stopCar');
+      } else if (it.type === 'sign') {
+        W.people.autograph(it.ref, this.pos);
+        this.signT = 1.6; this.faceAt = it.ref.pos.clone();
+        W.news?.('autograph');
+      } else if (it.type === 'plane') {
+        this.held = { kind: 'plane', sys: W.air, ref: it.ref };
+        W.air.hold(it.ref);
+        this.vel.multiplyScalar(0.3);
+        W.effects.shockwave(this.center.clone(), { type: 'sphere', radius: 14, life: 0.4, opacity: 0.35 });
+        W.news?.('plane');
+      } else if (it.type === 'ball') { this.throwT = 0; this.throwDir = camFlat.clone(); W.news?.('ball'); }
+      else if (it.type === 'greet') { W.people.greet(this.pos, cam.camera.position); this.waveT = 1.8; W.news?.('greet'); }
     }
     this.waveT = Math.max(0, (this.waveT || 0) - dt);
     this.helpT = Math.max(0, (this.helpT || 0) - dt);
+    this.palmT = Math.max(0, (this.palmT || 0) - dt);
+    this.signT = Math.max(0, (this.signT || 0) - dt);
+    if (this.faceAt && this.palmT <= 0 && this.signT <= 0) this.faceAt = null;
     // Бросок мяча: замах из-за головы, мяч уходит в момент выноса руки вперёд
     if (this.throwT >= 0) {
       const t0 = this.throwT;
@@ -638,7 +675,9 @@ export class Player {
       // Горы карты ломаются, как на Земле: таран прорубает проход (пике — воронку, в groundImpact)
       const sp = this.vel.length(), dive = -this.vel.y > 0.8 * Math.hypot(this.vel.x, this.vel.z);
       if (sp >= P.ramSpeed && !this.grounded && !dive) map.ram(_p0, this.pos, sp);
-      this.groundY = map.heightAt(this.pos.x, this.pos.z);
+      // Здания столицы Ксаррона не ломаются: в них упираемся, на крыши встаём
+      map.collide(_p0, this);
+      this.groundY = map.heightAt(this.pos.x, this.pos.z, this.pos.y);
       this.bodyAlt = this.pos.y - this.groundY;
       this.belowCap = false;
     } else {
@@ -733,7 +772,8 @@ export class Player {
     }
     // Сверху: ноги на поверхность поставит обычная логика земли (посадка, удар о землю).
     // Если за кадр ушли глубже шапки — останавливаемся в точке входа
-    if (_bn.y > CAP_NY) {
+    // На Ксарроне (столица) садятся только через карту поверхности
+    if (_bn.y > CAP_NY && !B.capital) {
       if (bodyGroundAt(B, this.pos) === -Infinity) { this.pos.copy(B.c).addScaledVector(_bn, R); this.pos.y -= 0.001; }
       return;
     }
@@ -791,6 +831,7 @@ export class Player {
     if (W.trees?.hit(hitC, 2.4, vel)) material = material || 'concrete';
     if (W.people?.hit(hitC, 2.4, aim.clone().multiplyScalar(14))) material = material || 'body';
     if (W.boss?.hit(hitC, 2.4, P.punchDamage, aim, 'punch')) material = material || 'concrete';
+    if (W.xarron?.strike(hitC, 2.4, P.punchDamage, aim)) material = material || 'glass';
     for (const b of hits) {
       W.city.closestPoint(b, hitC, _cp);
       W.city.damage(b, P.punchDamage, _cp.clone(), aim, P.punchForce);
@@ -848,6 +889,31 @@ export class Player {
     this.punchHit = true;
   }
 
+  // Бережно поставить то, что держим (E): машину и человека — перед собой, на землю или крышу; самолёт — под собой
+  placeHeld() {
+    const W = this.world, h = this.held;
+    if (!h) return;
+    this.held = null;
+    this.helpT = 0.6;
+    if (h.kind === 'plane') {
+      const p = h.ref.g.position;
+      h.sys.land(h.ref, W.city.groundHeightAt(p.x, p.z, -1e9));
+      W.news?.('planeLand');
+      return;
+    }
+    const car = h.kind === 'car';
+    const p = this.pos.clone().addScaledVector(this.facing, car ? 3.6 : 1.3);
+    p.y = W.city.groundHeightAt(p.x, p.z, this.pos.y + 1.5);
+    const roof = p.y - W.city.groundHeightAt(p.x, p.z, -1e9) > 3;
+    const yaw = Math.atan2(this.facing.x, this.facing.z);
+    if (car) h.sys.put(h.ref, p, yaw);
+    else h.sys.put(h.ref, p, yaw + Math.PI, roof);
+    W.dust.burst(p.clone().setY(p.y + 0.3), car ? 6 : 3, { size: [0.8, 2.2], speed: 2.5, life: [0.4, 0.9] });
+    if (car) W.audio?.metal(0.12, p);
+    W.audio?.footstep(0.6);
+    W.news?.(car ? (roof ? 'placeRoof' : 'placeCar') : (roof ? 'personRoof' : 'placePerson'));
+  }
+
   // Удар по тому, что держим: вещь улетает с силой удара
   punchHeld(dir) {
     const W = this.world, h = this.held;
@@ -903,6 +969,7 @@ export class Player {
     const radius = lerp(P.heavyBaseRadius, P.heavyMaxRadius, c);
     W.city.damageRadius(center, radius, P.heavyDamage * (0.25 + 0.75 * c), 40 + 90 * c, aim);
     W.boss?.hit(center, 3 + radius * 0.35, P.heavyDamage * (0.25 + 0.75 * c), aim, 'heavy');
+    W.xarron?.strike(center, radius, P.heavyDamage * (0.25 + 0.75 * c), aim);
     W.debris.explode(center, radius * 1.5, 30 + 60 * c);
     W.effects.shockwave(center, { type: 'sphere', radius: radius * 1.3, life: 0.5 + c * 0.4, opacity: 0.4 });
     W.effects.shockwave(center, { type: 'disc', dir: aim, radius: radius * 1.8, life: 0.6 + c * 0.4, opacity: 0.8 });
@@ -937,6 +1004,7 @@ export class Player {
     // В горах — воронка в самом склоне
     if (!this.onBody && !W.planetMap.active) W.terrainFX?.crater(point, 180 + 180 * k, 20 + 60 * k);
     if (W.planetMap.active) W.planetMap.crater(point, 120 + 140 * k, 15 + 50 * k);
+    if (W.planetMap.active) W.xarron?.strike(point, r * 0.6, 250 + 650 * k, null);
     W.effects.shockwave(point.clone().setY(point.y + 0.6), { type: 'ring', radius: r * 2.2, life: 0.9, opacity: 0.9 });
     W.effects.shockwave(point, { type: 'sphere', radius: r * 1.1, life: 0.6, opacity: 0.35 });
     W.debris.explode(point, r * 1.6, 25 + 45 * k);
@@ -984,6 +1052,7 @@ export class Player {
     // Куда смотрит персонаж по горизонтали
     let targetFacing;
     if (this.petting) targetFacing = new THREE.Vector3(this.petting.pos.x - this.pos.x, 0, this.petting.pos.z - this.pos.z).normalize();
+    else if (this.faceAt && Math.hypot(this.faceAt.x - this.pos.x, this.faceAt.z - this.pos.z) > 0.3) targetFacing = new THREE.Vector3(this.faceAt.x - this.pos.x, 0, this.faceAt.z - this.pos.z).normalize();
     else if (this.lockDir && Math.hypot(this.lockDir.x, this.lockDir.z) > 0.05) targetFacing = new THREE.Vector3(this.lockDir.x, 0, this.lockDir.z).normalize();
     else if (acting) targetFacing = camFlat;
     // От первого лица на земле и в медленном полёте корпус повёрнут туда, куда смотришь: руки всегда перед глазами
@@ -1095,10 +1164,12 @@ export class Player {
     a.grip = damp(a.grip || 0, this.gripping ? 1 : 0, 14, dt);
     a.pet = damp(a.pet || 0, this.petting || this.helpT > 0 ? 1 : 0, 7, dt);
     a.wave = damp(a.wave || 0, this.waveT > 0 ? 1 : 0, 8, dt);
+    a.palm = damp(a.palm || 0, this.palmT > 0 ? 1 : 0, 12, dt);
+    a.sign = damp(a.sign || 0, this.signT > 0 ? 1 : 0, 9, dt);
     a.throwT = this.throwT >= 0 ? this.throwT / 0.65 : -1;
 
     // Покой на земле дольше 3 с — руки на пояс
-    const busy = hs > 1 || this.punchT >= 0 || this.charge > 0 || this.held || this.gripping || this.lasering || this.petting || this.landT > 0 || this.waveT > 0 || this.throwT >= 0 || this.helpT > 0 || this.downK > 0;
+    const busy = hs > 1 || this.punchT >= 0 || this.charge > 0 || this.held || this.gripping || this.lasering || this.petting || this.landT > 0 || this.waveT > 0 || this.throwT >= 0 || this.helpT > 0 || this.palmT > 0 || this.signT > 0 || this.downK > 0;
     this.idleT = this.grounded && !busy ? (this.idleT || 0) + dt : 0;
     a.idle = damp(a.idle || 0, this.idleT > 3 ? 1 : 0, 3, dt);
     // Полёт: крен, сила встречного ветра, набор/снижение, гиперскорость

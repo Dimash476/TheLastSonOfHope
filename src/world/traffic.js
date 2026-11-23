@@ -190,6 +190,40 @@ export class Traffic {
     return best ? { ref: best, dist: bestD } : null;
   }
 
+  // Машина едет прямо на героя (он стоит на её полосе): для «остановить ладонью» (E)
+  findApproaching(p, range) {
+    let best = null, bd = range;
+    for (const car of this.cars) {
+      if (car.state !== 'drive' || car.hp <= 0 || car.wait > 0) continue;
+      const dx = p.x - car.pos.x, dz = p.z - car.pos.z;
+      const ahead = dx * car.dir[0] + dz * car.dir[1], side = Math.abs(dx * car.dir[1] - dz * car.dir[0]);
+      if (ahead > 3 && ahead < bd && side < 2.6 && Math.abs(p.y - car.pos.y) < 2) { bd = ahead; best = car; }
+    }
+    return best;
+  }
+
+  // Герой выставил ладонь: машина встаёт как вкопанная, постоит и поедет дальше
+  stopCar(car) {
+    car.wait = 5 + Math.random() * 2;
+    const W = this.world, f = _v.set(car.dir[0], 0, car.dir[1]);
+    const nose = car.pos.clone().addScaledVector(f, car.type === 'bus' ? 6 : 2.3).setY(car.pos.y + 0.8);
+    W.sparks.burst(nose, 10, { size: [0.2, 0.5], speed: 8, life: [0.15, 0.35], color: 0xffe2a8 });
+    W.dust.burst(car.pos.clone(), 4, { size: [1, 2.2], speed: 3, life: [0.4, 0.9] });
+    W.audio?.metal(0.25, nose);
+    if (W.audio?.ctx) W.audio.noiseBurst({ dur: 0.35, freq: 2600, sweepTo: 900, type: 'bandpass', q: 2, gain: 0.12, dest: W.audio.out(car.pos) });
+  }
+
+  // Бережно поставить (E): машина стоит, где поставили, — на дороге, во дворе, на крыше
+  put(car, p, yaw) {
+    car.state = 'wreck';
+    car.timer = -600;
+    car.thrown = false;
+    car.vel.set(0, 0, 0);
+    car.ang.set(0, 0, 0);
+    car.pos.copy(p);
+    car.quat.setFromAxisAngle(UP, yaw + Math.PI / 2);
+  }
+
   hold(car) {
     car.state = 'held';
     car.vel.set(0, 0, 0);
@@ -225,7 +259,9 @@ export class Traffic {
 
       if (car.state === 'drive') {
         if (far || !inGrid) { car.state = 'none'; car.mesh.setMatrixAt(car.slot, _zero); if (night) this.beams.setMatrixAt(car.idx, _zero); continue; }
-        car.progress += car.speed * dt;
+        // Остановлена ладонью героя — стоит, потом трогается
+        if (car.wait > 0) car.wait -= dt;
+        else car.progress += car.speed * dt;
         if (car.progress >= CITY.block) {
           car.node = [car.node[0] + car.dir[0], car.node[1] + car.dir[1]];
           car.progress -= CITY.block;

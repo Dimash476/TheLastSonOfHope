@@ -335,12 +335,19 @@ export class AirLife {
       trail.frustumCulled = false;
       g.add(trail);
       this.scene.add(g);
-      return { g, strobe, dir: new THREE.Vector3(), timer: i * 40 };
+      return { g, strobe, trail, dir: new THREE.Vector3(), timer: i * 40, held: false, landed: 0 };
     });
   }
 
   updatePlanes(dt, cam, weatherRain) {
     for (const p of this.planes) {
+      p.strobe.visible = (this.t % 1.6) < 0.08;
+      // В руках у героя — летит с ним; посажен — стоит минуту, потом исчезает и прилетает новый
+      if (p.held) continue;
+      if (p.landed > 0) {
+        if ((p.landed -= dt) <= 0) { p.dir.set(0, 0, 0); p.trail.visible = true; p.timer = 0; }
+        continue;
+      }
       p.timer -= dt;
       const far = Math.hypot(p.g.position.x - cam.x, p.g.position.z - cam.z);
       if (p.timer <= 0 && (far > 20000 || p.dir.lengthSq() === 0)) {
@@ -352,9 +359,53 @@ export class AirLife {
         p.timer = 20 + Math.random() * 40;
       }
       p.g.position.addScaledVector(p.dir, 230 * dt);
-      p.strobe.visible = (this.t % 1.6) < 0.08;
+      // Отпущенный низко — набирает высоту обратно
+      if (p.g.position.y < 3000) p.g.position.y += 30 * dt;
     }
     this.trailMat.uniforms.uOpacity.value = 0.35 * (1 - weatherRain);
+  }
+
+  // Самолёт рядом с героем в воздухе (E — поймать)
+  findPlane(pos, r) {
+    for (const p of this.planes) {
+      if (p.held || p.landed > 0 || p.dir.lengthSq() === 0) continue;
+      if (p.g.position.distanceTo(pos) < r) return p;
+    }
+    return null;
+  }
+
+  // Поймали: самолёт на руках над головой, носом туда, куда смотрит герой
+  hold(p) {
+    p.held = true;
+    p.trail.visible = false;
+    const a = this.world.audio;
+    a?.metal(0.6, p.g.position);
+    a?.boom(0.3, p.g.position.clone());
+  }
+  setHeld(p, pos, facingQuat) {
+    p.g.position.copy(pos).add(_v.set(0, 2.6, 0));
+    p.g.quaternion.copy(facingQuat);
+  }
+  // Отпустили (R, ЛКМ): летит дальше туда, куда бросили
+  throwObj(p, vel) {
+    p.held = false;
+    p.trail.visible = true;
+    p.dir.set(vel.x, 0, vel.z);
+    if (p.dir.lengthSq() < 1e-4) p.dir.set(0, 0, 1).applyQuaternion(p.g.quaternion).setY(0);
+    p.dir.normalize();
+    p.g.lookAt(_v.copy(p.g.position).add(p.dir));
+    p.timer = 30;
+  }
+  damageCar() {}
+  // Посадить (E у земли): самолёт ложится брюхом на землю
+  land(p, gy) {
+    p.held = false;
+    p.landed = 60;
+    p.g.position.y = gy + 2.7;
+    const W = this.world, c = p.g.position.clone();
+    W.dust.burst(c.clone().setY(gy + 1), 18, { size: [3, 8], speed: 10, life: [1, 2.2] });
+    W.audio?.metal(0.7, c);
+    W.audio?.land(0.8, c);
   }
 
   // ================================================================ лодки
@@ -448,6 +499,8 @@ export class AirLife {
   reset() {
     const H = this.heli;
     if (H.state === 'gone' || H.state === 'crash') { H.state = 'gone'; H.timer = 0.1; }
+    // Пойманные и посаженные самолёты — снова в небо
+    for (const p of this.planes) { p.held = false; p.landed = 0; p.trail.visible = true; p.dir.set(0, 0, 0); p.timer = 0; }
   }
 
   mute() { this.world.audio?.setRotor(0); }

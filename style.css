@@ -109,6 +109,14 @@ kbd {
 }
 #ctrl-badge.show { display: block; }
 #ctrl-badge.live { color: #c8ffd8; background: rgba(10, 30, 18, 0.55); border-color: rgba(110, 230, 150, 0.55); }
+/* Радио (I) */
+#radio-badge {
+  position: absolute; right: 32px; bottom: 132px; display: none;
+  padding: 3px 12px; border-radius: 12px; font-size: 11px; letter-spacing: 2px;
+  color: #d8e6c8; background: rgba(14, 22, 12, 0.5); border: 1px solid rgba(190, 220, 150, 0.4);
+}
+#radio-badge.show { display: block; }
+#hud.cine #radio-badge { display: none; }
 
 /* Фоторежим */
 #photo-ui { position: fixed; left: 0; right: 0; bottom: 22px; text-align: center; color: #e8f0f4; pointer-events: none; z-index: 20; }
@@ -253,6 +261,22 @@ kbd {
 .dialog-opt.hot { color: #ff9f8a; }
 .dialog-opt.hot.sel { color: #ffc6b8; border-left-color: #e8604c; }
 .dialog-keys { margin-top: 8px; font-size: 12px; opacity: 0.6; }
+/* Разговоры в Тарвэне: портрет собеседника слева от текста */
+#dialog-face { display: none; position: absolute; left: 14px; bottom: 12px; width: 112px; height: 140px; border: 1px solid rgba(255, 255, 255, 0.18); }
+#dialog.face { padding-left: 144px; min-height: 140px; width: min(860px, 92vw); }
+#dialog.face #dialog-face { display: block; }
+/* Имя и звание над персонажем Тарвэна */
+.npc-tag { position: absolute; left: 0; top: 0; display: none; text-align: center; white-space: nowrap; pointer-events: none; text-shadow: 0 1px 3px #000, 0 0 2px #000; }
+.npc-tag.show { display: block; }
+.npc-tag b { display: block; font-size: 13px; letter-spacing: 2px; color: var(--c); }
+.npc-tag span { font-size: 11px; color: #d8dde2; opacity: 0.8; }
+.npc-tag .d { display: none; }
+/* Издалека: только имя и расстояние, ромбик цвета персонажа */
+.npc-tag.far b { font-size: 12px; }
+.npc-tag.far b::before { content: '◆ '; }
+.npc-tag.far .t { display: none; }
+.npc-tag.far .d { display: inline; }
+#hud.cine .npc-tag { display: none; }
 
 #battle-end { margin-top: 30px; }
 #end-title { font-size: 40px; font-weight: 900; letter-spacing: 6px; color: #3fe0b0; }

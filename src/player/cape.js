@@ -17,9 +17,12 @@ const LATERAL_W = 0.72;   // доля полной ширины подола, к
 const _tmp = new THREE.Vector3();
 
 export class Cape {
-  // opts: { color, sheenColor } — цвет ткани (по умолчанию винный плащ героя)
+  // opts: { color, sheenColor } — цвет ткани (по умолчанию винный плащ героя);
+  // flare, length — у плащей жителей Ксаррона свои (по умолчанию как у героя)
   constructor(parent, opts = {}) {
     this.parent = parent; // группа модели персонажа (локальная система координат)
+    this.flare = opts.flare ?? FLARE;
+    this.length = opts.length ?? LENGTH;
     const n = W * H;
     this.pos = new Float32Array(n * 3);
     this.prev = new Float32Array(n * 3);
@@ -99,11 +102,11 @@ export class Cape {
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
       const i = (y * W + x) * 3;
       const v = y / (H - 1), t = x / (W - 1);
-      const flare = 1 + (FLARE - 1) * Math.pow(v, 1.35);
+      const flare = 1 + (this.flare - 1) * Math.pow(v, 1.35);
       const a = new THREE.Vector3().lerpVectors(this.anchorL, this.anchorR, t);
       this.restLat[i / 3] = (a.x - mid.x) * flare;
       this.pos[i] = this.prev[i] = mid.x + (a.x - mid.x) * flare;
-      this.pos[i + 1] = this.prev[i + 1] = a.y - v * LENGTH;
+      this.pos[i + 1] = this.prev[i + 1] = a.y - v * this.length;
       // Чуть выгнут назад — будто лежит на спине
       this.pos[i + 2] = this.prev[i + 2] = a.z - 0.05 - Math.sin(v * Math.PI) * 0.12;
     }

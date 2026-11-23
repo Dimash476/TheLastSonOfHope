@@ -71,6 +71,7 @@ export function nearestBody(p) {
 export function bodyGroundAt(b, p) {
   const dx = p.x - b.c.x, dy = p.y - b.c.y, dz = p.z - b.c.z;
   const d2 = dx * dx + dz * dz;
+  if (b.capital) return -Infinity;
   if (dy <= 0 || dy * dy < CAP_NY * CAP_NY * (d2 + dy * dy)) return -Infinity;
   return b.c.y + Math.sqrt(Math.max(0, b.r * b.r - d2));
 }

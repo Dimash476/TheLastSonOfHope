@@ -317,6 +317,63 @@ export class People {
     this.world.soundscape?.shutter?.(pos);
   }
 
+  // Поклонник в толпе прямо перед героем — для автографа (E)
+  findFan(pos, facing, r) {
+    let best = null, bd = r;
+    for (const p of this.list) {
+      if (p.state !== 'gather' || p.lead || p.mate) continue;
+      const dx = p.pos.x - pos.x, dz = p.pos.z - pos.z, d = Math.hypot(dx, dz);
+      if (d < bd && d > 0.5 && (dx * facing.x + dz * facing.z) / d > 0.55 && Math.abs(p.pos.y - pos.y) < 2) { bd = d; best = p; }
+    }
+    return best;
+  }
+
+  // Автограф: поклонник счастлив — машет, сердечко, вспышка телефона
+  autograph(p, hero) {
+    p.heading = Math.atan2(hero.x - p.pos.x, hero.z - p.pos.z);
+    p.greetT = 3.5;
+    p.gesture = 0.8;
+    const W = this.world;
+    W.soundscape?.thanks?.(p.pos.clone().setY(p.pos.y + 1.6));
+    W.soundscape?.cheer?.(0.25, p.pos.clone().setY(p.pos.y + 1.6));
+    W.animals?.spawnHeart(p.pos.x, p.pos.y + 2.0 * p.h, p.pos.z);
+    setTimeout(() => W.animals?.spawnHeart(p.pos.x, p.pos.y + 2.1 * p.h, p.pos.z), 500);
+  }
+
+  // Бережно поставить (E): на земле — идёт дальше и машет; на крыше — стоит там и смотрит вокруг
+  put(p, pos, heading, roof) {
+    p.pos.copy(pos);
+    p.vel.set(0, 0, 0);
+    p.heading = heading;
+    if (roof) { p.state = 'stand'; p.timer = 0; }
+    else { this.backToWalk(p); p.thankT = 3; }
+    this.world.soundscape?.thanks?.(p.pos.clone().setY(p.pos.y + 1.6));
+  }
+
+  // Актёр сцены (scenes.js): стоит и двигается, как велит сцена (поза — в p.act); не исчезает вдали
+  spawnActor(pos, heading) {
+    // Свободного нет — берём самого дальнего от камеры прохожего (он и так почти не виден)
+    let p = this.list.find((q) => q.state === 'none' && !q.lead && !q.mate);
+    if (!p && this.camPos) {
+      let bd = 0;
+      for (const q of this.list) {
+        if (q.state !== 'walk' || q.lead || q.mate || q.dog) continue;
+        const d = q.pos.distanceToSquared(this.camPos);
+        if (d > bd) { bd = d; p = q; }
+      }
+    }
+    if (!p) return null;
+    p.state = 'actor';
+    p.pos.copy(pos);
+    p.heading = heading;
+    p.act = {};
+    p.lead = p.mate = null;
+    p.greetT = p.thankT = p.waitT = 0;
+    return p;
+  }
+
+  release(p) { if (p.state === 'actor') { this.backToWalk(p); p.act = null; } }
+
   hold(p) { p.state = 'held'; p.vel.set(0, 0, 0); }
   setHeld(p, pos, facingQuat) {
     p.pos.copy(pos).add(new THREE.Vector3(0, -0.6, 0));
@@ -370,7 +427,7 @@ export class People {
         if (p.state === 'none') { this.hide(p); continue; }
       }
       const dist = p.pos.distanceTo(focus);
-      if ((dist > TRAFFIC.radius * 0.6 || !inGrid) && p.state !== 'held') { p.state = 'none'; this.hide(p); continue; }
+      if ((dist > TRAFFIC.radius * 0.6 || !inGrid) && p.state !== 'held' && p.state !== 'actor') { p.state = 'none'; this.hide(p); continue; }
       const dx = focus.x - p.pos.x, dz = focus.z - p.pos.z, flat = Math.hypot(dx, dz), above = focus.y - p.pos.y;
 
       // Испугались пролетающего рядом героя
@@ -524,6 +581,22 @@ export class People {
             p.quat.setFromAxisAngle(UP, Math.random() * 6.28).multiply(_q.setFromAxisAngle(RX, Math.PI / 2 * (Math.random() < 0.5 ? 1 : -1)));
           }
         }
+      } else if (p.state === 'stand') {
+        // Поставлен героем на крышу: оглядывается, машет, когда герой рядом; крыша рухнула — падает
+        p.timer += dt;
+        if (flat < 30 && Math.abs(above) < 20) { this.face(p, focus.x, focus.z, dt, 3); if (flat < 16) { armRT = -2.9; waveT = 1; } }
+        else p.heading += Math.sin(p.timer * 0.4 + p.slot) * dt * 0.5;
+        lookT = 0.1;
+        const gy = city.groundHeightAt(p.pos.x, p.pos.z, p.pos.y + 1);
+        if (gy < p.pos.y - 0.6) this.knock(p, _v.set(0, 0, 0).clone());
+      } else if (p.state === 'actor') {
+        const A = p.act || {};
+        lookT = A.look || 0; armLT = A.armL || 0; armRT = A.armR || 0; waveT = A.wave || 0; phoneT = A.phone || 0;
+        if (A.walk) {
+          p.phase += dt * A.walk * 4.5;
+          swing = Math.sin(p.phase) * 0.5;
+          armSwing = -swing * 0.7;
+        } else p.phase += dt;
       } else if (p.state === 'down') {
         p.timer -= dt;
         p.pos.y = city.groundHeightAt(p.pos.x, p.pos.z, p.pos.y + 1) + 0.15;
@@ -538,7 +611,7 @@ export class People {
           else { armRT = -1.5; phoneT = 1; }
         }
       }
-      if (p.state === 'walk' || p.state === 'watch' || p.state === 'gather' || p.state === 'flee' || p.state === 'selfie') p.quat.setFromAxisAngle(UP, p.heading);
+      if (p.state === 'walk' || p.state === 'watch' || p.state === 'gather' || p.state === 'flee' || p.state === 'selfie' || p.state === 'stand' || p.state === 'actor') p.quat.setFromAxisAngle(UP, p.heading);
       // Плавные переходы жестов
       const k = Math.min(1, dt * 6);
       p.look += (lookT - p.look) * k;

@@ -21,7 +21,7 @@ const BIG_SP = 40, FINE_SP = 2.5;                  // шаг тайлов, м
 const BIG_P = TN * BIG_SP, FINE_P = TN * FINE_SP;  // период тайлов, м
 const GRID_H = 48, LEVELS = 11;                    // ±48 ячеек на уровень, ячейки 1 м … 1 км
 const RV = 200000;                                 // кривизна на вид: прячет край сетки, даёт горизонт
-const EXIT_ALT = 3000;                             // выше этого — выход в космос
+const EXIT_ALT = 10000;                            // выше этого — выход в космос
 const CELL_S = 4, RANGE_S = 16;                    // мелкие камни: ячейка, м, и радиус в ячейках
 const CELL_B = 50, RANGE_B = 20;                   // валуны
 const RAM_R = 100;          // полуширина пролома при таране, м (2,5 ячейки крупного тайла)
@@ -29,6 +29,9 @@ const CLEAR = 30;           // дно пролома ниже героя на с
 const TALUS = 1.15;         // крутизна, при которой край пролома держится
 const COLLAPSE_R = 700;     // дальше от места удара склон не осыпается
 const ROCK_BUDGET = 60;     // глыб за кадр (остальной объём — пыль)
+
+// Тайл и кривизна — для того, что стоит на карте (столица Ксаррона, src/xarron)
+export const MAP_TILE = { TN, BIG_SP, BIG_P, FINE_SP, RV };
 
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const RIDGE = (v) => 1 - Math.abs(v);
@@ -542,7 +545,9 @@ function terrainMaterial(M, uCam, uTime) {
   const L = M.look, mat = new THREE.MeshStandardMaterial({ roughness: 0.97, metalness: 0, envMapIntensity: 0 });
   mat.defines.STYLE = L.style;
   if (L.lava) mat.defines.LAVA = 1;
-  mat.customProgramCacheKey = () => `planetmap${L.style}${L.lava ? 'lava' : ''}`;
+  const D = M.decor;
+  if (D) mat.defines.CITY = 1;
+  mat.customProgramCacheKey = () => `planetmap${L.style}${L.lava ? 'lava' : ''}${D ? 'city' : ''}`;
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, {
       uCam, uTime, uRvI: { value: 1 / (2 * RV) },
@@ -553,11 +558,16 @@ function terrainMaterial(M, uCam, uTime) {
       // Свечение плазмы (стиль 4): у Солнца оранжевое, у гипергиганта — голубое
       uEmA: { value: new THREE.Vector3(...(L.emA || [0.9, 0.14, 0.01])) }, uEmB: { value: new THREE.Vector3(...(L.emB || [1.7, 0.62, 0.12])) },
     });
+    // Город на карте: где он, его мостовая (GLSL от него же) и высота плато
+    if (D) Object.assign(shader.uniforms, { uCityC: { value: new THREE.Vector2(...D.center) }, uCityH: D.uCityH });
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         uniform highp sampler2D tBig, tFine;
         uniform vec2 uCam; uniform float uRvI;
         varying vec2 vR; varying float vY;
+        #ifdef CITY
+          uniform vec2 uCityC;
+        #endif
         ${TILE_GLSL}`)
       .replace('#include <beginnormal_vertex>', 'vec3 objectNormal = vec3(0.0, 1.0, 0.0);')
       // position = (i, шаг уровня, j). Каждый уровень привязан к своей решётке; у внешнего края
@@ -570,6 +580,11 @@ function terrainMaterial(M, uCam, uTime) {
         float dC = distance(pM, uCam);
         float fK = 1.0 - smoothstep(1500.0, 3000.0, dC);
         float hT = tile(tBig, pM, ${BIG_SP.toFixed(1)});
+        #ifdef CITY
+          // На плато города мелкой неровности нет: там мостовая
+          vec2 cd0 = pM - uCityC; cd0 -= floor(cd0 / ${BIG_P.toFixed(1)} + 0.5) * ${BIG_P.toFixed(1)};
+          fK *= smoothstep(${D ? D.radii[0].toFixed(1) : '0.0'}, ${D ? D.radii[1].toFixed(1) : '1.0'}, length(cd0));
+        #endif
         if (fK > 0.0) hT += fK * tile(tFine, pM, ${FINE_SP.toFixed(1)});
         vR = pM - uCam; vY = hT;   // относительно камеры: в десятках км интерполяция грубее мелких деталей
         vec3 transformed = vec3(pM.x, hT - dC * dC * uRvI, pM.y);`);
@@ -584,6 +599,10 @@ function terrainMaterial(M, uCam, uTime) {
         ${CRATER_GLSL}
         ${BUMP_GLSL}
         ${SURFACE_GLSL}
+        #ifdef CITY
+          uniform vec2 uCityC;
+          ${D ? D.groundGLSL : ''}
+        #endif
         vec2 decS(vec2 e) { vec2 v = e * 2.0 - 1.0; return v / max(1.0 - abs(v), 0.03); }`)
       .replace('#include <color_fragment>', /* glsl */`
         vec2 vP = uCam + vR;
@@ -597,6 +616,13 @@ function terrainMaterial(M, uCam, uTime) {
         gN = vec3(0.0, 1.0, 0.0); gSunT = vec3(1.0, 0.0, 0.0); gTanA = uTanE; gShadow = 1.0;
         vec3 sCol, sEmi; float sH;
         surf(vec3(vP.x, 0.0, vP.y), length(fwidth(vR)), length(sl), (nB.a + nF.a - 1.0) * 2.0, sCol, sH, sEmi);
+        #ifdef CITY
+          {
+            vec2 cq = vP - uCityC; cq -= floor(cq / ${BIG_P.toFixed(1)} + 0.5) * ${BIG_P.toFixed(1)};
+            float cr = length(cq), cm = 1.0 - smoothstep(${D ? (D.radii[0] - 300).toFixed(1) : '0.0'}, ${D ? (D.radii[0] + 200).toFixed(1) : '1.0'}, cr);
+            if (cm > 0.0) cityGround(cq, cr, cm, length(fwidth(vR)), vY, sCol, sEmi, sH);
+          }
+        #endif
         diffuseColor.rgb = sCol;`)
       .replace('#include <normal_fragment_begin>', /* glsl */`#include <normal_fragment_begin>
         normal = bumpN(normalize(mat3(viewMatrix) * normalize(vec3(-sl.x, 1.0, -sl.y))), -vViewPosition, sH);`)
@@ -682,6 +708,7 @@ export class PlanetMap {
     this.fxT = 0;
     this.budget = ROCK_BUDGET;
     this.flow = new THREE.Vector3();
+    this.decor = {};         // id тела → что стоит на его карте (город): shape, mask, roof, collide, enter, leave, view
     this.fade = document.getElementById('map-fade');
     this.createGrid();
     this.createRocks();
@@ -771,11 +798,14 @@ export class PlanetMap {
   build(body) {
     const look = LOOKS[body.id], el = THREE.MathUtils.degToRad(look.sunEl), tanE = Math.tan(el);
     const T = look.gen(mulberry32(Math.floor(body.r) + body.id.charCodeAt(1)));
+    // Что стоит на этой карте (столица Ксаррона): выравнивает себе место до текстур
+    const decor = this.decor[body.id] || null;
+    decor?.shape(T);
     const color = (c) => new THREE.Color().setRGB(c[0], c[1], c[2]);
     let top = -Infinity;
     for (let k = 0; k < T.bigH.length; k++) top = Math.max(top, T.bigH[k]);
     const M = {
-      look, tanE, bigH: T.bigH, fineH: T.fineH, bigA: T.bigA, base: T.base || null, touched: false,
+      look, decor, tanE, bigH: T.bigH, fineH: T.fineH, bigA: T.bigA, base: T.base || null, touched: false,
       top: T.base ? top : 0,   // самая высокая вершина твёрдой карты: выход в космос — выше неё
       sunDir: new THREE.Vector3(Math.cos(el), Math.sin(el), 0),
       sunC: color(look.sunC), hemiC: color(look.hemiC), hemiG: color(look.hemiG),
@@ -819,7 +849,7 @@ export class PlanetMap {
     } else if (this.active && hero.pos.y - this.O.y > this.exitAlt) this.exit(hero);
   }
 
-  // Высота выхода в космос над нулём карты: 3 км, а над высокими горами — на 1,5 км выше вершин
+  // Высота выхода в космос над нулём карты: 10 км, а над высокими горами — на 1,5 км выше вершин
   get exitAlt() { return Math.max(EXIT_ALT, (this.cur?.top || 0) + 1500); }
 
   enter(hero, body, n, speed) {
@@ -855,15 +885,20 @@ export class PlanetMap {
     // Какой стороной коснулись шара — в то место карты и попадаем
     const wrap = (v) => ((v % BIG_P) + BIG_P) % BIG_P;
     const x = wrap(Math.atan2(n.x, n.z) * body.r), z = wrap(Math.asin(n.y) * body.r);
-    const fall = Math.min(200, Math.max(25, speed * 0.3)), alt = Math.max(40, fall * 1.6);
-    const g = O.y + this.heightLocal(x, z);
-    hero.pos.set(O.x + x, g + alt, O.z + z);
+    let fall = Math.min(200, Math.max(25, speed * 0.3)), alt = Math.max(40, fall * 1.6);
+    let ax = x, az = z;
+    // У карты с городом — свой подлёт: с края города, лицом к нему
+    const A = M.decor?.enter(this, x, z);
+    if (A) { ax = A.x; az = A.z; alt = A.alt; fall = A.fall; }
+    const g = O.y + this.heightLocal(ax, az);
+    hero.pos.set(O.x + ax, g + alt, O.z + az);
     hero.vel.set(0, -fall, 0);
-    hero.grounded = false; hero.falling = true; hero.slamming = false;
+    if (A?.dir) hero.vel.addScaledVector(A.dir, A.speed);
+    hero.grounded = false; hero.falling = !A; hero.slamming = false;   // к городу — подлетаем, а не падаем
     hero.takeoffT = 0; hero.dashT = 0; hero.cruising = false; hero.lastDiveImpact = false;
     hero.onBody = hero.nearBody = body;
     hero.groundY = g; hero.bodyAlt = alt; hero.belowCap = false;
-    this.world.toast?.(body.name.toUpperCase(), 2.4);
+    this.world.toast?.(A?.title || body.name.toUpperCase(), A?.title ? 4 : 2.4);
     this.world.audio?.whoosh(0.7);
   }
 
@@ -881,6 +916,7 @@ export class PlanetMap {
     this.pending = null;
     if (!this.active) return;
     if (this.cur.base) this.world.rocks?.setFrame(null);
+    this.cur.decor?.leave();
     this.queue.length = 0;
     this.flush();
     this.active = false;
@@ -892,13 +928,14 @@ export class PlanetMap {
   }
 
   heightLocal(x, z) {
-    const M = this.cur;
-    return readTile(M.bigH, x, z, BIG_SP) + readTile(M.fineH, x, z, FINE_SP);
+    const M = this.cur, fine = readTile(M.fineH, x, z, FINE_SP);
+    return readTile(M.bigH, x, z, BIG_SP) + (M.decor ? fine * (1 - M.decor.mask(x, z)) : fine);
   }
 
   // Валун в ячейке (если он там есть) — в _b: центр и радиус
   boulder(ix, iz) {
     if (cellHash(ix, iz, 1) > this.cur.look.boulders) return false;
+    if (this.cur.decor && this.cur.decor.mask((ix + 0.5) * CELL_B, (iz + 0.5) * CELL_B) > 0.02) return false;
     const u = cellHash(ix, iz, 2);
     _b.x = (ix + 0.15 + 0.7 * cellHash(ix, iz, 3)) * CELL_B;
     _b.z = (iz + 0.15 + 0.7 * cellHash(ix, iz, 4)) * CELL_B;
@@ -906,8 +943,8 @@ export class PlanetMap {
     return true;
   }
 
-  // Земля под ногами (мировые координаты): рельеф и валуны
-  heightAt(wx, wz) {
+  // Земля под ногами (мировые координаты): рельеф, валуны и крыши города (если задана высота ног wy)
+  heightAt(wx, wz, wy) {
     const x = wx - this.O.x, z = wz - this.O.z;
     let h = this.heightLocal(x, z);
     const ix = Math.floor(x / CELL_B), iz = Math.floor(z / CELL_B);
@@ -919,7 +956,14 @@ export class PlanetMap {
         h = Math.max(h, this.heightLocal(_b.x, _b.z) - _b.s * 0.2 + _b.s * 0.75 * Math.sqrt(1 - d2));
       }
     }
+    const D = this.cur.decor;
+    if (D && wy !== undefined) return Math.max(this.O.y + h, D.roof(wx, wz, wy));
     return this.O.y + h;
+  }
+
+  // Здания города на карте: герой упирается в них (путь за кадр от p0)
+  collide(p0, hero) {
+    return !!(this.active && this.cur.decor?.collide(hero, p0));
   }
 
   updateRocks(x, z, alt) {
@@ -935,6 +979,7 @@ export class PlanetMap {
             if (cellHash(i, j, 5) > L.rocks) continue;
             const u = cellHash(i, j, 6), s = 0.1 + 0.75 * u * u;
             const px = (i + cellHash(i, j, 7)) * CELL_S, pz = (j + cellHash(i, j, 8)) * CELL_S;
+            if (this.cur.decor && this.cur.decor.mask(px, pz) > 0.02) continue;
             _p.set(px, this.heightLocal(px, pz) - s * 0.2, pz);
             _e.set(u * 41, cellHash(i, j, 9) * 6.28, u * 17);
             _s.set(s * (0.8 + u), s * 0.7, s);
@@ -1193,5 +1238,6 @@ export class PlanetMap {
     env.golden = 0;
     env.exposure = L.exposure;
     this.dome.position.copy(camera.position);
+    M.decor?.view(camera, O);
   }
 }
